@@ -61,6 +61,7 @@ DSH-Mizar/
 ├─ docs/
 │  ├─ decision-0001-in-process-gateway.md   # Phase 0.1 结论（必读）
 │  ├─ decision-0002-approval-arbitration.md
+│  ├─ protocol-v1.md                        # Mizar 协议规范
 │  ├─ tailscale-setup.md                    # 网络方案与取舍
 │  ├─ testflight.md                         # 如何发布到 TestFlight
 │  ├─ windows-status.md                     # Windows：什么验证过、什么没有

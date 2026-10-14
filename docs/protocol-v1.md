@@ -1,0 +1,254 @@
+# Mizar 协议 v1
+
+手机与 Mac 之间说的话。
+
+**为什么要有自己的协议**：iPhone 只说 Mizar，不说 DSH 内部的 Typert 协议。DSH 那 140
+个 endpoint、`SessionHistoryRecord` 与 40+ 种会话事件变体的投影工作，全部由插件在服务端
+一次性做完。这样 DSH 升版本时只需改插件的 Bridge，**App 不受影响**——这也是黄金帧契约
+测试存在的原因。
+
+> 本文是从代码里读出来的，不是设计稿。写它时对照的是
+> `dsh/src/protocol/frames.ts`、`dsh/src/bridge/index.ts`、`dsh/src/server/listener.ts`。
+
+---
+
+## 传输
+
+| 路径 | 方法 | 用途 |
+|---|---|---|
+| `/mizar/v1/hello` | GET | 主机身份，**免鉴权**，配对前用来确认地址可拨 |
+| `/mizar/v1/pair` | POST | 用配对码换设备令牌，**免鉴权，唯一一次** |
+| `/mizar/v1/ws` | WebSocket | 其余全部流量 |
+
+`HTTP_PREFIX = '/mizar/v1'`，定义在 `frames.ts`。监听端口默认 **19390**，与 DSH 自己的
+Web 端口（19388）分开——**插件不碰 DSH 原有的安全边界**。
+
+---
+
+## 配对
+
+一次性。之后只认设备令牌。
+
+```text
+Mac 面板显示                   手机
+────────────                   ────
+mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
+                                │ 扫码或深链接解析
+                                ▼
+                          GET  /mizar/v1/hello      ← 确认地址可拨
+                          POST /mizar/v1/pair       ← {code, deviceName, deviceModel,
+                                                       appVersion, protocolVersion}
+                                │
+                                ▼  200 {deviceToken, deviceId, hostId, hostName,
+                                        protocolVersion}
+                          WS   /mizar/v1/ws
+                                │
+                          send {v:1, type:'hello', id, token, protocolVersion, appVersion}
+                                │
+                          recv {v:1, type:'welcome', hostId, hostName, home, deviceId,
+                                protocolVersion}
+```
+
+**配对 URI 格式**：`mizar://pair?h=<host:port>&c=<CODE>&n=<主机名>&v=1`
+
+- `h` 是 `host:port`，**需要 URL 编码**（`:` → `%3A`）
+- `c` 是 Crockford base32 的配对码，形如 `K7QP-3M2X`，**5 分钟过期、单次使用**
+- TS 与 Swift 两端的解析器**逐字节一致**，并有共享测试
+
+**令牌只以 SHA-256 存储**。主机侧状态文件里没有明文令牌，泄漏状态文件不等于泄漏访问权。
+
+---
+
+## 帧信封
+
+五种帧。全部带 `v`（协议版本，当前 `1`）。
+
+### 客户端 → 服务端
+
+```jsonc
+// 握手，必须是第一帧
+{ "v": 1, "type": "hello", "id": "h1", "token": "mz_…",
+  "appVersion": "0.1.0", "protocolVersion": 1, "deviceModel": "iPhone17,1" }
+
+// 任何方法调用
+{ "v": 1, "type": "session.list", "id": "m1", "payload": { … } }
+```
+
+`id` 由客户端生成，**服务端的回应必须带回同一个 `id`**，客户端靠它关联请求。
+
+### 服务端 → 客户端
+
+```jsonc
+{ "v": 1, "type": "welcome", "id": "h1", "hostId": "…", "hostName": "…",
+  "protocolVersion": 1, "home": "/Users/…", "deviceId": "…" }
+
+{ "v": 1, "type": "ok", "id": "m1", "result": { … } }
+
+{ "v": 1, "type": "error", "id": "m1", "code": "WRITER_HELD",
+  "message": "…", "retryable": false }
+```
+
+**`event` 类型目前没有使用**——交互状态靠轮询（见下文"已知限制"）。
+
+---
+
+## 错误码
+
+客户端**必须按 code 分支，不能匹配 message 文本**。
+
+| code | 含义 | 客户端该做什么 |
+|---|---|---|
+| `PROTOCOL_VERSION_MISMATCH` | 版本不符 | 提示升级，不要重试 |
+| `MALFORMED_FRAME` | 帧结构非法 | 这是 bug，报告 |
+| `UNAUTHENTICATED` | 还没握手 | 先发 hello |
+| `PAIRING_REQUIRED` | 设备未配对 | 回到配对界面 |
+| `PAIRING_CODE_INVALID` | 配对码格式不对 | 让用户检查输入 |
+| `PAIRING_CODE_EXPIRED` | 配对码超时 | 让 Mac 重新生成 |
+| `PAIRING_CODE_UNKNOWN` | 没有这个码 | 同上 |
+| `RATE_LIMITED` | 尝试过频 | 退避后重试 |
+| `DEVICE_REVOKED` | 设备已被吊销 | **清掉本地令牌，回到配对** |
+| `WRITER_HELD` | 会话被别的客户端占用 | 让用户先释放 |
+| `MODEL_UNAVAILABLE` | 模型不可用 | 刷新目录 |
+| `REMOTE_ERROR` | 宿主服务报错 | 透传 message |
+| `NOT_IMPLEMENTED` | 未知方法 | 版本不匹配的信号 |
+| `INTERNAL` | 插件内部错误 | 报告 |
+
+> **`PAIRING_CODE_INVALID` / `EXPIRED` / `UNKNOWN` 对客户端回答是不同的，但审计日志里
+> 区分得更细**（含"已兑换"）。已经兑换过的码重放会被当成 `UNKNOWN`——**故意不告诉客户端
+> "这个码用过"**，否则它就变成了一个预言机。
+
+---
+
+## 方法表
+
+15 个方法。`payload` 里的键：
+
+### 主机与会话
+
+| 方法 | payload | 返回 |
+|---|---|---|
+| `host.info` | — | 主机身份与绑定情况 |
+| `session.list` | `{}` | `{items: [SessionRow]}` |
+| `session.messages` | `sessionId`, `maxMessages?` | `{sessionId, asOfSeq, records[], hasMore}` |
+| `session.stats` | `sessionId` | `{sessionId, asOfSeq, stats}` |
+| `session.create` | `cwd?` \| `workspaceId?` \| `sessionId?`, `agentPreset?` | `{sessionId, agentPreset}` |
+| `session.rename` | `sessionId`, `title` | `{renamed: true}` |
+| `session.prompt` | `sessionId`, `text`, `requestId?`, `clientTimeZone?`, `mode?` | `{accepted, requestId}` |
+| `session.cancel` | `sessionId` | `{accepted}` |
+
+### 模型与权限
+
+| 方法 | payload | 返回 |
+|---|---|---|
+| `model.catalog` | — | `{default, providers[], failures[]}` |
+| `session.model.set` | `sessionId`, `provider`, `model`, `reasoningEffort?` | `{sessionId, selected}` |
+| `permissions.catalog` | — | `{options[], defaults[], defaultPreset}` |
+| `session.permission.set` | `sessionId`, `preset` | `{commandResult}` |
+
+### 交互
+
+| 方法 | payload | 返回 |
+|---|---|---|
+| `interactions.pending` | — | `{approvals[], questions[]}` |
+| `approval.answer` | `requestId`, `outcome` | `{accepted}` |
+| `question.answer` | `callId`, `answers[]` | `{accepted}` |
+
+`outcome` 只有 **`allowed-once`** 和 **`rejected`** 两个值。传别的值得到
+`MALFORMED_FRAME`，不是静默忽略。
+
+### `requestId` 的语义
+
+`requestId` 是**幂等键**，宿主靠它避免同一条消息被插入两次：
+
+- **同一个 prompt 重试** → 复用同一个 `requestId`，宿主不会重复插入
+- **一条新的 prompt** → 必须用新的 `requestId`，否则宿主会把它当成重试而丢弃
+
+App 当前的实现是**每次发送都生成新的 UUID**，它不自动重试——所以用户手动再发一次同样的
+文字会被当作**一条新消息**，这是对的。但如果将来加入自动重试，**必须把 key 一起带上**，
+否则重试会产生重复消息。
+
+> **没有 `always-allow`，这是刻意的。** 一个活得比它被授予的请求更久的许可，本质上是
+> **权限变更**——而权限变更应该走 `session.permission.set`，那里它可见且可撤销。把
+> "总是允许"放进审批卡片，是把一个持久决定伪装成瞬时决定。
+
+---
+
+## 两条必须遵守的规则
+
+### 1. 缺失的键 ≠ 零
+
+宿主对**没有组合进来的包所拥有的投影**返回 `null`，App **绝不能渲染成 0**。
+
+```
+cacheHit: null          → 显示 "—"        （不是 0%）
+tokenUsage: {0,0,0,0}   → 显示 0           （主机确实报告了 0）
+```
+
+区别是有意义的：**"还没有缓存命中"和"这台主机无法报告缓存命中"是两件事**。
+`docs/screenshots/03-usage.png` 里同时能看到这两种情况。
+
+同样，缓存命中率**永远不能把一个不完整的命中率四舍五入成 100%**——所以它是字符串而不是
+数字，精度由宿主决定，App 不得重新取整。
+
+### 2. 记录保持原样，不归一化
+
+`session.messages` 返回的 `records[]` 是**宿主原样给的**。事件名在设计上就是"可合并扩展的"
+（`SessionEventEntry` 的注释原文：*durable readers own recognition of merge-extensible
+event names*），所以形状集合是**开放的**。
+
+在 Bridge 里重塑它们，意味着 **DSH 每加一种事件就要重新部署插件**。所以由 App 决定它
+认识什么，**不认识的照样显示**——`Conversation.swift` 会把未知事件渲染成一行活动标记，
+而不是丢掉。
+
+```jsonc
+// 真实会话日志里的一条记录
+{"type":"event","event":{"type":"user/message","seq":8,"time":1791984791224,
+  "data":{"content":[{"type":"text","text":"…"}],"role":"user","id":"…"}}}
+```
+
+已验证会出现的 `event.type`：
+
+```
+permission/preset · sandbox/mode · approval/policy · agent/inbox/spliced
+turn/start · turn/end · step/start · step/end · system/message · user/message
+request/header · request/context · session/title · session/title-llm-request
+assistant/attempt
+```
+
+**assistant 的文本在 `assistant/attempt` 的 `data.stream[]` 分块里**；以
+`chunk.type == "finish"` 且 `reason.kind == "error"` 结束的轮次**没有产出回答**，必须显式
+呈现而不是当作空回复。
+
+---
+
+## 已知限制
+
+**交互状态是轮询的，不是推送的。** App 每 4 秒调一次 `interactions.pending`：
+
+```
+agent 需要审批  →  [最多 4 秒延迟]  →  手机看到
+```
+
+`event` 帧类型已经定义好但还没用上。对一个**被阻塞**的 agent 来说 4 秒不算致命，但这是
+一个真实的延迟，而且是协议层面唯一明显的改进点。
+
+**`interactions.pending` 是"现在有什么"，不是一个流。** 两次轮询之间出现又消失的请求会被
+完全错过。目前不会发生（审批会一直等到有人回答），但如果将来引入超时就必须改成推送。
+
+---
+
+## 契约怎么保证不漂移
+
+`protocol/fixtures/` 里的帧是**从真实运行的宿主捕获的**，并且
+**TypeScript 与 Swift 两套测试读同一批文件**。
+
+手写的帧和真实的帧只在有人记得同步时才一致，而它们不同步时**不会有任何东西失败**。
+两个独立的解码器读同一个产物，才能真正把契约钉住。
+
+```bash
+MIZAR_WRITE_FIXTURES=1 scripts/dev.sh smoke   # 重新捕获
+```
+
+当前 8 个黄金帧：`welcome` · `host-info` · `session-list` · `session-stats` ·
+`model-catalog` · `permissions-catalog` · `interactions-pending` · `error-frame`。
+它们同时被断言为**不含任何密钥**。
