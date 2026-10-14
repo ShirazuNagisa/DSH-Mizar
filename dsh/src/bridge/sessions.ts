@@ -146,6 +146,79 @@ export async function sessionStats(ctx: Context, sessionId: string): Promise<Ses
   return { sessionId, asOfSeq, stats: buildStatsFrame(values) }
 }
 
+/**
+ * Read a page of a session's log.
+ *
+ * The two-step shape is not optional. `session/page` is keyed by `address` and a
+ * `throughSeq` cut, not by session id, and the cut comes from a projection read
+ * -- so a caller cannot ask "give me the last N messages" without first asking
+ * "what is the log at". `session.maxMessages` counts messages rather than raw
+ * events, so a page that spans a long tool run still returns the requests around
+ * it rather than a window of deltas.
+ *
+ * Works for a cold session: ike the stats read, this does not activate an agent.
+ *
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param sessionId - the session to read.
+ * @param maxMessages - how many messages to ask for.
+ * @returns the page, or `null` records when the session is unknown.
+ */
+export async function sessionMessages(
+  ctx: Context,
+  sessionId: string,
+  maxMessages?: number,
+): Promise<SessionMessagesResult> {
+  const snapshot = (await ctx.typertGateway.invoke({
+    namespace: 'session',
+    method: 'projections',
+    args: { request: { sessionId } },
+    signal: AbortSignal.timeout(30_000),
+  })) as { asOfSeq?: unknown } | null | undefined
+
+  const asOfSeq = typeof snapshot?.asOfSeq === 'number' ? snapshot.asOfSeq : null
+  if (asOfSeq === null) {
+    // No cut, no page: the session has no log to read.
+    return { sessionId, asOfSeq: null, records: [], hasMore: false }
+  }
+
+  const value = (await ctx.typertGateway.invoke({
+    namespace: 'session',
+    method: 'page',
+    args: {
+      request: {
+        address: { kind: 'session', sessionId },
+        throughSeq: asOfSeq,
+        ...(maxMessages === undefined ? {} : { maxMessages }),
+      },
+    },
+    signal: AbortSignal.timeout(30_000),
+  })) as { records?: unknown; hasMore?: unknown } | null | undefined
+
+  return {
+    sessionId,
+    asOfSeq,
+    records: Array.isArray(value?.records) ? value.records : [],
+    hasMore: value?.hasMore === true,
+  }
+}
+
+/** One page of a session's log. */
+export interface SessionMessagesResult {
+  readonly sessionId: string
+  /** The log cut the page was taken at; `null` when the session is unknown. */
+  readonly asOfSeq: number | null
+  /**
+   * The records exactly as the host reported them.
+   *
+   * Deliberately unnormalised. Event names are merge-extensible by design, so
+   * the set of record shapes is open; reshaping them in the bridge would mean
+   * this plugin has to be redeployed whenever DSH adds one. The phone decides
+   * what it recognises, and anything it does not is still visible.
+   */
+  readonly records: readonly unknown[]
+  readonly hasMore: boolean
+}
+
 /** A newly created or resumed session. */
 export interface CreateSessionResult {
   readonly sessionId: string

@@ -434,7 +434,8 @@ describe('method table', () => {
         'session.prompt',
         'session.rename',
         'question.answer',
-        'session.stats',
+        'session.messages',
+    'session.stats',
       ].sort(),
     )
   })
