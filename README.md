@@ -2,17 +2,22 @@
 
 **远程监控并指导 DSH Agent 工作。** 一个 DSH 插件 + 一个 Swift 原生 iOS/iPad App。
 
-> **当前状态：Phase 0 / 1 / 2 / 3 / 4 完成。**
-> **宿主插件（全部做完）**：独立监听端口、设备配对与吊销、鉴权 WebSocket、会话读写、
-> 模型与思考强度、权限预设、用量统计、审批与提问；DSH GUI 里的 **Mizar 面板**显示绑定
-> 地址、配对二维码与设备名册。真实链路端到端验证 **107/107**。
-> **iOS 协议层（MizarKit）**：帧解析、连接与重连、配对、凭据存储、黄金帧契约测试。
+> **当前状态：Phase 0–5 完成，Phase 6 进行中。**
 >
-> 测试总计 **255（TypeScript）+ 68（Swift）**，其中 23 个是两端共读同一批黄金帧的契约测试。
-> 下一步是 Phase 5（iOS UI）。
+> | 部分 | 状态 |
+> |---|---|
+> | 宿主插件（TypeScript） | ✅ 监听、配对与吊销、鉴权 WebSocket、会话读写、模型与思考强度、权限预设、用量与上下文、审批与提问、自动绑定网卡、Tailscale 静默拉起 |
+> | Web 面板 | ✅ 绑定地址、配对二维码、设备名册 |
+> | MizarKit（协议层） | ✅ 帧、连接与重连、配对、Keychain、消息记录解析 |
+> | iOS / iPad App（SwiftUI） | ✅ 工作区选择、会话列表、对话正文、用量与缓存命中率、模型/思考强度/权限切换、审批与提问、输入与打断、中英双语跟随系统 |
+> | 发布 | ✅ 已归档、签名、导出 TestFlight 包（v0.1.0） |
+> | Windows | ⚠️ **代码检查通过，但从未运行过** —— 见 [Windows 状态](docs/windows-status.md) |
+>
+> **测试：317（TypeScript）+ 76（Swift）+ 8（iOS UI）+ 107（真实链路冒烟断言）。**
 >
 > 关键设计结论：[0001 进程内网关](docs/decision-0001-in-process-gateway.md)、
 > [0002 审批仲裁](docs/decision-0002-approval-arbitration.md)。
+> 发布步骤：[TestFlight](docs/testflight.md)。
 
 ---
 
@@ -55,14 +60,24 @@ endpoint 的复杂度、`SessionHistoryRecord` 与 40+ 会话事件变体的投�
 DSH-Mizar/
 ├─ docs/
 │  ├─ decision-0001-in-process-gateway.md   # Phase 0.1 结论（必读）
-│  └─ protocol-v1.md                        # 待写：Mizar 协议规范
-├─ protocol/                                # 待写：帧 schema + 两端共用的黄金帧
+│  ├─ decision-0002-approval-arbitration.md
+│  ├─ tailscale-setup.md                    # 网络方案与取舍
+│  ├─ testflight.md                         # 如何发布到 TestFlight
+│  ├─ windows-status.md                     # Windows：什么验证过、什么没有
+│  └─ screenshots/                          # 各界面实机截图
+├─ protocol/fixtures/                       # 从真实宿主捕获的黄金帧（两端共读）
 ├─ dsh/                                     # Cordis 插件（TypeScript）
-│  ├─ src/          宿主半：index · config · ready · spike
+│  ├─ src/          宿主半：index · config · ready · net · auth · bridge · server · panel
 │  ├─ client/       浏览器半：esbuild 封装器 + 面板
-│  ├─ test/         vitest
+│  ├─ test/         vitest（317）
 │  └─ cordis.patch.yml
-└─ iOS/                                     # 待建：Swift 原生 App
+├─ iOS/
+│  ├─ MizarKit/                  Swift 包：协议层 + 单元测试（76）
+│  ├─ DSH-Mizar/                 SwiftUI App
+│  ├─ DSH-MizarUITests/          XCUITest（8）
+│  ├─ DSH-Mizar.xcodeproj/       手写 pbxproj
+│  └─ ExportOptions.plist
+└─ scripts/                      dev · ios · swift · release · mock-host · smoke-listener
 ```
 
 ---
@@ -99,7 +114,7 @@ scripts/dev.sh smoke
 它走真实链路，断言的是真正保护操作者的行为：错误配对码被拒、已兑换的码无法重放、未知
 令牌在任何方法执行之前就被拒、畸形帧与版本不符会得到明确错误码而不是被半读；然后是
 Bridge —— 会话列表与用量、模型目录、权限目录、会话创建/改名/切模型/切权限/发消息/打断、
-以及幂等键重试不产生重复消息。**87 项断言。**
+以及幂等键重试不产生重复消息。**107 项断言。**
 
 > 为什么必须先重启：配对码是**单次使用**的，第二次跑同一个实例就没有可兑换的码了。
 > 重启同时也把整条启动路径重新走一遍，这正是我们想验证的。
@@ -112,10 +127,11 @@ Bridge —— 会话列表与用量、模型目录、权限目录、会话创建
 
 ---
 
-## iOS：MizarKit（协议层）
+## iOS
 
-`iOS/MizarKit/` 是一个 Swift 包，**先用 `swift test` 在 Mac 本机上跑**，而不是一开始就手写
-`project.pbxproj` 走模拟器——一轮测试约 0.13 秒。App 工程稍后建立并引用这个本地包。
+### MizarKit（协议层）
+
+`iOS/MizarKit/` 是一个 Swift 包，**先用 `swift test` 在 Mac 本机上跑**——一轮测试约 0.13 秒。
 
 ```
 iOS/MizarKit/Sources/MizarKit/
@@ -127,6 +143,7 @@ iOS/MizarKit/Sources/MizarKit/
 ├─ MizarConnection.swift    鉴权连接：请求关联、事件推送、断线清理
 ├─ WebSocketTransport.swift 协议 + URLSession 实现
 ├─ Backoff.swift            带抖动的重试节奏
+├─ Conversation.swift       会话记录 → 可读的对话项
 └─ CredentialStore.swift    Keychain 存储（测试注入内存实现）
 ```
 
@@ -149,6 +166,54 @@ scripts/swift.sh build
 ```sh
 MIZAR_WRITE_FIXTURES=1 scripts/dev.sh smoke   # 重新捕获
 ```
+
+### App 工程
+
+`iOS/DSH-Mizar.xcodeproj/` 是**手写的 pbxproj**，用 `PBXFileSystemSynchronizedRootGroup`
+组织源码——新增文件直接进目录即可，不必改工程文件。
+
+```sh
+scripts/ios.sh build       # 编译
+scripts/ios.sh run         # 编译 + 装进模拟器 + 启动
+scripts/ios.sh test        # 跑 UI 测试（需先启动 mock host）
+scripts/ios.sh screenshot  # 截屏
+```
+
+> **为什么 MizarKit 在工程里是 framework target，而不是 Swift Package 引用？**
+> 不是风格选择。Xcode 解析包时要通过 `swift-plugin-server` 加载 manifest，而它会往
+> `~/Library/Caches/org.swift.swiftpm` 写一个诊断文件——**这个路径是硬编码的**，
+> `-packageCachePath`、`HOME` 覆盖、所有 `SWIFTPM_*` 环境变量都改不动它。所以受限的
+> 文件策略下包引用根本无法解析。framework target 编译**同一份源码**，零解析步骤，
+> `import MizarKit` 照常工作，而 `swift test` 仍然跑包里的测试套件。
+
+### UI 测试
+
+`iOS/DSH-MizarUITests/` 有 8 个 XCUITest，跑在 `scripts/mock-host.mjs` 上：
+
+```sh
+node scripts/mock-host.mjs 19395 &
+scripts/ios.sh test
+```
+
+> **为什么需要 mock host？** 待审批状态只在 agent 被工具调用阻塞时存在。这台机器的
+> 宿主**每一轮都以 `MISSING_CREDENTIAL` 结束**——没有 provider 凭据，根本走不到工具调用。
+> 所以真实宿主无法按需产出审批，mock 是唯一可行的验证手段。它用的是**从真实会话录下的
+> 记录形状**。
+
+> 元素一律用 accessibility identifier 查找，**不用文案**。用 `"Allow once"` 查找的测试
+> 只在英文下通过——而"文案不是稳定标识"恰恰是本地化工作本身要证明的事。
+
+### 发布
+
+```sh
+scripts/release.sh archive   # 归档
+scripts/release.sh export    # 导出本地 .ipa
+scripts/release.sh upload    # 归档 + 导出 + 上传
+```
+
+详细步骤见 [docs/testflight.md](docs/testflight.md)。
+
+---
 
 ## Web 面板
 
@@ -235,9 +300,10 @@ CommonJS 模块体。没有 ESM 路径，而 DSH 自己的客户端构建链**�
 | | |
 |---|---|
 | macOS | DSH 桌面版（本文按 `0.2.0-rc.2` 验证） |
-| Windows | 同一插件，纯 Node 实现、零原生依赖 |
+| Windows | 同一插件，纯 Node、零原生依赖、代码中无 POSIX 专属调用 —— **但从未运行过**，见 [Windows 状态](docs/windows-status.md) |
 | iOS | Xcode 27 / Swift 6.4 / iOS 27 SDK；部署目标 iOS 18+ |
-| 网络 | 两端安装 Tailscale |
+| 网络 | 两端安装 Tailscale（或用 `bind.mode` 走局域网/自带 VPN） |
+| Node | 22+（宿主插件用到全局 `WebSocket`） |
 
 **关于液态玻璃**：用 Xcode 26+（iOS 26+ SDK）构建后，标准 SwiftUI 控件在 iOS 26/27
 上**自动**呈现 Liquid Glass，同一个二进制在 iOS 18–25 上保持旧外观——这是由
