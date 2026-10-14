@@ -25,7 +25,7 @@ import {
   findTailscaleCli,
   readTailscaleState,
 } from './net/tailscale.js'
-import { awaitRequestedPlan, bindKey, needsRebind } from './net/watch.js'
+import { awaitRequestedPlan, bindKey, isRequested, needsRebind } from './net/watch.js'
 import { PROTOCOL_VERSION } from './protocol/frames.js'
 import { MizarListener } from './server/listener.js'
 import { runSpike } from './spike.js'
@@ -87,39 +87,39 @@ function startBindWatcher(
 }
 
 /**
- * Say why a tailnet address was not found, and optionally fix it.
+ * Report why no tailnet address was found, and start Tailscale if we can.
  *
- * "No Tailscale interface found" covers three different situations with three
- * different remedies, and only one of them is something the plugin can do.
+ * "No Tailscale interface found" covers three situations with three different
+ * remedies, and only one of them is something a plugin should do. Saying which
+ * one it is matters more than the boolean.
  *
- * @param config - plugin configuration.
- * @param fallback - the plan that was chosen instead.
+ * @returns whether something was started, so the caller knows to wait again.
  */
-async function explainTailscale(config: MizarConfig, fallback: BindPlan): Promise<void> {
-  if (config.bind.mode !== 'tailscale') {
-    report(`binding fallback — ${fallback.reason}`)
-    return
-  }
-
+async function ensureTailscaleRunning(): Promise<boolean> {
   const cli = findTailscaleCli()
   if (cli === null) {
     report(describeTailscaleState({ kind: 'absent' }))
-    return
+    return false
   }
 
-  let state = await readTailscaleState(cli)
+  const state = await readTailscaleState(cli)
   report(describeTailscaleState(state))
 
-  if (!config.bind.autoConnect || state.kind !== 'stopped') return
+  if (state.kind !== 'stopped') {
+    // Running but with no usable address, or unreadable: starting it again would
+    // not help, so the listener falls back and the watcher keeps looking.
+    return false
+  }
 
-  report('bind.autoConnect is enabled — bringing Tailscale up')
+  report('bind.autoConnect is on — starting Tailscale')
   const result = await bringTailscaleUp(cli)
   if (!result.ok) {
-    report(`could not bring Tailscale up (${result.detail}); start it yourself and the listener will follow`)
-    return
+    report(`could not start Tailscale (${result.detail}) — start it yourself and the listener will follow`)
+    return false
   }
-  state = await readTailscaleState(cli)
-  report(`after tailscale up: ${describeTailscaleState(state)}`)
+
+  report(result.detail)
+  return true
 }
 
 /** Operator-facing diagnostics, on plain stdout. */
@@ -154,18 +154,30 @@ async function startListener(
   // Wait for the requested mode to take effect before accepting a fallback. DSH
   // and Tailscale both start at login with nothing ordering them, and a one-shot
   // decision that lands on loopback stays there for the life of the process.
+  const waitSeconds = Math.round(config.bind.waitForMs / 1000)
   let plan = await awaitRequestedPlan(readPlan, {
     waitMs: config.bind.waitForMs,
     pollMs: 1000,
     signal,
-    onGiveUp: (fallback) => {
-      report(
-        `no ${config.bind.mode} address after ${Math.round(config.bind.waitForMs / 1000)}s — ` +
-          `${fallback.reason}`,
-      )
-      void explainTailscale(config, fallback)
-    },
   })
+
+  // If the tailnet is simply not up, starting it and waiting again is the whole
+  // difference between "works" and "the phone can never connect". Attempted at
+  // most once per startup on purpose: a host that relaunched Tailscale every
+  // time it went away would be fighting an operator who quit it deliberately.
+  if (config.bind.autoConnect && !isRequested(plan) && config.bind.mode === 'tailscale') {
+    if (await ensureTailscaleRunning()) {
+      plan = await awaitRequestedPlan(readPlan, {
+        waitMs: config.bind.waitForMs,
+        pollMs: 1000,
+        signal,
+      })
+    }
+  }
+
+  if (!isRequested(plan)) {
+    report(`no ${config.bind.mode} address after ${waitSeconds}s — ${plan.reason}`)
+  }
 
   const liveDevices = store.state.devices.filter((d) => d.revokedAt === undefined).length
   report(`state: ${stateDir} · devices: ${liveDevices} live`)

@@ -30,11 +30,16 @@ export interface Config {
     /** How often to re-check the bind addresses once listening, in milliseconds. */
     pollMs: number
     /**
-     * Bring Tailscale up automatically when no tailnet address is present.
+     * Start Tailscale automatically when no tailnet address is present.
      *
-     * Off by default: it runs an external binary and changes system network
-     * state, which should be the operator's decision rather than a side effect
-     * of starting DSH.
+     * On by default, because choosing `bind.mode: tailscale` is already the
+     * operator opting in to Tailscale, and this is what makes "start DSH and the
+     * phone can reach it" true without a second manual step.
+     *
+     * The action is deliberately small: it *launches the app* (or runs
+     * `tailscale up` off macOS). It never authenticates, never changes network
+     * configuration, and is attempted at most once per startup — so quitting
+     * Tailscale on purpose is not fought by a relaunch loop.
      */
     autoConnect: boolean
   }
@@ -62,7 +67,7 @@ export const Config: z<Config> = z.object({
     addresses: z.array(z.string()).default([]),
     waitForMs: z.natural().default(30_000),
     pollMs: z.natural().default(15_000),
-    autoConnect: z.boolean().default(false),
+    autoConnect: z.boolean().default(true),
   }),
   tls: z.object({
     mode: z.union([z.const('off'), z.const('self-signed')]).default('off'),
