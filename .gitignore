@@ -21,3 +21,4 @@ iOS/build/
 iOS/DerivedData/
 xcuserdata/
 *.xcuserstate
+release/

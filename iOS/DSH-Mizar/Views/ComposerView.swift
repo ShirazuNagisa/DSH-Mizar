@@ -14,6 +14,8 @@ import MizarKit
 
 struct ComposerView: View {
     let sessionId: String
+    /// Called with the text that was accepted, so the conversation can pick it up.
+    let onSent: (String) async -> Void
 
     @Environment(AppModel.self) private var model
     @State private var text = ""
@@ -67,7 +69,11 @@ struct ComposerView: View {
         // the text back if the host refused it, so nothing is silently lost.
         text = ""
         let accepted = await model.sendPrompt(outgoing, to: sessionId)
-        if !accepted { text = outgoing }
+        if accepted {
+            await onSent(outgoing)
+        } else {
+            text = outgoing
+        }
         sending = false
         focused = true
     }

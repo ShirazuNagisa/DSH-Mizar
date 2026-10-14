@@ -1,144 +1,202 @@
-# 发布到 TestFlight
+# 发布到 TestFlight — 网页操作全流程
 
-本机已经验证过的部分，和需要你在 Apple 网站上做的部分，分得很清楚。
+产物已经就绪（`scripts/release.sh archive|export` 都成功过），剩下一半只能在网页上做。
 
-## 已验证：产物是合格的
+## 先抄这些值
 
-```
-scripts/release.sh archive   → ** ARCHIVE SUCCEEDED **
-scripts/release.sh export    → ** EXPORT SUCCEEDED **
-```
+下面每一步要填的东西都在这里，**从这张表复制，不要凭记忆**：
 
-`.devcache/release/export/DSH-Mizar.ipa` 的实际内容：
-
-| 项目 | 值 |
+| 字段 | 值 |
 |---|---|
-| 版本 | `0.1.0` |
-| 构建号 | `1` |
-| Bundle ID | `me.shirazu.dshmizar` |
-| 签名 | `Apple Distribution: Vreeland Lee (5Q2A46685M)` |
-| 图标 | `AppIcon60x60@2x.png`、`AppIcon76x76@2x~ipad.png` |
-| 本地化 | `en.lproj`、`zh-Hans.lproj` |
-| 出口合规 | `ITSAppUsesNonExemptEncryption = false` |
-
-出口合规那一项**必须在 Info.plist 里声明**。否则每次上传后构建都会卡在
-App Store Connect 的 "Missing Compliance"，等你手动回答一个问题。
-
----
-
-## 需要你做的第一步：建 App 记录
-
-**Xcode 不能替你创建 App Store Connect 的记录**，这一步只能在网页上做，而且
-只做一次。
-
-1. 打开 https://appstoreconnect.apple.com → **My Apps** → **+** → **New App**
-2. 填写：
-   - **Platforms**：iOS
-   - **Name**：`DSH-Mizar`（这个名字在 App Store 上必须全局唯一，被占用就换一个，比如 `DSH-Mizar Remote`）
-   - **Primary Language**：Chinese (Simplified) 或 English
-   - **Bundle ID**：选 `me.shirazu.dshmizar` —— **如果下拉里没有它，说明你的开发者账号里还没有这个 App ID**，先去
-     https://developer.apple.com/account/resources/identifiers 注册一个 Explicit App ID
-   - **SKU**：随便填一个唯一字符串，比如 `dshmizar001`（用户看不到）
-   - **User Access**：Full Access
-
-## 第二步：上传
-
-```bash
-scripts/release.sh upload
-```
-
-它会归档、导出并直接上传到 App Store Connect。
-
-**上传需要认证。** Xcode 里已经登录了你的账号，所以最省事的方式是
-**直接用 Xcode 上传**：
-
-```bash
-open .devcache/release/DSH-Mizar.xcarchive
-```
-
-Xcode 的 Organizer 会打开 → 点 **Distribute App** → **TestFlight & App Store**
-→ 一路下一步。这条路用的是 Xcode 里已登录的凭据，不需要额外配置。
-
-### 想在命令行上传的话
-
-需要一份 App Store Connect API 密钥（比 App 专用密码更可靠）：
-
-1. https://appstoreconnect.apple.com/access/integrations/api → **Team Keys** → **+**
-2. 角色选 **App Manager**，生成后**立刻下载 `.p8` 文件**（只能下一次）
-3. 记下 **Key ID** 和 **Issuer ID**
-
-```bash
-scripts/release.sh archive
-xcodebuild -exportArchive \
-  -archivePath .devcache/release/DSH-Mizar.xcarchive \
-  -exportPath .devcache/release/export \
-  -exportOptionsPlist iOS/ExportOptions.plist \
-  -allowProvisioningUpdates \
-  -authenticationKeyPath ~/Downloads/AuthKey_XXXXXX.p8 \
-  -authenticationKeyID XXXXXXXXXX \
-  -authenticationKeyIssuerID xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-## 第三步：等待处理
-
-上传成功后构建会出现在 App Store Connect → 你的 App → **TestFlight** 标签页，
-状态是 **Processing**。通常 5–15 分钟。
-
-处理完成后可能会显示 **"Missing Compliance"** —— 如果出现了，点进去回答
-"Does your app use encryption?"。本项目已经在 Info.plist 里声明了豁免，所以
-正常情况下**不该**出现。
-
-## 第四步：加测试人员
-
-TestFlight 标签页 → **Internal Testing** → **+** 建一个测试组 →
-
-- **内部测试**：最多 100 人，必须是你 App Store Connect 团队里的成员，
-  **不需要 Apple 审核**，加完立刻能装
-- **外部测试**：最多 10000 人，**第一次需要 Apple 审核**（通常 1–2 天）
-
-自己测试的话用内部测试最快。
-
-## 第五步：手机上装
-
-1. App Store 搜 **TestFlight** 装上
-2. 用**你接受邀请时用的那个 Apple ID** 登录
-3. 会看到 DSH-Mizar，点 **Install**
+| **Bundle ID** | `me.shirazu.dshmizar` |
+| **显示名** | `DSH-Mizar` |
+| **版本号** | `0.1.0` |
+| **构建号** | `1` |
+| **Team ID** | `5Q2A46685M` |
+| 团队名 | Vreeland Lee |
+| 签名身份 | `Apple Distribution: Vreeland Lee (5Q2A46685M)` |
+| 建议 SKU | `dshmizar001` |
+| 主要语言 | Chinese (Simplified) 或 English |
+| 支持设备 | iPhone + iPad |
+| 本地化 | `en`、`zh-Hans` |
+| 出口合规 | 已在 Info.plist 声明豁免 |
 
 ---
 
-## 版本号怎么改
+## 第 1 步：确认 App ID 已注册
 
-```bash
-# 看当前版本
-scripts/release.sh bump
+**打开**：https://developer.apple.com/account/resources/identifiers/list
+
+在列表里找 **`me.shirazu.dshmizar`**。
+
+- **有** → 跳到第 2 步
+- **没有** → 点右上角 **`+`**
+  1. 选 **App IDs** → **Continue**
+  2. 类型选 **App** → **Continue**
+  3. **Description**：`DSH-Mizar`
+  4. **Bundle ID**：选 **Explicit**，填 `me.shirazu.dshmizar`
+  5. **Capabilities**：**什么都不用勾**
+     （这个 App 不用推送、不用 iCloud、不用 App Groups。它的网络走普通 TCP，
+     不需要任何特殊 capability）
+  6. **Continue** → **Register**
+
+> ⚠️ `me.shirazu.dshmizar` **必须和 Xcode 工程里完全一致**，包括大小写。
+> 拼错了后面第 2 步的下拉框里就找不到它。
+
+---
+
+## 第 2 步：创建 App 记录
+
+**这一步 Xcode 替你做不了**，只能在网页上做，而且**一个 Bundle ID 只做一次**。
+我第一次试上传时它就停在这里，报 `Downloading App Information`。
+
+产物都在 **`release/`**（工作区根目录，非隐藏）：
+
+```
+release/
+├─ DSH-Mizar.xcarchive     ← 双击打开 Organizer，用它上传
+└─ export/DSH-Mizar.ipa    ← 已签名的构建，可以手动用 Transporter 上传
 ```
 
-改 `iOS/DSH-Mizar.xcodeproj/project.pbxproj` 里的两个值：
+---
 
-- `MARKETING_VERSION` —— 用户看到的版本号，如 `0.1.0`
-- `CURRENT_PROJECT_VERSION` —— 构建号，**每次上传必须比上一次大**
+**打开**：https://appstoreconnect.apple.com/apps
+
+1. 点左上角的 **`+`** → **New App**
+2. 弹窗里填：
+
+| 字段 | 填什么 |
+|---|---|
+| **Platforms** | 勾 **iOS** |
+| **Name** | `DSH-Mizar` |
+| **Primary Language** | Chinese (Simplified) |
+| **Bundle ID** | 下拉选 `me.shirazu.dshmizar` |
+| **SKU** | `dshmizar001`（用户看不到，随便填，唯一即可） |
+| **User Access** | Full Access |
+
+3. 点 **Create**
+
+> **Name 是全局唯一的。** 如果 `DSH-Mizar` 被占用了，换一个比如
+> `DSH-Mizar Remote` —— **只影响 App Store 上显示的名字**，不影响 Bundle ID，
+> 也不影响手机上装出来的名字（那个由 `CFBundleDisplayName` 决定，是 `DSH-Mizar`）。
+
+> **Bundle ID 下拉里找不到它？** 说明第 1 步没做，或者拼错了。回去做第 1 步。
+
+---
+
+## 第 3 步：上传构建
+
+这一步**不在网页上**，但做完之后剩下的都在网页上。
+
+**最省事的方式**（用你 Xcode 里已登录的账号，不需要额外配任何密钥）：
+
+```bash
+open release/DSH-Mizar.xcarchive
+```
+
+Xcode 的 **Organizer** 会打开：
+
+1. 选中 **DSH-Mizar 0.1.0 (1)**
+2. 点右侧 **Distribute App**
+3. 选 **TestFlight & App Store** → **Distribute**
+4. 后面一路默认：
+   - **Upload**（不是 Export）
+   - **Automatically manage signing**
+   - 最后点 **Upload**
+5. 等进度条走完，出现 **Upload Successful**
+
+> 命令行也可以（`scripts/release.sh upload`），但需要一份 App Store Connect
+> API 密钥。网页这边走 Organizer 更快。
+
+---
+
+## 第 4 步：等它处理完
+
+回到 **https://appstoreconnect.apple.com/apps** → 点进 **DSH-Mizar** →
+左侧 **TestFlight** 标签。
+
+构建会显示 **Processing**（正在处理），通常 **5–15 分钟**。
+
+处理完状态变成 **Ready to Submit** 或出现在构建列表里。
+
+### 如果出现 "Missing Compliance"
+
+正常情况下**不该出现**——我已经在 `Info.plist` 里声明了
+`ITSAppUsesNonExemptEncryption = false`。
+
+万一出现了，点那个黄色提示进去回答：
+
+> **Does your app use encryption?**
+> 选 **No**（或者选 "it uses only exempt encryption"）
+
+这个 App 只用系统的 HTTPS/TLS，属于豁免范围。
+
+---
+
+## 第 5 步：加测试人员
+
+左侧 **TestFlight** → **Internal Testing**（内部测试）
+
+1. 点 **`+`** 建一个测试组，名字随便，比如 `Me`
+2. 点 **`+`** 往组里加人：
+   - **内部测试**：只能加你 App Store Connect 团队里的成员。
+     一个个人开发者账号通常就是你自己，**用你的 Apple ID 邮箱**
+   - **不需要 Apple 审核**，加完立刻能装 ← **自己测试走这条最快**
+3. 加完在构建那一栏点 **`+`** → 选 `0.1.0 (1)` → **Add**
+
+> **外部测试**（External Testing）可以加最多 10000 人，但**第一次需要 Apple 审核**，
+> 通常 1–2 天。自己用不上走这条。
+
+---
+
+## 第 6 步：手机上装
+
+1. App Store 搜 **TestFlight**，装上（Apple 官方出品，免费）
+2. 打开 TestFlight，用**你接受邀请时用的那个 Apple ID** 登录
+3. 会看到 **DSH-Mizar**，点 **Install**
+4. 装完直接从 TestFlight 里打开
+
+---
+
+## 常见卡点
+
+| 现象 | 原因 | 怎么办 |
+|---|---|---|
+| `Downloading App Information` 报错 | App 记录还没建 | 做第 2 步 |
+| Bundle ID 下拉里没有 | App ID 没注册 / 拼写不符 | 做第 1 步 |
+| Name 报"已被使用" | 名字全局唯一 | 换一个名字，Bundle ID 不变 |
+| 卡在 Processing 超过 1 小时 | 偶发 | 换个构建号重新上传一次 |
+| 出现 Missing Compliance | 罕见 | 按第 4 步回答 |
+| 构建传上去了但 TestFlight 里没有 | 少了出口合规回答，或没加进测试组 | 检查第 4、5 步 |
+| 想传第二次 | **构建号必须更大** | 见下 |
+
+### 传第二个构建的时候
+
+改 `iOS/DSH-Mizar.xcodeproj/project.pbxproj` 里这两个值：
+
+- `MARKETING_VERSION` → 用户看到的版本，例如 `0.1.1`
+- `CURRENT_PROJECT_VERSION` → 构建号，**必须比上一次大**（`1` → `2`）
 
 `ExportOptions.plist` 里 `manageAppVersionAndBuildNumber` 是 **false**，
 所以 Xcode 不会自作主张改构建号。这是故意的：否则上传完之后你无法回答
 "这个构建到底是哪一版"。
 
+然后重新 `scripts/release.sh archive` 再走第 3 步。
+
 ---
 
-## 一个必须说明的限制
+## 必须说清楚的一件事
 
-**这个 iOS App 单独装上是用不了的。**
+**这个 App 单独装上是用不了的。**
 
-它需要连到一台跑着 DSH 的 Mac，而那台 Mac 上要装 `dsh-mizar` 插件。
-测试人员必须同时具备：
+它要连到一台跑着 DSH 的 Mac，而那台 Mac 上要装 `dsh-mizar` 插件。测试人员必须同时有：
 
 1. 一台 Mac，装了 DSH 和本插件
-2. Mac 和手机在同一个 Tailscale 网络里（或同一个局域网）
+2. Mac 和手机在同一个 Tailscale 网络（或同一个局域网）
 3. 从 Mac 的 DSH Web 面板扫码配对
 
-所以 **TestFlight 的分发范围应该限定在"自己用"或"给你配好 Mac 的人"**。
-作为公开 App Store 上架，它没有独立价值 —— 这一点在审核时也会被问到。
+所以 **TestFlight 的适用范围是"你自己"或"你帮忙配好 Mac 的人"**。作为公开上架它没有
+独立价值，审核时也会被问到"用户拿到这个 App 能做什么"。
 
-如果要发布给不认识的人用，需要的不是 TestFlight，而是：
-- Mac 端插件的公开分发方式（npm 包或安装器）
-- 一个配对/发现的引导流程
-- 或者一个中继服务（见 README 里的架构讨论）
+要发布给不认识的人，缺的不是 TestFlight，而是：Mac 端插件的公开分发方式 + 配对引导
+流程，或者一个中继服务。

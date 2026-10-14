@@ -78,6 +78,17 @@ const SESSION = {
   origin: null,
 }
 
+/**
+ * Prompts the client has sent, in order.
+ *
+ * The mock used to answer every prompt with `accepted` and then return a fixed
+ * log, so a sent message never appeared in the conversation -- which made the
+ * send path untestable and, worse, would have let a real defect through: the app
+ * did not refresh the conversation after sending, so a message did not show up
+ * until the operator pulled to refresh.
+ */
+const sentPrompts = []
+
 /** Build one history record, shaped like the host's. */
 function ev(seq, type, data) {
   return { type: 'event', event: { type, seq, time: Date.now() - (20 - seq) * 1000, data } }
@@ -217,6 +228,17 @@ function answer(frame) {
           ],
         },
       }
+    case 'session.prompt': {
+      const text = typeof frame.payload?.text === 'string' ? frame.payload.text : ''
+      if (text !== '') sentPrompts.push(text)
+      console.log('mock: prompt received ->', JSON.stringify(text), '| log now', sentPrompts.length)
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: { accepted: true, requestId: frame.payload?.requestId ?? 'mock-request' },
+      }
+    }
     case 'session.messages':
       // Record shapes copied from a real session log, including the failure this
       // machine's host produces on every turn.
@@ -273,6 +295,15 @@ function answer(frame) {
               ],
             }),
             ev(7, 'step/end', { turn: 2, step: 1 }),
+            // Anything the client has sent since, appended the way a host would.
+            ...sentPrompts.map((text, index) =>
+              ev(8 + index, 'user/message', {
+                content: [{ type: 'text', text }],
+                source: { kind: 'user' },
+                role: 'user',
+                id: `sent-${index}`,
+              }),
+            ),
           ],
         },
       }

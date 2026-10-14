@@ -190,7 +190,9 @@ struct SessionDetailView: View {
             }
             .refreshable { await reload() }
 
-            ComposerView(sessionId: sessionId)
+            ComposerView(sessionId: sessionId) { sent in
+                await refreshAfterSend(sent)
+            }
         }
         .navigationTitle(stats?.title ?? String(localized: "Session"))
         .navigationBarTitleDisplayMode(.inline)
@@ -217,6 +219,28 @@ struct SessionDetailView: View {
             PermissionPickerView(sessionId: sessionId)
         }
         .task(id: sessionId) { await reload() }
+    }
+
+    /// Reload the conversation after a send, allowing for the host's lag.
+    ///
+    /// The host accepts a prompt and records it a moment later, so reading the
+    /// log once straight after a send returns a page without the message in it.
+    /// Before this, a sent message simply did not appear until the operator
+    /// pulled to refresh -- the send worked, the screen did not say so. Found by
+    /// a smoke assertion that counts the message in the log rather than trusting
+    /// the `accepted` flag.
+    ///
+    /// - Parameter sent: the text that was accepted.
+    private func refreshAfterSend(_ sent: String) async {
+        for _ in 0..<8 {
+            items = await model.conversation(for: sessionId)
+            let arrived = items.contains { item in
+                if case .message(_, .user, let text, _) = item { return text == sent }
+                return false
+            }
+            if arrived { return }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
     }
 
     /// Refresh everything the screen shows.

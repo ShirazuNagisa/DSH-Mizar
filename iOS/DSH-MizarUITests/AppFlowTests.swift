@@ -162,6 +162,65 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(submit.isEnabled, "the batch could not be completed")
     }
 
+    func testASentMessageAppearsInTheConversation() {
+        // The half of the loop nothing checked: sending is not the same as the
+        // message showing up. Before this, it did not -- the app never reloaded
+        // the conversation after a send, so the operator's own words were absent
+        // until a pull-to-refresh.
+        let app = launch()
+        let field = app.textFields["composer.field"]
+        expect(field, "the composer is missing")
+        field.tap()
+        field.typeText("does this reach the agent")
+
+        let send = app.buttons["composer.send"]
+        expect(send, "there is no way to send")
+        XCTAssertTrue(send.isEnabled, "send stayed disabled with text in the field")
+        send.tap()
+
+        // The composer must have emptied, or the text being found proves nothing:
+        // a query for static text also matches a field still holding the words,
+        // which is exactly how an earlier version of this test passed with the
+        // reload removed.
+        // Found is not enough, and a plain subscript is not even usable: SwiftUI
+        // leaves the typed text in the accessibility tree after the field clears,
+        // so several elements carry this label. The first two versions of this
+        // test passed with the reload removed for exactly that reason -- the
+        // words were real, they were just still sitting where they had been
+        // typed. A conversation bubble is the one above the composer.
+        // First: did the send succeed? The composer clears only on success and is
+        // refilled on failure, so its value says which branch ran -- and the two
+        // produce the same visible symptom ("the text is still here").
+        let composerField = app.textFields["composer.field"]
+        expect(composerField, "the composer vanished")
+        XCTAssertEqual(
+            composerField.value as? String,
+            "Ask your agent…",
+            "the composer still holds the text, so the send did not succeed",
+        )
+
+        // Scroll until it is actually on screen. The conversation is longer than
+        // the display and a new message lands at the bottom of it, so its frame
+        // sits below the composer until scrolled into view -- which reads
+        // identically to the message being absent. A fixed number of swipes is a
+        // guess about how long the conversation is.
+        let composer = app.textFields["composer.field"]
+        let candidates = app.staticTexts.matching(identifier: "does this reach the agent")
+        var inConversation: XCUIElement?
+        for _ in 0..<8 {
+            inConversation = (0..<candidates.count)
+                .map { candidates.element(boundBy: $0) }
+                .first { $0.frame.maxY < composer.frame.minY }
+            if inConversation != nil { break }
+            app.swipeUp()
+        }
+        XCTAssertNotNil(
+            inConversation,
+            "the message never reached the conversation (\(candidates.count) elements carry the text, none above the composer)",
+        )
+        XCTAssertEqual(composer.value as? String, "Ask your agent…", "the composer never emptied")
+    }
+
     // MARK: - Model and permission switching
 
     func testTheModelPickerListsTheHostsProviders() {

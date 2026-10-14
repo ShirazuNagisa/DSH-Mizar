@@ -6,7 +6,12 @@
 #   scripts/release.sh archive   build the .xcarchive, upload nothing
 #   scripts/release.sh export    make a local .ipa, upload nothing
 #   scripts/release.sh upload    archive, export and upload
+#   scripts/release.sh open      open the archive in Organizer, ready to upload
 #   scripts/release.sh bump      show the current version and build number
+#
+# Artifacts land in ./release/ at the repository root:
+#   release/DSH-Mizar.xcarchive   double-click, or `open` it, to reach Organizer
+#   release/export/DSH-Mizar.ipa  the uploadable build
 #
 # Signing needs a paid Apple Developer account with an "Apple Distribution"
 # certificate in the login keychain. If the certificate is missing, run
@@ -22,7 +27,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEAM_ID="${MIZAR_TEAM_ID:-5Q2A46685M}"
 SCHEME="DSH-Mizar"
 PROJECT="$ROOT/iOS/DSH-Mizar.xcodeproj"
-BUILD_DIR="$ROOT/.devcache/release"
+# Deliberately NOT under .devcache: that is a hidden directory, Finder does not
+# show it, and "open the archive in Organizer" is an instruction somebody has to
+# be able to follow. DerivedData stays hidden because nobody opens it by hand.
+BUILD_DIR="$ROOT/release"
 ARCHIVE="$BUILD_DIR/DSH-Mizar.xcarchive"
 EXPORT_DIR="$BUILD_DIR/export"
 EXPORT_OPTIONS="$ROOT/iOS/ExportOptions.plist"
@@ -59,7 +67,7 @@ export_ipa() {
   # A copy, not the file itself: rewriting the committed plist would leave the
   # working tree dirty after every export, and the destination is a per-run
   # choice rather than a project setting.
-  local options="$BUILD_DIR/ExportOptions.$destination.plist"
+  local options="$ROOT/.devcache/ExportOptions.$destination.plist"
   cp "$EXPORT_OPTIONS" "$options"
   /usr/libexec/PlistBuddy -c "Set :destination $destination" "$options"
   echo "release: exporting ($destination)"
@@ -73,6 +81,12 @@ export_ipa() {
 
 case "${1:-archive}" in
   archive) archive ;;
+  open)
+    # The instruction people actually need after this script runs.
+    test -d "$ARCHIVE" || { echo "release: nothing to open yet — run 'scripts/release.sh archive'"; exit 1; }
+    open "$ARCHIVE"
+    echo "release: opened $ARCHIVE in Organizer — Distribute App > TestFlight & App Store"
+    ;;
   export)  archive; export_ipa export ;;
   upload)  archive; export_ipa upload ;;
   bump)
@@ -80,5 +94,5 @@ case "${1:-archive}" in
       "$ARCHIVE/Info.plist" 2>/dev/null \
       || grep -m2 'MARKETING_VERSION\|CURRENT_PROJECT_VERSION' "$PROJECT/project.pbxproj" | sort -u
     ;;
-  *) echo "usage: scripts/release.sh archive|export|upload|bump" >&2; exit 1 ;;
+  *) echo "usage: scripts/release.sh archive|export|upload|open|bump" >&2; exit 1 ;;
 esac
