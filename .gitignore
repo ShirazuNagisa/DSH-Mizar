@@ -10,6 +10,7 @@ node_modules/
 
 # --- Build output ---
 dsh/lib/
+iOS/MizarKit/.build/
 dsh/client/dist/
 
 # --- macOS ---

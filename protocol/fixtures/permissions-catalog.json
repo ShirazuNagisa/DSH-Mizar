@@ -1,0 +1,36 @@
+{
+  "v": 1,
+  "type": "ok",
+  "id": "c2",
+  "result": {
+    "options": [
+      {
+        "value": "read-only",
+        "name": "read-only"
+      },
+      {
+        "value": "workspace-write",
+        "name": "workspace-write"
+      },
+      {
+        "value": "danger-full-access",
+        "name": "danger-full-access"
+      }
+    ],
+    "defaults": [
+      {
+        "value": "read-only",
+        "name": "read-only"
+      },
+      {
+        "value": "workspace-write",
+        "name": "workspace-write"
+      },
+      {
+        "value": "danger-full-access",
+        "name": "danger-full-access"
+      }
+    ],
+    "defaultPreset": "workspace-write"
+  }
+}
