@@ -16,6 +16,7 @@ import type { Config as MizarConfig } from './config.js'
 import { registerAnswerers } from './bridge/answerers.js'
 import { createMethodTable } from './bridge/index.js'
 import { InteractionBroker } from './bridge/interactions.js'
+import { registerPanelApi } from './panel/api.js'
 import { MizarStore, resolveMizarHome } from './auth/store.js'
 import { selectBindAddresses, snapshotInterfaces } from './net/interfaces.js'
 import { PROTOCOL_VERSION } from './protocol/frames.js'
@@ -114,6 +115,17 @@ async function startListener(
   })
 
   broker.setSender((frame) => listener.broadcast(frame))
+
+  // Panel routes ride DSH's own authenticated /api channel; a composition with
+  // no browser carrier simply gets no panel and keeps everything else.
+  registerPanelApi(ctx, {
+    host: listener,
+    store,
+    plan,
+    hostName: hostname(),
+    protocolVersion: PROTOCOL_VERSION,
+    log: report,
+  })
   // Registered with `prepend`, so the phone is asked alongside the desktop GUI
   // rather than only when the GUI declines.
   registerAnswerers(ctx, broker)

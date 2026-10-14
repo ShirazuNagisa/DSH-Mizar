@@ -238,8 +238,16 @@ cmd_smoke() {
   authority="$(grep -oE 'listening on [^,]+' "$LOG_FILE" | head -1 | sed 's/listening on //')"
   [ -n "$authority" ] || authority="127.0.0.1:$MIZAR_LISTENER_PORT"
 
+  # The panel routes live on DSH's own webserver, behind its browser cookie, so
+  # the smoke test needs both the launch token and the web port to reach them.
+  local webToken
+  webToken="$(grep -oE 'token=[A-Za-z0-9_-]+' "$LOG_FILE" | head -1 | cut -d= -f2)"
+
   echo "dev.sh: smoke testing $authority with code $code"
-  MIZAR_BASE="http://$authority" MIZAR_CODE="$code" \
+  MIZAR_BASE="http://$authority" \
+    MIZAR_CODE="$code" \
+    MIZAR_WEB_BASE="http://127.0.0.1:$MIZAR_WEB_PORT" \
+    MIZAR_WEB_TOKEN="$webToken" \
     node "$ROOT/scripts/smoke-listener.mjs"
 }
 

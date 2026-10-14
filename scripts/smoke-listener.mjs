@@ -25,6 +25,9 @@ const WS_URL = BASE.replace(/^http/, 'ws') + '/mizar/v1/ws'
 let passed = 0
 let failed = 0
 
+/** Small pause helper. */
+const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
 /**
  * Record one assertion.
  * @param {string} name - what was checked.
@@ -105,9 +108,6 @@ function connect() {
     })
   })
 }
-
-/** Small pause helper. */
-const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function main() {
   console.log(`mizar smoke: ${BASE}`)
@@ -516,9 +516,97 @@ async function main() {
   session.close()
   await settle(100)
 
+  // ── web panel data path ───────────────────────────────────────────────────
+  //
+  // The panel lives on DSH's own webserver, behind its browser cookie, not on
+  // the Mizar listener. Exercising it also exercises the whole `/api` auth
+  // handshake: launch token -> root exchange -> signed cookie -> authenticated
+  // request. Runs last because issuing a code here invalidates the one the
+  // device-pairing section consumed.
+  await panelSection()
+
   console.log(`\nmizar smoke: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)
 }
+
+/** Drive the Web panel's routes through the real browser authentication flow. */
+async function panelSection() {
+  const webBase = process.env['MIZAR_WEB_BASE'] ?? ''
+  const token = process.env['MIZAR_WEB_TOKEN'] ?? ''
+  if (webBase === '' || token === '') {
+    console.log('\nweb panel: SKIPPED (set MIZAR_WEB_BASE and MIZAR_WEB_TOKEN)')
+    return
+  }
+
+  console.log('\nweb panel: browser authentication')
+  const root = await fetch(`${webBase}/`, { redirect: 'manual' })
+  check('an unauthenticated API request is refused', (await fetch(`${webBase}/api/mizar.status`)).status === 401, 'expected 401')
+
+  // The token is only accepted on the root path, and it answers with a
+  // redirect plus the signed cookie.
+  const exchange = await fetch(`${webBase}/?token=${encodeURIComponent(token)}`, { redirect: 'manual' })
+  check('the launch token is redeemed at the root', exchange.status === 303, `got ${exchange.status}`)
+  const cookie = exchange.headers.get('set-cookie')
+  check('the exchange sets a session cookie', typeof cookie === 'string' && cookie.includes('dsh-auth-'), String(cookie))
+  check('the cookie is HttpOnly and SameSite=Strict', /HttpOnly/i.test(cookie ?? '') && /SameSite=Strict/i.test(cookie ?? ''), String(cookie))
+
+  const auth = { headers: { cookie: (cookie ?? '').split(';')[0], accept: 'application/json' } }
+
+  const status = await fetch(`${webBase}/api/mizar.status`, auth)
+  check('the panel status answers 200 with the cookie', status.status === 200, `got ${status.status}`)
+  const view = await status.json().catch(() => null)
+  check('the status carries the host identity', typeof view?.hostId === 'string' && view.hostId !== '')
+  check('the status carries the bound authorities', Array.isArray(view?.authorities) && view.authorities.length > 0, JSON.stringify(view?.authorities))
+  check('the status carries the bind decision', typeof view?.bind?.mode === 'string' && typeof view?.bind?.reason === 'string')
+  check('the status reports the device paired earlier', (view?.devices ?? []).some((d) => d.name === 'Smoke Test iPhone'), JSON.stringify(view?.devices?.map((d) => d.name)))
+  check('the status never leaks a token hash', !JSON.stringify(view ?? {}).includes('tokenHash'))
+
+  console.log('\nweb panel: pairing from the panel')
+  const issued = await fetch(`${webBase}/api/mizar.pairing`, { ...auth, method: 'POST' })
+  check('the panel can issue a code', issued.status === 200, `got ${issued.status}`)
+  const withCode = await issued.json().catch(() => null)
+  check('the panel now shows a pairing code', typeof withCode?.pairing?.display === 'string' && withCode.pairing.display.length > 0, JSON.stringify(withCode?.pairing))
+  check('the panel shows how long the code lives', typeof withCode?.pairing?.expiresAt === 'number')
+
+  const uri = withCode?.pairing?.uri ?? ''
+  const parsed = new URLSearchParams(uri.slice(uri.indexOf('?') + 1))
+  check('the QR payload uses the mizar scheme', uri.startsWith('mizar://pair?'), uri)
+  check('the QR payload carries the authority', parsed.get('h') === withCode?.authorities?.[0], `${parsed.get('h')} vs ${withCode?.authorities?.[0]}`)
+  check('the QR payload carries the same code the panel shows', parsed.get('c') === withCode?.pairing?.display, `${parsed.get('c')} vs ${withCode?.pairing?.display}`)
+
+  const rejectedType = await fetch(`${webBase}/api/mizar.revoke`, {
+    ...auth,
+    method: 'POST',
+    headers: { ...auth.headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ deviceId: 42 }),
+  })
+  check('a malformed revoke body is refused', rejectedType.status === 400, `got ${rejectedType.status}`)
+
+  const unknownDevice = await fetch(`${webBase}/api/mizar.revoke`, {
+    ...auth,
+    method: 'POST',
+    headers: { ...auth.headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'no-such-device' }),
+  })
+  check('revoking an unknown device reports 404', unknownDevice.status === 404, `got ${unknownDevice.status}`)
+
+  // Revoke the smoke device for real, then confirm the roster reflects it.
+  const target = (withCode?.devices ?? []).find((d) => d.name === 'Smoke Test iPhone' && !d.revoked)
+  if (target !== undefined) {
+    const revoked = await fetch(`${webBase}/api/mizar.revoke`, {
+      ...auth,
+      method: 'POST',
+      headers: { ...auth.headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceId: target.deviceId }),
+    })
+    check('the panel can revoke a device', revoked.status === 200, `got ${revoked.status}`)
+    const after = await revoked.json().catch(() => null)
+    const row = (after?.devices ?? []).find((d) => d.deviceId === target.deviceId)
+    check('the revoked device is marked revoked', row?.revoked === true, JSON.stringify(row))
+  }
+}
+
+/** Small pause helper. */
 
 main().catch((error) => {
   console.error('mizar smoke: crashed —', error)
