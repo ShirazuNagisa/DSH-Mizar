@@ -31,7 +31,7 @@
  * @module dsh-mizar/bridge/interactions
  */
 import type { Context } from '../dsh.js'
-import type { ServerFrame } from '../protocol/frames.js'
+import { PROTOCOL_VERSION, type ServerFrame } from '../protocol/frames.js'
 import { MethodError } from './method-error.js'
 
 /** Outcomes a client may choose for an approval. */
@@ -133,12 +133,99 @@ interface PendingQuestion {
  * The broker is transport-agnostic: it is handed a `send` function by the host
  * once the listener is up, and it holds no reference to the socket layer.
  */
+/**
+ * A Map that reports every change to it.
+ *
+ * The alternative was calling a notify function from each of the twelve places
+ * this broker mutates its pending sets, which is correct until somebody adds a
+ * thirteenth -- and a missed one is not a dropped notification, it is a phone
+ * that shows a card for a request that was already answered, forever. Wrapping
+ * the container covers the existing sites and every future one by construction.
+ *
+ * @typeParam Value - what the map holds.
+ */
+class TrackedMap<Value> extends Map<string, Value> {
+  readonly #onChange: () => void
+
+  constructor(onChange: () => void) {
+    super()
+    this.#onChange = onChange
+  }
+
+  override set(key: string, value: Value): this {
+    super.set(key, value)
+    this.#onChange()
+    return this
+  }
+
+  override delete(key: string): boolean {
+    const removed = super.delete(key)
+    // Only a real removal is a change; settling an id that is already gone is
+    // the normal case when two answerers race.
+    if (removed) this.#onChange()
+    return removed
+  }
+
+  override clear(): void {
+    const had = this.size > 0
+    super.clear()
+    if (had) this.#onChange()
+  }
+}
+
 export class InteractionBroker {
   #send: (frame: ServerFrame) => void = () => {}
   #clients = 0
   #nextApprovalId = 0
-  readonly #approvals = new Map<string, PendingApproval>()
-  readonly #questions = new Map<string, PendingQuestion>()
+  readonly #approvals = new TrackedMap<PendingApproval>(() => {
+    this.#notifyPendingChanged()
+  })
+  readonly #questions = new TrackedMap<PendingQuestion>(() => {
+    this.#notifyPendingChanged()
+  })
+
+  /**
+   * Tell connected clients that the pending set moved.
+   *
+   * Pushed rather than left to the client's poll, because the operator is not the
+   * only thing waiting: an agent blocked on an approval is stopped until
+   * somebody answers, and every second the phone spends not knowing is a second
+   * of a stalled turn. The frame carries only counts -- the client re-reads
+   * `interactions.pending` for the detail, so the notification cannot go stale
+   * the way a payload would.
+   *
+   * Nothing is sent when no client is connected: there is nobody to tell, and
+   * the request remains visible through {@link listApprovals}.
+   */
+  #notifyPendingChanged(): void {
+    if (this.#clients <= 0) return
+    this.#emit({
+      v: PROTOCOL_VERSION,
+      type: 'event',
+      event: 'interactions.changed',
+      data: { approvals: this.#approvals.size, questions: this.#questions.size },
+    })
+  }
+
+  /**
+   * Send one frame, absorbing a transport failure.
+   *
+   * Every notification goes through here. Before, a throwing sender propagated
+   * out of `beginApproval` and out of the settle path and into the answerer --
+   * so a socket hiccup could fail the approval itself, not merely its
+   * announcement. A notification is best-effort by nature; the state it
+   * describes is not, and the two must not be able to take each other down.
+   *
+   * @param frame - the frame to deliver.
+   */
+  #emit(frame: ServerFrame): void {
+    try {
+      this.#send(frame)
+    } catch {
+      // Deliberately swallowed: the pending set is already updated, and the
+      // client will pick it up on its next read.
+    }
+  }
 
   /**
    * Attach the transport. Called once the listener is listening; before that,
@@ -177,7 +264,7 @@ export class InteractionBroker {
 
     for (const [requestId, entry] of [...this.#approvals]) {
       this.#approvals.delete(requestId)
-      this.#send({
+      this.#emit({
         v: 1,
         type: 'event',
         event: 'approval.resolved',
@@ -212,7 +299,7 @@ export class InteractionBroker {
     if (entry === undefined) return false
     // Delete first: a double tap must not settle twice.
     this.#approvals.delete(requestId)
-    this.#send({ v: 1, type: 'event', event: 'approval.resolved', data: { requestId, outcome } })
+    this.#emit({ v: 1, type: 'event', event: 'approval.resolved', data: { requestId, outcome } })
     entry.settle(outcome)
     return true
   }
@@ -227,7 +314,7 @@ export class InteractionBroker {
     const entry = this.#questions.get(callId)
     if (entry === undefined) return false
     this.#questions.delete(callId)
-    this.#send({ v: 1, type: 'event', event: 'question.resolved', data: { callId } })
+    this.#emit({ v: 1, type: 'event', event: 'question.resolved', data: { callId } })
     entry.settle({ answers })
     return true
   }
@@ -283,7 +370,7 @@ export class InteractionBroker {
       requestedAt: Date.now(),
     }
     this.#approvals.set(requestId, { view, settle, promise })
-    this.#send({ v: 1, type: 'event', event: 'approval.request', data: view })
+    this.#emit({ v: 1, type: 'event', event: 'approval.request', data: view })
 
     let onAbort: (() => void) | undefined
     const cancelled = new Promise<ApprovalOutcome>((resolve) => {
@@ -306,7 +393,7 @@ export class InteractionBroker {
         // Only announce if the entry was still ours: an answer that arrived
         // first has already told the clients.
         if (this.#approvals.delete(requestId)) {
-          this.#send({
+          this.#emit({
             v: 1,
             type: 'event',
             event: 'approval.resolved',
@@ -327,7 +414,7 @@ export class InteractionBroker {
     const entry = this.#approvals.get(requestId)
     if (entry === undefined) return
     this.#approvals.delete(requestId)
-    this.#send({ v: 1, type: 'event', event: 'approval.resolved', data: { requestId, outcome } })
+    this.#emit({ v: 1, type: 'event', event: 'approval.resolved', data: { requestId, outcome } })
     entry.settle(outcome)
   }
 
@@ -363,7 +450,7 @@ export class InteractionBroker {
       requestedAt: Date.now(),
     }
     this.#questions.set(input.callId, { view, settle, promise })
-    this.#send({ v: 1, type: 'event', event: 'question.request', data: view })
+    this.#emit({ v: 1, type: 'event', event: 'question.request', data: view })
 
     const withdrawn = new Promise<Record<string, unknown>>((resolve) => {
       signal?.addEventListener('abort', () => resolve({ answers: [] }), { once: true })
@@ -383,7 +470,7 @@ export class InteractionBroker {
       answers,
       abandon: () => {
         if (this.#questions.delete(input.callId)) {
-          this.#send({
+          this.#emit({
             v: 1,
             type: 'event',
             event: 'question.resolved',
