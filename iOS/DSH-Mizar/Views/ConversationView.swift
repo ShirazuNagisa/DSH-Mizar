@@ -89,7 +89,10 @@ private struct ActivityMarker: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "circle.fill").font(.system(size: 4)).foregroundStyle(.tertiary)
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            // The label is a key, not display text: MizarKit is a protocol
+            // layer and owns no strings. An event name it does not recognise
+            // falls through as itself, which is what should happen.
+            Text(LocalizedStringKey(label)).font(.caption).foregroundStyle(.secondary)
             Spacer()
             Text(at, format: .dateTime.hour().minute().second())
                 .font(.caption2.monospacedDigit())

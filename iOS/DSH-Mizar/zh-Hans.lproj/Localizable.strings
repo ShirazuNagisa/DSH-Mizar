@@ -1,0 +1,99 @@
+/* DSH-Mizar 简体中文 */
+/* Pairing */
+"Connect to DSH" = "连接到 DSH";
+"Scan the code on your Mac" = "扫描 Mac 上的二维码";
+"On the Mac, open DSH and look for the Mizar panel in the sidebar." = "在 Mac 上打开 DSH，在侧边栏找到 Mizar 面板。";
+"Or enter it by hand" = "或手动输入";
+"Host, for example 100.64.0.1:19390" = "主机，例如 100.64.0.1:19390";
+"Pairing code" = "配对码";
+"This device" = "本设备";
+"Pair" = "配对";
+"Pair again" = "重新配对";
+"Cannot reach the host" = "无法连接到主机";
+
+/* Sessions */
+"Sessions started on your Mac appear here." = "在 Mac 上启动的会话会显示在这里。";
+"Pick a session" = "选择一个会话";
+"Start one on your Mac, then refresh." = "在 Mac 上启动一个，然后刷新。";
+"No sessions yet" = "还没有会话";
+"subagent" = "子代理";
+"Refresh" = "刷新";
+"New session" = "新建会话";
+"Recent" = "最近使用";
+"Anywhere else" = "其他位置";
+"Start session" = "开始会话";
+"The host opens this directory and starts a session in it." = "主机会打开这个目录并在其中启动会话。";
+"Cancel" = "取消";
+
+/* Session detail */
+"View" = "视图";
+"Conversation" = "对话";
+"Usage" = "用量";
+"Session" = "会话";
+"Model" = "模型";
+"Permissions" = "权限";
+"Thinking" = "思考强度";
+"Done" = "完成";
+"Unavailable" = "不可用";
+"Ask your agent…" = "给 agent 发消息…";
+"Stop" = "停止";
+"Nothing yet" = "暂无内容";
+"This session has no messages." = "这个会话还没有消息。";
+"No usage yet" = "暂无用量";
+"This session has not sent a request." = "这个会话还没有发送过请求。";
+"The turn ended without a response" = "本轮没有产生回复";
+"system" = "系统";
+
+/* Usage */
+"Tokens" = "Token";
+"Input (new)" = "输入（新增）";
+"Input (cache read)" = "输入（缓存读取）";
+"Input (cache write)" = "输入（缓存写入）";
+"Output" = "输出";
+"Billed input" = "计费输入";
+"Cache hit" = "缓存命中";
+"Context" = "上下文";
+"Used" = "已用";
+"Next request" = "下次请求";
+"System" = "系统";
+"Tools" = "工具";
+"Messages" = "消息";
+"Composition is approximate and will not add up to the total above." = "构成比例是估算值，加总不会等于上面的总量。";
+"Activity" = "活动";
+"Turns" = "轮次";
+"Steps" = "步骤";
+"Model time" = "模型耗时";
+"Tool time" = "工具耗时";
+"First token" = "首 token";
+"Decode" = "解码";
+"Title" = "标题";
+"Provider" = "服务商";
+"Permission" = "权限";
+"Pending change" = "待生效变更";
+
+/* Interactions */
+"Wants to run %@" = "请求执行 %@";
+"Reject" = "拒绝";
+"Allow once" = "允许一次";
+"Allow" = "允许";
+"Or type your own answer" = "或输入你自己的答案";
+"Send answers" = "提交答案";
+"Approve plan" = "批准计划";
+"Allow full access?" = "允许完全访问？";
+"This preset grants unrestricted access to your machine." = "该预设会授予对你机器的无限制访问权限。";
+"Applies to this session immediately. A running turn is not interrupted." = "立即对当前会话生效，不会中断正在进行的轮次。";
+
+/* Activity labels */
+"Turn started" = "轮次开始";
+"Turn finished" = "轮次结束";
+"Step started" = "步骤开始";
+"Step finished" = "步骤结束";
+"Session titled" = "会话已命名";
+"Naming the session" = "正在命名会话";
+"Preparing the request" = "正在准备请求";
+"Assembling context" = "正在组装上下文";
+"Permission preset" = "权限预设";
+"Sandbox mode" = "沙箱模式";
+"Approval policy" = "审批策略";
+"Message queued" = "消息已排队";
+"The turn ended without a response" = "本轮没有产生回复";

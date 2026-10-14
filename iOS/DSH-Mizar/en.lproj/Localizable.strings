@@ -1,0 +1,98 @@
+/* Pairing */
+"Connect to DSH" = "Connect to DSH";
+"Scan the code on your Mac" = "Scan the code on your Mac";
+"On the Mac, open DSH and look for the Mizar panel in the sidebar." = "On the Mac, open DSH and look for the Mizar panel in the sidebar.";
+"Or enter it by hand" = "Or enter it by hand";
+"Host, for example 100.64.0.1:19390" = "Host, for example 100.64.0.1:19390";
+"Pairing code" = "Pairing code";
+"This device" = "This device";
+"Pair" = "Pair";
+"Pair again" = "Pair again";
+"Cannot reach the host" = "Cannot reach the host";
+
+/* Sessions */
+"Sessions started on your Mac appear here." = "Sessions started on your Mac appear here.";
+"Pick a session" = "Pick a session";
+"Start one on your Mac, then refresh." = "Start one on your Mac, then refresh.";
+"No sessions yet" = "No sessions yet";
+"subagent" = "subagent";
+"Refresh" = "Refresh";
+"New session" = "New session";
+"Recent" = "Recent";
+"Anywhere else" = "Anywhere else";
+"Start session" = "Start session";
+"The host opens this directory and starts a session in it." = "The host opens this directory and starts a session in it.";
+"Cancel" = "Cancel";
+
+/* Session detail */
+"View" = "View";
+"Conversation" = "Conversation";
+"Usage" = "Usage";
+"Session" = "Session";
+"Model" = "Model";
+"Permissions" = "Permissions";
+"Thinking" = "Thinking";
+"Done" = "Done";
+"Unavailable" = "Unavailable";
+"Ask your agent…" = "Ask your agent…";
+"Stop" = "Stop";
+"Nothing yet" = "Nothing yet";
+"This session has no messages." = "This session has no messages.";
+"No usage yet" = "No usage yet";
+"This session has not sent a request." = "This session has not sent a request.";
+"The turn ended without a response" = "The turn ended without a response";
+"system" = "system";
+
+/* Usage */
+"Tokens" = "Tokens";
+"Input (new)" = "Input (new)";
+"Input (cache read)" = "Input (cache read)";
+"Input (cache write)" = "Input (cache write)";
+"Output" = "Output";
+"Billed input" = "Billed input";
+"Cache hit" = "Cache hit";
+"Context" = "Context";
+"Used" = "Used";
+"Next request" = "Next request";
+"System" = "System";
+"Tools" = "Tools";
+"Messages" = "Messages";
+"Composition is approximate and will not add up to the total above." = "Composition is approximate and will not add up to the total above.";
+"Activity" = "Activity";
+"Turns" = "Turns";
+"Steps" = "Steps";
+"Model time" = "Model time";
+"Tool time" = "Tool time";
+"First token" = "First token";
+"Decode" = "Decode";
+"Title" = "Title";
+"Provider" = "Provider";
+"Permission" = "Permission";
+"Pending change" = "Pending change";
+
+/* Interactions */
+"Wants to run %@" = "Wants to run %@";
+"Reject" = "Reject";
+"Allow once" = "Allow once";
+"Allow" = "Allow";
+"Or type your own answer" = "Or type your own answer";
+"Send answers" = "Send answers";
+"Approve plan" = "Approve plan";
+"Allow full access?" = "Allow full access?";
+"This preset grants unrestricted access to your machine." = "This preset grants unrestricted access to your machine.";
+"Applies to this session immediately. A running turn is not interrupted." = "Applies to this session immediately. A running turn is not interrupted.";
+
+/* Activity labels */
+"Turn started" = "Turn started";
+"Turn finished" = "Turn finished";
+"Step started" = "Step started";
+"Step finished" = "Step finished";
+"Session titled" = "Session titled";
+"Naming the session" = "Naming the session";
+"Preparing the request" = "Preparing the request";
+"Assembling context" = "Assembling context";
+"Permission preset" = "Permission preset";
+"Sandbox mode" = "Sandbox mode";
+"Approval policy" = "Approval policy";
+"Message queued" = "Message queued";
+"The turn ended without a response" = "The turn ended without a response";

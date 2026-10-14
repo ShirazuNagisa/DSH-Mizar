@@ -142,15 +142,22 @@ struct SessionDetailView: View {
     /// of those mean scrolling past the other gets the priority wrong half the
     /// time.
     private enum Tab: String, CaseIterable, Identifiable {
-        case conversation = "Conversation"
-        case usage = "Usage"
+        case conversation
+        case usage
         var id: String { rawValue }
+
+        var title: LocalizedStringKey {
+            switch self {
+            case .conversation: "Conversation"
+            case .usage: "Usage"
+            }
+        }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             Picker("View", selection: $tab) {
-                ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+                ForEach(Tab.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
@@ -183,7 +190,7 @@ struct SessionDetailView: View {
 
             ComposerView(sessionId: sessionId)
         }
-        .navigationTitle(stats?.title ?? "Session")
+        .navigationTitle(stats?.title ?? String(localized: "Session"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {

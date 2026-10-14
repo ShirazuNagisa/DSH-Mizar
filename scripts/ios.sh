@@ -46,6 +46,11 @@ case "${1:-build}" in
     xcrun simctl bootstatus "$SIMULATOR" -b >/dev/null 2>&1 || true
     xcb build >/dev/null 2>&1 || { echo "ios.sh: build failed"; exit 1; }
     APP="$DERIVED/Build/Products/Debug-iphonesimulator/DSH-Mizar.app"
+    # Uninstall first. Installing over a running app silently kept the old
+    # binary in place at least once while localisation was being added, which
+    # cost three rounds of screenshots that showed the previous build's English
+    # strings while the bundle on disk already had the new ones.
+    xcrun simctl uninstall "$SIMULATOR" "$BUNDLE_ID" 2>/dev/null || true
     xcrun simctl install "$SIMULATOR" "$APP"
     xcrun simctl terminate "$SIMULATOR" "$BUNDLE_ID" 2>/dev/null || true
     xcrun simctl launch "$SIMULATOR" "$BUNDLE_ID"

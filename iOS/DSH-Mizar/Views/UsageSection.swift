@@ -127,10 +127,10 @@ private struct MetadataSection: View {
 
 /// A titled card.
 private struct UsageCard<Content: View>: View {
-    let title: String
+    let title: LocalizedStringKey
     @ViewBuilder let content: Content
 
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    init(_ title: LocalizedStringKey, @ViewBuilder content: () -> Content) {
         self.title = title
         self.content = content()
     }
@@ -149,11 +149,11 @@ private struct UsageCard<Content: View>: View {
 
 /// A label and value pair.
 private struct LabeledRow: View {
-    let label: String
+    let label: LocalizedStringKey
     let value: String
     var emphasised = false
 
-    init(_ label: String, value: String, emphasised: Bool = false) {
+    init(_ label: LocalizedStringKey, value: String, emphasised: Bool = false) {
         self.label = label
         self.value = value
         self.emphasised = emphasised
