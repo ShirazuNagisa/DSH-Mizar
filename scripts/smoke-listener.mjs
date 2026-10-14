@@ -337,6 +337,182 @@ async function main() {
   const aliveAfterBridge = await session.next()
   check('the socket survives the bridge calls', aliveAfterBridge?.type === 'ok' && aliveAfterBridge.id === 'p9')
 
+  // ── catalogs ──────────────────────────────────────────────────────────────
+  console.log('\nbridge: catalogs')
+  session.send({ v: 1, type: 'model.catalog', id: 'c1' })
+  const models = await session.next()
+  check('model.catalog answers ok', models?.type === 'ok' && models.id === 'c1', JSON.stringify(models).slice(0, 200))
+  check('the catalog lists providers', Array.isArray(models?.result?.providers), typeof models?.result?.providers)
+  const firstModel = models?.result?.providers?.[0]?.models?.[0]
+  check('a provider group carries models', firstModel !== undefined, JSON.stringify(models?.result?.providers?.[0]))
+  check('a model carries a reasoning effort list', Array.isArray(firstModel?.efforts), JSON.stringify(firstModel))
+
+  session.send({ v: 1, type: 'permissions.catalog', id: 'c2' })
+  const permissions = await session.next()
+  check('permissions.catalog answers ok', permissions?.type === 'ok' && permissions.id === 'c2', JSON.stringify(permissions).slice(0, 200))
+  const presetValues = (permissions?.result?.options ?? []).map((option) => option.value)
+  check('the permission catalog lists presets', presetValues.length > 0, JSON.stringify(presetValues))
+  check('every preset option carries a name', (permissions?.result?.options ?? []).every((o) => typeof o.name === 'string' && o.name !== ''))
+  // `custom` is derived-only and must never be offered as a target; `auto` is
+  // live-only, so it may legitimately be present or absent.
+  check('custom is never offered as a selectable preset', !presetValues.includes('custom'), JSON.stringify(presetValues))
+
+  // ── session write path ────────────────────────────────────────────────────
+  console.log('\nbridge: session write path')
+  session.send({ v: 1, type: 'session.create', id: 'w1', payload: { cwd: process.env.MIZAR_WORKSPACE ?? process.cwd() } })
+  const created = await session.next()
+  check('session.create answers ok', created?.type === 'ok' && created.id === 'w1', JSON.stringify(created).slice(0, 200))
+  const newSessionId = created?.result?.sessionId
+  check('session.create returns a session id', typeof newSessionId === 'string' && newSessionId !== '', String(newSessionId))
+
+  if (typeof newSessionId === 'string') {
+    session.send({ v: 1, type: 'session.rename', id: 'w2', payload: { sessionId: newSessionId, title: 'Mizar smoke session' } })
+    const renamed = await session.next()
+    check('session.rename answers ok', renamed?.type === 'ok' && renamed.id === 'w2', JSON.stringify(renamed).slice(0, 200))
+
+    session.send({ v: 1, type: 'session.permission.set', id: 'w3', payload: { sessionId: newSessionId, preset: presetValues[0] } })
+    const switched = await session.next()
+    check(
+      'session.permission.set answers ok for a catalogued preset',
+      switched?.type === 'ok' && switched.id === 'w3' && switched.result?.commandResult?.kind === 'success',
+      JSON.stringify(switched).slice(0, 200),
+    )
+
+    session.send({ v: 1, type: 'session.permission.set', id: 'w4', payload: { sessionId: newSessionId, preset: 'not-a-preset' } })
+    const refused = await session.next()
+    check(
+      'a preset the command refuses surfaces as an error, not a silent success',
+      refused?.type === 'error' && refused.id === 'w4',
+      JSON.stringify(refused).slice(0, 200),
+    )
+
+    if (firstModel !== undefined) {
+      session.send({
+        v: 1,
+        type: 'session.model.set',
+        id: 'w5',
+        payload: {
+          sessionId: newSessionId,
+          provider: models.result.providers[0].id,
+          model: firstModel.id,
+          ...(firstModel.efforts?.length > 0 ? { reasoningEffort: firstModel.efforts[0].id } : {}),
+        },
+      })
+      const selected = await session.next()
+      check('session.model.set answers ok', selected?.type === 'ok' && selected.id === 'w5', JSON.stringify(selected).slice(0, 250))
+      check(
+        'the confirmed selection echoes the requested route',
+        selected?.result?.selected?.model === firstModel.id,
+        JSON.stringify(selected?.result),
+      )
+    }
+
+    // Prompt admission is deliberately not gated on credential availability, so
+    // this succeeds on a host with no API key; the agent run fails afterwards.
+    const requestId = 'smoke-prompt-1'
+    session.send({ v: 1, type: 'session.prompt', id: 'w6', payload: { sessionId: newSessionId, text: 'smoke test', requestId } })
+    const prompted = await session.next()
+    check('session.prompt answers ok', prompted?.type === 'ok' && prompted.id === 'w6', JSON.stringify(prompted).slice(0, 250))
+    check('the host echoes the idempotency key', prompted?.result?.requestId === requestId, JSON.stringify(prompted?.result))
+
+    // The same key again must be accepted without inserting a second message.
+    session.send({ v: 1, type: 'session.prompt', id: 'w7', payload: { sessionId: newSessionId, text: 'smoke test', requestId } })
+    const retried = await session.next()
+    check(
+      'a retried prompt with the same requestId is accepted, not duplicated',
+      retried?.type === 'ok' && retried.result?.requestId === requestId,
+      JSON.stringify(retried).slice(0, 250),
+    )
+
+    session.send({ v: 1, type: 'session.cancel', id: 'w8', payload: { sessionId: newSessionId } })
+    const cancelled = await session.next()
+    check('session.cancel answers ok', cancelled?.type === 'ok' && cancelled.id === 'w8', JSON.stringify(cancelled).slice(0, 200))
+
+    session.send({ v: 1, type: 'session.stats', id: 'w9', payload: { sessionId: newSessionId } })
+    const afterWrite = await session.next()
+    check('the new session reads back', afterWrite?.type === 'ok' && afterWrite.result?.sessionId === newSessionId)
+  }
+
+  // ── argument validation ───────────────────────────────────────────────────
+  console.log('\nbridge: validation')
+  session.send({ v: 1, type: 'session.prompt', id: 'v1', payload: { sessionId: 's1' } })
+  const noText = await session.next()
+  check('session.prompt without text is a malformed frame', noText?.code === 'MALFORMED_FRAME' && noText.id === 'v1', JSON.stringify(noText))
+
+  session.send({ v: 1, type: 'session.prompt', id: 'v2', payload: { sessionId: 's1', text: 'hi', mode: 'sideways' } })
+  const badMode = await session.next()
+  check('an unknown delivery mode is refused', badMode?.code === 'MALFORMED_FRAME' && badMode.id === 'v2', JSON.stringify(badMode))
+
+  session.send({ v: 1, type: 'session.permission.set', id: 'v3', payload: { sessionId: 's1' } })
+  const noPreset = await session.next()
+  check('session.permission.set without a preset is a malformed frame', noPreset?.code === 'MALFORMED_FRAME')
+
+  session.send({ v: 1, type: 'session.create', id: 'v4', payload: 'not an object' })
+  const badCreate = await session.next()
+  check('a non-object payload is refused', badCreate?.code === 'MALFORMED_FRAME', JSON.stringify(badCreate))
+
+  session.send({ v: 1, type: 'ping', id: 'p10' })
+  const finalAlive = await session.next()
+  check('the socket still works after all of that', finalAlive?.type === 'ok' && finalAlive.id === 'p10')
+
+  // ── interactions ──────────────────────────────────────────────────────────
+  //
+  // A real approval needs a model turn to reach a tool that asks for one, which
+  // needs provider credentials this dev home does not have. What is verifiable
+  // here is the surface: the pending view, and that every rejection path refuses
+  // rather than silently accepting. The waterfall semantics themselves are unit
+  // tested in dsh/test/interactions.test.ts.
+  console.log('\nbridge: interactions')
+  session.send({ v: 1, type: 'interactions.pending', id: 'i1' })
+  const pendingNow = await session.next()
+  check('interactions.pending answers ok', pendingNow?.type === 'ok' && pendingNow.id === 'i1', JSON.stringify(pendingNow).slice(0, 200))
+  check('the pending view carries both lists', Array.isArray(pendingNow?.result?.approvals) && Array.isArray(pendingNow?.result?.questions), JSON.stringify(pendingNow?.result))
+
+  session.send({ v: 1, type: 'approval.answer', id: 'i2', payload: { requestId: 'no-such-request', outcome: 'allowed-once' } })
+  const staleApproval = await session.next()
+  check(
+    'answering an unknown approval reports accepted:false rather than an error',
+    staleApproval?.type === 'ok' && staleApproval.result?.accepted === false,
+    JSON.stringify(staleApproval).slice(0, 200),
+  )
+
+  session.send({ v: 1, type: 'approval.answer', id: 'i3', payload: { requestId: 'x', outcome: 'always-allow' } })
+  const badOutcome = await session.next()
+  check(
+    'an outcome outside the vocabulary is refused',
+    badOutcome?.code === 'MALFORMED_FRAME' && badOutcome.id === 'i3',
+    JSON.stringify(badOutcome).slice(0, 200),
+  )
+
+  session.send({ v: 1, type: 'approval.answer', id: 'i4', payload: { outcome: 'rejected' } })
+  const noRequestId = await session.next()
+  check('approval.answer without a requestId is a malformed frame', noRequestId?.code === 'MALFORMED_FRAME')
+
+  session.send({ v: 1, type: 'question.answer', id: 'i5', payload: { callId: 'c1', answers: [] } })
+  const emptyBatch = await session.next()
+  check('an empty answer batch is refused', emptyBatch?.code === 'MALFORMED_FRAME', JSON.stringify(emptyBatch))
+
+  session.send({ v: 1, type: 'question.answer', id: 'i6', payload: { callId: 'c1', answers: [{ id: 'q1' }] } })
+  const noSelected = await session.next()
+  check('an answer without "selected" is refused', noSelected?.code === 'MALFORMED_FRAME', JSON.stringify(noSelected))
+
+  session.send({
+    v: 1,
+    type: 'question.answer',
+    id: 'i7',
+    payload: { callId: 'no-such-call', answers: [{ id: 'q1', selected: ['a'] }] },
+  })
+  const staleQuestion = await session.next()
+  check(
+    'answering an unknown question reports accepted:false',
+    staleQuestion?.type === 'ok' && staleQuestion.result?.accepted === false,
+    JSON.stringify(staleQuestion).slice(0, 200),
+  )
+
+  session.send({ v: 1, type: 'ping', id: 'p11' })
+  const afterInteractions = await session.next()
+  check('the socket survives the interaction surface', afterInteractions?.type === 'ok' && afterInteractions.id === 'p11')
+
   session.close()
   await settle(100)
 

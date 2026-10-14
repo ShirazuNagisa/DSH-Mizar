@@ -13,7 +13,9 @@ import { join } from 'node:path'
 import type { Context } from './dsh.js'
 import { Config } from './config.js'
 import type { Config as MizarConfig } from './config.js'
+import { registerAnswerers } from './bridge/answerers.js'
 import { createMethodTable } from './bridge/index.js'
+import { InteractionBroker } from './bridge/interactions.js'
 import { MizarStore, resolveMizarHome } from './auth/store.js'
 import { selectBindAddresses, snapshotInterfaces } from './net/interfaces.js'
 import { PROTOCOL_VERSION } from './protocol/frames.js'
@@ -63,12 +65,21 @@ async function startListener(
   const liveDevices = store.state.devices.filter((d) => d.revokedAt === undefined).length
   report(`state: ${stateDir} · devices: ${liveDevices} live`)
 
-  const methods = createMethodTable(ctx, {
-    hostId: store.state.hostId,
-    hostName: hostname(),
-    home: stateDir,
-    protocolVersion: PROTOCOL_VERSION,
-  })
+  // Created before the listener so the method table can reach it, and given its
+  // transport only once the listener is up: the broker must not hold a socket
+  // reference that outlives the server.
+  const broker = new InteractionBroker()
+
+  const methods = createMethodTable(
+    ctx,
+    {
+      hostId: store.state.hostId,
+      hostName: hostname(),
+      home: stateDir,
+      protocolVersion: PROTOCOL_VERSION,
+    },
+    broker,
+  )
 
   const listener = await MizarListener.start({
     plan,
@@ -83,6 +94,9 @@ async function startListener(
     onSession: (session) => {
       report(`client connected: ${session.deviceName} from ${session.remote}`)
     },
+    // Dropping to zero clients is the broker's fail-closed trigger: an approval
+    // with nobody left to answer it must settle rather than hang the agent.
+    onClientCount: (count) => broker.setClientCount(count),
     // The bridge speaks in terms of its own context; the listener speaks in
     // terms of the connection. Adapting here keeps both sides ignorant of the
     // other's vocabulary.
@@ -99,7 +113,15 @@ async function startListener(
     ),
   })
 
+  broker.setSender((frame) => listener.broadcast(frame))
+  // Registered with `prepend`, so the phone is asked alongside the desktop GUI
+  // rather than only when the GUI declines.
+  registerAnswerers(ctx, broker)
+
   signal.addEventListener('abort', () => {
+    // Release anything still waiting before the transport disappears, so no
+    // agent is left holding a turn open for a question nobody can answer.
+    broker.dispose()
     void listener.stop().catch((error: unknown) => {
       report(`listener shutdown failed — ${describe(error)}`)
     })

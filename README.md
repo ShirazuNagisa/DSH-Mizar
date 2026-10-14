@@ -2,10 +2,13 @@
 
 **远程监控并指导 DSH Agent 工作。** 一个 DSH 插件 + 一个 Swift 原生 iOS/iPad App。
 
-> **当前状态：Phase 0 与 Phase 1 完成。** 宿主插件已能启动独立监听端口、配对设备、
-> 持久化凭据并通过鉴权 WebSocket 通信，全部经真实链路端到端验证（29/29）。
-> Bridge（把 DSH 会话数据变成手机友好的帧）从 Phase 2 开始。
-> 关键设计结论见 [决策记录 0001](docs/decision-0001-in-process-gateway.md)。
+> **当前状态：Phase 0 / 1 / 2 完成。** 宿主插件已能启动独立监听端口、配对设备、持久化
+> 凭据、通过鉴权 WebSocket 通信，并完成 Bridge：会话读写、模型与思考强度、权限预设、
+> 用量统计、审批与提问。全部经真实链路端到端验证（**87/87**）。
+> 下一步是 Phase 3（Web 面板）与 Phase 4–5（iOS）。
+>
+> 关键设计结论：[0001 进程内网关](docs/decision-0001-in-process-gateway.md)、
+> [0002 审批仲裁](docs/decision-0002-approval-arbitration.md)。
 
 ---
 
@@ -91,8 +94,8 @@ scripts/dev.sh smoke
 
 它走真实链路，断言的是真正保护操作者的行为：错误配对码被拒、已兑换的码无法重放、未知
 令牌在任何方法执行之前就被拒、畸形帧与版本不符会得到明确错误码而不是被半读；然后是
-Bridge ——`session.list` 返回真实会话、`session.stats` 从 token 计量投影里取出四类用量。
-53 项断言。
+Bridge —— 会话列表与用量、模型目录、权限目录、会话创建/改名/切模型/切权限/发消息/打断、
+以及幂等键重试不产生重复消息。**87 项断言。**
 
 > 为什么必须先重启：配对码是**单次使用**的，第二次跑同一个实例就没有可兑换的码了。
 > 重启同时也把整条启动路径重新走一遍，这正是我们想验证的。
@@ -104,6 +107,25 @@ Bridge ——`session.list` 返回真实会话、`session.stats` 从 token 计�
 > 用 `env -u` 清掉继承来的 DSH 会话标记。
 
 ---
+
+## 方法表（协议 v1）
+
+| 方法 | 作用 |
+|---|---|
+| `host.info` | 主机身份与协议版本 |
+| `session.list` | 会话列表，按最近活动排序 |
+| `session.stats` | 某个会话的用量帧（token / 缓存命中 / 上下文 / 吞吐 / 模型 / 权限） |
+| `session.create` | 新建会话；带 `sessionId` 时接管或恢复 |
+| `session.prompt` | 发消息；`requestId` 是幂等键，重试不会重复发送 |
+| `session.cancel` | 打断当前 turn |
+| `session.rename` | 改名 |
+| `model.catalog` | 模型目录，含每个模型的思考强度等级 |
+| `session.model.set` | 切换模型与思考强度 |
+| `permissions.catalog` | 权限预设目录 |
+| `session.permission.set` | 切换权限预设（走 `/permission` 命令） |
+| `interactions.pending` | 当前等待操作者处理的审批与提问 |
+| `approval.answer` | 回答审批（仅 `allowed-once` / `rejected`） |
+| `question.answer` | 回答提问批次 |
 
 ## 两个必须知道的事实
 

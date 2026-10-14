@@ -51,6 +51,15 @@ export const ERROR_CODES = [
   'PAIRING_CODE_UNKNOWN',
   'RATE_LIMITED',
   'DEVICE_REVOKED',
+  // The session is held by another writer — normally the desktop UI. Retrying
+  // later is the right advice, so the app branches on this rather than showing
+  // a generic failure.
+  'WRITER_HELD',
+  // The requested provider/model pair is not in the available catalog.
+  'MODEL_UNAVAILABLE',
+  // An upstream DSH call failed for a reason this layer does not classify. The
+  // original code is preserved in the message.
+  'REMOTE_ERROR',
   'NOT_IMPLEMENTED',
   'INTERNAL',
 ] as const

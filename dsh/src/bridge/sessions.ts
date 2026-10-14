@@ -20,7 +20,9 @@
  *
  * @module dsh-mizar/bridge/sessions
  */
+import { randomUUID } from 'node:crypto'
 import type { Context } from '../dsh.js'
+import { MethodError } from './method-error.js'
 import { buildStatsFrame, STATS_KEYS, type SessionStatsFrame } from './stats.js'
 
 /** One row in the session list. */
@@ -142,4 +144,136 @@ export async function sessionStats(ctx: Context, sessionId: string): Promise<Ses
       : {}
 
   return { sessionId, asOfSeq, stats: buildStatsFrame(values) }
+}
+
+/** A newly created or resumed session. */
+export interface CreateSessionResult {
+  readonly sessionId: string
+  /** The agent preset the session runs under, when the host reported one. */
+  readonly agentPreset: string | null
+}
+
+/**
+ * Create a session, or adopt/resume one when an id is supplied.
+ *
+ * Supplying `sessionId` for an existing session resumes it and retains its
+ * writer lock, which is how the app reattaches to a conversation the desktop is
+ * not currently using. Contention surfaces as `WRITER_HELD`.
+ *
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param options - workspace, directory, preset or explicit session id.
+ * @returns the session identity.
+ */
+export async function createSession(
+  ctx: Context,
+  options: {
+    workspaceId?: string
+    cwd?: string
+    sessionId?: string
+    agentPreset?: string
+  },
+): Promise<CreateSessionResult> {
+  const value = (await ctx.typertGateway.invoke({
+    namespace: 'session',
+    method: 'create',
+    args: {
+      request: {
+        ...(options.workspaceId === undefined ? {} : { workspaceId: options.workspaceId }),
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+        ...(options.agentPreset === undefined ? {} : { agentPreset: options.agentPreset }),
+      },
+    },
+    signal: AbortSignal.timeout(60_000),
+  })) as { sessionId?: unknown; agentPreset?: unknown } | undefined
+
+  if (typeof value?.sessionId !== 'string' || value.sessionId === '') {
+    throw new MethodError('REMOTE_ERROR', 'session.create returned no session id')
+  }
+  return {
+    sessionId: value.sessionId,
+    agentPreset: typeof value.agentPreset === 'string' ? value.agentPreset : null,
+  }
+}
+
+/** Acceptance of a prompt. */
+export interface PromptResult {
+  /** Always true when the call succeeds; the host rejects rather than queues silently. */
+  readonly accepted: true
+  /** The idempotency key the host recorded, echoed for the client's own retry bookkeeping. */
+  readonly requestId: string
+}
+
+/**
+ * Send a prompt.
+ *
+ * `requestId` is an idempotency key: DSH returns the original acceptance for a
+ * request id it has already queued or logged, so a retry after a dropped
+ * connection cannot submit the same message twice. The client should therefore
+ * generate it once and reuse it across retries — which is why the optional
+ * `requestId` argument exists rather than being minted here every call.
+ *
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param options - target session, text, delivery mode and idempotency key.
+ * @returns the acceptance.
+ */
+export async function promptSession(
+  ctx: Context,
+  options: {
+    sessionId: string
+    text: string
+    mode?: 'queue' | 'steer'
+    requestId?: string
+    clientTimeZone?: string
+  },
+): Promise<PromptResult> {
+  const requestId = options.requestId ?? randomUUID()
+
+  await ctx.typertGateway.invoke({
+    namespace: 'session',
+    method: 'prompt',
+    args: {
+      request: {
+        requestId,
+        sessionId: options.sessionId,
+        mode: options.mode ?? 'queue',
+        content: [{ type: 'text', text: options.text }],
+        ...(options.clientTimeZone === undefined ? {} : { clientTimeZone: options.clientTimeZone }),
+      },
+    },
+    signal: AbortSignal.timeout(60_000),
+  })
+
+  return { accepted: true, requestId }
+}
+
+/**
+ * Interrupt the running turn.
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param sessionId - the session to interrupt.
+ * @returns the acceptance.
+ */
+export async function cancelSession(ctx: Context, sessionId: string): Promise<{ accepted: true }> {
+  await ctx.typertGateway.invoke({
+    namespace: 'session',
+    method: 'cancel',
+    args: { request: { sessionId } },
+    signal: AbortSignal.timeout(30_000),
+  })
+  return { accepted: true }
+}
+
+/**
+ * Rename a session.
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param sessionId - the session to rename.
+ * @param title - the new title.
+ */
+export async function renameSession(ctx: Context, sessionId: string, title: string): Promise<void> {
+  await ctx.typertGateway.invoke({
+    namespace: 'session',
+    method: 'rename',
+    args: { request: { sessionId, title } },
+    signal: AbortSignal.timeout(30_000),
+  })
 }

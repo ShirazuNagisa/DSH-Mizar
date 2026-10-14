@@ -86,6 +86,13 @@ export interface ListenerOptions {
   /** Called once per authenticated connection. */
   readonly onSession?: (session: ClientSession) => void
   /**
+   * Called whenever the authenticated client count changes.
+   *
+   * The interaction broker uses this as its fail-closed trigger: an approval
+   * with nobody left to answer it must settle rather than hang the agent.
+   */
+  readonly onClientCount?: (count: number) => void
+  /**
    * Wire method implementations, keyed by frame `type`.
    *
    * The listener stays transport-only: it moves frames and enforces
@@ -157,6 +164,23 @@ export class MizarListener {
   /** Every live authenticated session. */
   get sessions(): readonly ClientSession[] {
     return [...this.#sessions]
+  }
+
+  /** How many authenticated clients could currently answer a question. */
+  get clientCount(): number {
+    return this.#sessions.size
+  }
+
+  /**
+   * Send one frame to every authenticated client.
+   *
+   * Used for interactions that every client should see — an approval or a
+   * question is addressed to the operator, not to one device.
+   *
+   * @param frame - the frame to deliver.
+   */
+  broadcast(frame: ServerFrame): void {
+    for (const session of this.#sessions) session.send(frame)
   }
 
   /**
@@ -559,6 +583,7 @@ export class MizarListener {
           }
           session = current
           this.#sessions.add(current)
+          this.#options.onClientCount?.(this.#sessions.size)
 
           await this.#options.store.mutate((state) => ({
             ...state,
@@ -622,7 +647,9 @@ export class MizarListener {
     const forget = (): void => {
       clearTimeout(handshakeTimer)
       this.#sockets.delete(socket)
-      if (session !== undefined) this.#sessions.delete(session)
+      if (session !== undefined && this.#sessions.delete(session)) {
+        this.#options.onClientCount?.(this.#sessions.size)
+      }
     }
     socket.on('close', forget)
     socket.on('error', forget)
