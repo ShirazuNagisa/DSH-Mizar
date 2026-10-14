@@ -205,12 +205,13 @@ describe('launchTailscaleApp', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/open', ['-g', '-a', 'Tailscale'])
   })
 
-  it('uses the CLI elsewhere', async () => {
+  it('uses the CLI on Windows', async () => {
+    // 'open' is a macOS binary; Windows has to go through the client itself.
     const run = runner('')
-    await expect(launchTailscaleApp('tailscale', run, 'windows' as NodeJS.Platform)).resolves.toMatchObject({
+    await expect(launchTailscaleApp('C:\\Tailscale\\tailscale.exe', run, 'win32')).resolves.toMatchObject({
       ok: true,
     })
-    expect(run).toHaveBeenCalledWith('tailscale', ['up'])
+    expect(run).toHaveBeenCalledWith('C:\\Tailscale\\tailscale.exe', ['up'])
   })
 })
 
@@ -297,5 +298,68 @@ describe('launch at login', () => {
     const run = runner('')
     await expect(enableStartOnLogin(run, 'linux')).resolves.toMatchObject({ ok: false })
     expect(run).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The Windows path cannot be run here, and there is no CI runner for it, so the
+ * platform parameter is the only way these branches are exercised at all. That
+ * makes them worth asserting explicitly rather than leaving to inspection: a
+ * wrong `open` invocation on Windows would fail silently at three in the morning
+ * on somebody else's machine.
+ */
+describe('Windows', () => {
+  it('finds the installed client', () => {
+    const candidates = tailscaleCliCandidates('win32')
+    expect(candidates[0]).toBe('C:\\Program Files\\Tailscale\\tailscale.exe')
+    expect(findTailscaleCli('win32', (path) => path.includes('Program Files'))).toBe(
+      'C:\\Program Files\\Tailscale\\tailscale.exe',
+    )
+  })
+
+  it('reports absence rather than guessing', () => {
+    expect(findTailscaleCli('win32', () => false)).toBeNull()
+  })
+
+  it('brings a stopped tunnel up through the client', async () => {
+    const run = runner('')
+    await expect(
+      applyStartupPlan({ kind: 'disconnected', cli: 'ts.exe', backend: 'Stopped' }, run, 'win32'),
+    ).resolves.toMatchObject({ started: true })
+    expect(run).toHaveBeenCalledWith('ts.exe', ['up'])
+  })
+
+  it('launches the client for a daemon that is not answering', async () => {
+    const run = runner('')
+    await expect(
+      applyStartupPlan({ kind: 'daemon-down', cli: 'ts.exe', detail: 'x' }, run, 'win32'),
+    ).resolves.toMatchObject({ started: true })
+    // Not `open`: on Windows the client is the entry point.
+    expect(run).toHaveBeenCalledWith('ts.exe', ['up'])
+  })
+
+  it('never runs the macOS launcher', async () => {
+    const run = vi.fn(runner(''))
+    await applyStartupPlan({ kind: 'daemon-down', cli: 'ts.exe', detail: 'x' }, run, 'win32')
+    for (const call of run.mock.calls) {
+      expect(call[0]).not.toBe('/usr/bin/open')
+    }
+  })
+
+  it('reports launch-at-login as inapplicable rather than off', async () => {
+    // Windows keeps Tailscale in the user session and has no equivalent
+    // preference. Reporting `false` would make the plugin try to enable
+    // something that does not exist.
+    await expect(readStartOnLogin(runner('1'), 'win32')).resolves.toBeNull()
+    const run = vi.fn(runner(''))
+    await expect(enableStartOnLogin(run, 'win32')).resolves.toMatchObject({ ok: false })
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('probes no POSIX paths', () => {
+    for (const candidate of tailscaleCliCandidates('win32')) {
+      expect(candidate).not.toContain('/Applications')
+      expect(candidate).not.toContain('/usr/')
+    }
   })
 })
