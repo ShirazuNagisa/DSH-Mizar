@@ -464,6 +464,34 @@ async function main() {
       JSON.stringify(retried).slice(0, 250),
     )
 
+    // The idempotency key being echoed is not the same claim as the message
+    // existing once. Read the session's own log back and count: a retry that is
+    // "accepted" but inserted twice would pass every check above.
+    //
+    // Read with a bounded retry, because the projection the page is cut at is
+    // not updated synchronously with the prompt being accepted. That lag is real
+    // and the app has to cope with it: a message the operator just sent is not
+    // in the log the instant the host says it took it.
+    let log
+    let recorded = []
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      session.send({ v: 1, type: 'session.messages', id: 'w9', payload: { sessionId: newSessionId, maxMessages: 20 } })
+      log = await session.next()
+      recorded = (log?.result?.records ?? [])
+        .filter((record) => record.type === 'event' && record.event?.type === 'user/message')
+        .flatMap((record) => (record.event.data?.content ?? []).filter((part) => part.type === 'text'))
+        .map((part) => part.text)
+      if (recorded.includes('smoke test')) break
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    check('session.messages answers ok', log?.type === 'ok' && log.id === 'w9', JSON.stringify(log).slice(0, 250))
+    check('session.messages reports the log cut', typeof log?.result?.asOfSeq === 'number', JSON.stringify(log?.result?.asOfSeq))
+    check(
+      'the prompt is recorded exactly once despite the retry',
+      recorded.filter((text) => text === 'smoke test').length === 1,
+      `found ${recorded.filter((text) => text === 'smoke test').length} of ${recorded.length} user messages`,
+    )
+
     session.send({ v: 1, type: 'session.cancel', id: 'w8', payload: { sessionId: newSessionId } })
     const cancelled = await session.next()
     check('session.cancel answers ok', cancelled?.type === 'ok' && cancelled.id === 'w8', JSON.stringify(cancelled).slice(0, 200))
