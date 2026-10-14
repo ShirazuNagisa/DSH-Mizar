@@ -412,3 +412,115 @@ describe('registerAnswerers', () => {
     await expect(pending).resolves.toEqual({ answers: [{ id: 'q1', selected: ['a'] }] })
   })
 })
+
+/**
+ * The push notification.
+ *
+ * An agent blocked on an approval is stopped until somebody answers, so a phone
+ * that has to wait for its next poll is a stalled turn. These assert the host
+ * announces the change rather than leaving the client to discover it.
+ */
+describe('InteractionBroker — pending-change notifications', () => {
+  /**
+   * The change notifications in a frame list.
+   *
+   * Filtered to a typed list rather than matched with a nested
+   * `expect.objectContaining`, which does not unwrap through `toContainEqual`
+   * and reports a missing frame that is visibly present.
+   *
+   * @param frames - every frame the broker sent.
+   * @returns just the change notifications.
+   */
+  function changed(frames: readonly ServerFrame[]): { data: unknown }[] {
+    return frames.filter(
+      (frame): frame is Extract<ServerFrame, { type: 'event' }> =>
+        frame.type === 'event' && frame.event === 'interactions.changed',
+    )
+  }
+
+  /** A broker wired to a frame recorder. */
+  function wired(): { broker: InteractionBroker; frames: ServerFrame[] } {
+    const frames: ServerFrame[] = []
+    const broker = new InteractionBroker()
+    broker.setSender((frame) => frames.push(frame))
+    broker.setClientCount(1)
+    return { broker, frames }
+  }
+
+  it('announces a new approval', async () => {
+    const { broker, frames } = wired()
+    const handle = broker.beginApproval({ sessionId: 's1', toolName: 'bash' })
+    // `contains`, not `at(-1)`: the broker also announces `approval.request`,
+    // and which of the two lands last is an ordering detail these tests have no
+    // business pinning.
+    expect(changed(frames)).toHaveLength(1)
+    expect(changed(frames)[0]?.data).toEqual({ approvals: 1, questions: 0 })
+    handle.abandon('rejected')
+    await handle.outcome
+  })
+
+  it('announces a settled approval', async () => {
+    const { broker, frames } = wired()
+    const handle = broker.beginApproval({ sessionId: 's1', toolName: 'bash' })
+    frames.length = 0
+    handle.abandon('rejected')
+    await handle.outcome
+    expect(changed(frames)).toHaveLength(1)
+    expect(changed(frames)[0]?.data).toEqual({ approvals: 0, questions: 0 })
+  })
+
+  it('announces a question batch', async () => {
+    const { broker, frames } = wired()
+    const handle = broker.beginQuestions({
+      sessionId: 's1',
+      callId: 'q1',
+      questions: [{ id: 'q1', question: 'Which?', options: [{ label: 'A' }], multiSelect: false }],
+    })
+    expect(changed(frames)).toHaveLength(1)
+    expect(changed(frames)[0]?.data).toEqual({ approvals: 0, questions: 1 })
+    handle.abandon()
+    await handle.answers
+  })
+
+  it('says nothing when nobody is connected', async () => {
+    // Not "no frames at all": the broker announces `approval.request` to its
+    // sender regardless, and in production that sender is a broadcast that
+    // reaches nobody. What must not happen is a change notification aimed at an
+    // empty room.
+    const frames: ServerFrame[] = []
+    const broker = new InteractionBroker()
+    broker.setSender((frame) => frames.push(frame))
+    broker.setClientCount(0)
+    const handle = broker.beginApproval({ sessionId: 's1', toolName: 'bash' })
+    expect(changed(frames)).toHaveLength(0)
+    handle.abandon('rejected')
+    await handle.outcome
+    expect(changed(frames)).toHaveLength(0)
+  })
+
+  it('does not announce when an already-settled id is settled again', async () => {
+    // Two answerers racing is normal, and the second one changes nothing.
+    const { broker, frames } = wired()
+    const handle = broker.beginApproval({ sessionId: 's1', toolName: 'bash' })
+    handle.abandon('rejected')
+    await handle.outcome
+    const before = frames.length
+    expect(broker.answerApproval('a1', 'allowed-once')).toBe(false)
+    expect(frames).toHaveLength(before)
+  })
+
+  it('keeps the change when the transport throws', async () => {
+    // A socket hiccup must not roll back a state change: the approval is still
+    // there, and dropping it would lose the operator's only chance to answer.
+    const broker = new InteractionBroker()
+    broker.setSender(() => {
+      throw new Error('socket gone')
+    })
+    broker.setClientCount(1)
+    const handle = broker.beginApproval({ sessionId: 's1', toolName: 'bash' })
+    expect(broker.listApprovals()).toHaveLength(1)
+    handle.abandon('rejected')
+    await handle.outcome
+    expect(broker.listApprovals()).toHaveLength(0)
+  })
+})

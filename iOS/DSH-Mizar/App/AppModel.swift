@@ -43,10 +43,9 @@ final class AppModel {
     }
     /// Everything waiting on the operator right now.
     ///
-    /// Polled rather than pushed: the host does not yet broadcast a new approval
-    /// to connected devices, so the phone has to ask. That is a real limitation
-    /// -- a request that arrives between polls waits up to one interval -- and
-    /// the interval is kept short to bound it.
+    /// The host pushes `interactions.changed` the moment its pending set moves,
+    /// so this is normally current within a round trip. The timer below is the
+    /// safety net for a notification lost to a dropped socket, not the mechanism.
     private(set) var pending: PendingInteractions?
     /// The models this host offers.
     private(set) var modelCatalog: ModelCatalog?
@@ -56,9 +55,29 @@ final class AppModel {
     private var lastRequestId: String?
     /// The poll that watches for pending interactions.
     private var interactionPoll: Task<Void, Never>?
+    /// The task consuming host-pushed events.
+    private var eventListener: Task<Void, Never>?
 
-    /// How often to ask the host for pending interactions.
-    private static let interactionPollSeconds: Duration = .seconds(4)
+    /// Host events that mean the pending set moved.
+    ///
+    /// `interactions.changed` covers every case on its own, and the four
+    /// specific names are listed because they predate it: a host built before
+    /// the summary frame existed sends only those, and a client that ignored
+    /// them would fall back to the slow timer for no reason.
+    private static let interactionEvents: Set<String> = [
+        "interactions.changed",
+        "approval.request",
+        "approval.resolved",
+        "question.request",
+        "question.resolved",
+    ]
+
+    /// How often to re-read pending interactions when nothing has been pushed.
+    ///
+    /// Deliberately slow. The host announces changes, so a short interval would
+    /// be pure traffic; this only exists so that a notification lost to a
+    /// reconnect cannot leave a card on screen that no longer exists.
+    private static let interactionPollSeconds: Duration = .seconds(45)
 
     private let credentials: any CredentialStore
     private var connection: MizarConnection?
@@ -116,13 +135,25 @@ final class AppModel {
         return arguments[arguments.index(after: index)]
     }
 
-    /// Ask the host what is waiting, and keep asking while connected.
+    /// React to what the host pushes, and fall back to asking occasionally.
     private func startInteractionPoll() {
         interactionPoll?.cancel()
         interactionPoll = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshInteractions()
                 try? await Task.sleep(for: Self.interactionPollSeconds)
+            }
+        }
+
+        eventListener?.cancel()
+        eventListener = Task { [weak self] in
+            guard let stream = await self?.connection?.events() else { return }
+            for await frame in stream {
+                guard case .event(let name, _) = frame else { continue }
+                // Any other event name is for a future build; ignoring it is not
+                // the same as failing on it.
+                guard Self.interactionEvents.contains(name) else { continue }
+                await self?.refreshInteractions()
             }
         }
     }
@@ -285,6 +316,7 @@ final class AppModel {
     /// Forget the pairing and return to the pairing screen.
     func unpair() async {
         interactionPoll?.cancel()
+        eventListener?.cancel()
         await connection?.disconnect()
         connection = nil
         welcome = nil
