@@ -275,7 +275,10 @@ export class MizarListener {
     for (const candidate of candidates) {
       try {
         await this.#bindAll(plan.addresses, candidate)
-        this.#boundPort = candidate
+        // With `port: 0` the OS picks the port, so the candidate is not the
+        // answer. Reading it back from the socket is the only way `authorities`
+        // can name somewhere a phone could actually dial.
+        this.#boundPort = this.#actualPort() ?? candidate
         if (candidate !== port) {
           this.#options.log(`port ${port} was busy; listening on ${candidate} instead`)
         }
@@ -324,6 +327,13 @@ export class MizarListener {
       })
       this.#servers.push(server)
     }
+  }
+
+  /** The port the OS actually bound, when a socket is listening. */
+  #actualPort(): number | undefined {
+    const address = this.#servers[0]?.address()
+    if (address === null || address === undefined || typeof address === 'string') return undefined
+    return address.port
   }
 
   /** Close and forget the servers created by a failed bind attempt. */
