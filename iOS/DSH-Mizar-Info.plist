@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Supplemental Info.plist keys.
+
+  This file carries only what cannot be expressed as an INFOPLIST_KEY_ build
+  setting, which is anything with a dictionary value. Everything else is
+  generated (GENERATE_INFOPLIST_FILE = YES) and merged with these.
+-->
+<plist version="1.0">
+<dict>
+	<!--
+	  The Mizar transport is a cleartext WebSocket to an address the operator
+	  supplies at pairing time: a tailnet address or a LAN address. ATS decides
+	  at build time which hosts it trusts, and the host here is not knowable in
+	  advance, so there is no exception that could name it.
+
+	  The honest fix is TLS on the listener, which is already a planned item; it
+	  removes the need for this key entirely. Until then, the traffic's
+	  confidentiality comes from the network underneath — WireGuard in the
+	  tailnet case, the local segment in the LAN case.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<!-- Required for iOS 14 and later when connecting to a local-network host. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>DSH-Mizar connects to your Mac on the local network to monitor and guide your agent.</string>
+	<!--
+	  The pairing URI is mizar://pair?...  Registering the scheme makes the QR
+	  payload work as a link as well as as a barcode: an operator who receives it
+	  in a message can tap it and be paired, without opening the camera.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>me.shirazu.dshmizar.pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>mizar</string>
+			</array>
+		</dict>
+	</array>
+	<!-- The pairing QR is scanned in-app, so the camera is used only for that. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Scan the pairing code shown on your Mac.</string>
+</dict>
+</plist>
