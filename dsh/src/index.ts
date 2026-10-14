@@ -8,13 +8,15 @@
  *
  * @module dsh-mizar
  */
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from './dsh.js'
 import { Config } from './config.js'
 import type { Config as MizarConfig } from './config.js'
+import { createMethodTable } from './bridge/index.js'
 import { MizarStore, resolveMizarHome } from './auth/store.js'
 import { selectBindAddresses, snapshotInterfaces } from './net/interfaces.js'
+import { PROTOCOL_VERSION } from './protocol/frames.js'
 import { MizarListener } from './server/listener.js'
 import { runSpike } from './spike.js'
 
@@ -58,9 +60,15 @@ async function startListener(
   const store = await MizarStore.open(stateDir)
 
   const plan = selectBindAddresses(snapshotInterfaces(), config.bind.mode, config.bind.addresses)
-  report(
-    `state: ${stateDir} · devices: ${store.state.devices.filter((d) => d.revokedAt === undefined).length} live`,
-  )
+  const liveDevices = store.state.devices.filter((d) => d.revokedAt === undefined).length
+  report(`state: ${stateDir} · devices: ${liveDevices} live`)
+
+  const methods = createMethodTable(ctx, {
+    hostId: store.state.hostId,
+    hostName: hostname(),
+    home: stateDir,
+    protocolVersion: PROTOCOL_VERSION,
+  })
 
   const listener = await MizarListener.start({
     plan,
@@ -75,6 +83,20 @@ async function startListener(
     onSession: (session) => {
       report(`client connected: ${session.deviceName} from ${session.remote}`)
     },
+    // The bridge speaks in terms of its own context; the listener speaks in
+    // terms of the connection. Adapting here keeps both sides ignorant of the
+    // other's vocabulary.
+    methods: Object.fromEntries(
+      Object.entries(methods).map(([name, handler]) => [
+        name,
+        (payload: unknown, session: { deviceId: string; deviceName: string; remote: string }) =>
+          handler(payload, {
+            deviceId: session.deviceId,
+            deviceName: session.deviceName,
+            remote: session.remote,
+          }),
+      ]),
+    ),
   })
 
   signal.addEventListener('abort', () => {

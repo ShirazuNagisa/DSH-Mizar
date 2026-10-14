@@ -18,7 +18,8 @@
 #
 # Environment overrides:
 #   MIZAR_APP      Path to the DeepSeek Harness app bundle.
-#   MIZAR_PORT     Port for the dev instance (default 19388).
+#   MIZAR_WEB_PORT      Port for the DSH web app the dev profile boots (default 19388).
+#   MIZAR_LISTENER_PORT Fallback for the Mizar listener port (default 19390).
 #   MIZAR_PROFILE  Dev profile name (default mizar-dev).
 #
 # The overrides are deliberately `MIZAR_*` rather than `DSH_*`: when this script
@@ -29,7 +30,11 @@
 set -euo pipefail
 
 MIZAR_APP="${MIZAR_APP:-/Applications/DeepSeek Harness.app}"
-MIZAR_PORT="${MIZAR_PORT:-19388}"
+MIZAR_WEB_PORT="${MIZAR_WEB_PORT:-19388}"
+# The Mizar listener port is the plugin's own config.port; it is read back from
+# the plugin's startup line rather than assumed, because the plugin probes
+# upward when the configured port is busy.
+MIZAR_LISTENER_PORT="${MIZAR_LISTENER_PORT:-19390}"
 MIZAR_PROFILE="${MIZAR_PROFILE:-mizar-dev}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -91,7 +96,7 @@ kill_tree_force() {
 # listener would fail the assignment and silently kill the whole script.
 port_pid() {
   local pid
-  pid="$(lsof -nP -iTCP:"$MIZAR_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  pid="$(lsof -nP -iTCP:"$MIZAR_WEB_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
   printf '%s' "$pid"
 }
 
@@ -124,7 +129,7 @@ dsh_boot_once() {
   shift 2
   mkdir -p "$(dirname "$LOG_FILE")"
   rm -f "$LOG_FILE"
-  dsh --profile "$MIZAR_PROFILE" "$@" --no-open --port "$MIZAR_PORT" >"$LOG_FILE" 2>&1 &
+  dsh --profile "$MIZAR_PROFILE" "$@" --no-open --port "$MIZAR_WEB_PORT" >"$LOG_FILE" 2>&1 &
   local pid=$!
   for _ in $(seq 1 "$timeout"); do
     grep -qE "$marker" "$LOG_FILE" 2>/dev/null && break
@@ -175,14 +180,14 @@ cmd_boot() {
   local stale
   stale="$(port_pid)"
   if [ -n "$stale" ]; then
-    die "port $MIZAR_PORT is already in use by pid $stale — run 'scripts/dev.sh stop' first"
+    die "port $MIZAR_WEB_PORT is already in use by pid $stale — run 'scripts/dev.sh stop' first"
   fi
   rm -f "$LOG_FILE"
   DSH_MIZAR_SPIKE_WORKSPACE="$ROOT" \
-    dsh --profile "$MIZAR_PROFILE" --no-open --port "$MIZAR_PORT" >"$LOG_FILE" 2>&1 &
+    dsh --profile "$MIZAR_PROFILE" --no-open --port "$MIZAR_WEB_PORT" >"$LOG_FILE" 2>&1 &
   local pid=$!
   echo "$pid" >"$PID_FILE"
-  echo "dev.sh: booting '$MIZAR_PROFILE' on 127.0.0.1:$MIZAR_PORT (pid $pid)"
+  echo "dev.sh: booting '$MIZAR_PROFILE' on 127.0.0.1:$MIZAR_WEB_PORT (pid $pid)"
   for _ in $(seq 1 90); do
     grep -qE 'dsh web:|startup failed' "$LOG_FILE" 2>/dev/null && break
     kill -0 "$pid" 2>/dev/null || break
@@ -210,6 +215,34 @@ cmd_stop() {
   echo "dev.sh: stopped"
 }
 
+# Reboot, then drive the running listener over the real wire.
+#
+# A reboot is required rather than convenient: pairing codes are single-use, so
+# a second run against the same instance has nothing left to redeem. Rebooting
+# also re-runs the whole startup path, which is what we want to exercise.
+cmd_smoke() {
+  # A smoke run always starts from a fresh boot, so tear down whatever is there.
+  stop_everything
+  cmd_boot
+  local code
+  for _ in $(seq 1 30); do
+    grep -qE 'pairing code: ' "$LOG_FILE" 2>/dev/null && break
+    sleep 1
+  done
+  code="$(grep -oE 'pairing code: [0-9A-Z-]+' "$LOG_FILE" | head -1 | sed 's/pairing code: //')"
+  [ -n "$code" ] || die "no pairing code in the log — enable mizar's pairing.issueOnStart in the profile patch"
+
+  # Read the authority back from the plugin rather than assuming it: the plugin
+  # probes upward when its configured port is taken.
+  local authority
+  authority="$(grep -oE 'listening on [^,]+' "$LOG_FILE" | head -1 | sed 's/listening on //')"
+  [ -n "$authority" ] || authority="127.0.0.1:$MIZAR_LISTENER_PORT"
+
+  echo "dev.sh: smoke testing $authority with code $code"
+  MIZAR_BASE="http://$authority" MIZAR_CODE="$code" \
+    node "$ROOT/scripts/smoke-listener.mjs"
+}
+
 cmd_log() { tail -n "${1:-80}" -f "$LOG_FILE"; }
 
 cmd_dump() {
@@ -227,6 +260,7 @@ case "${1:-}" in
   build)     cmd_build ;;
   install)   cmd_install ;;
   boot)      cmd_boot ;;
+  smoke)     cmd_smoke ;;
   stop)      cmd_stop ;;
   log)       shift; cmd_log "$@" ;;
   dump)      cmd_dump ;;
@@ -239,6 +273,7 @@ dev.sh <command>
   build       Compile the host half to dsh/lib.
   install     Build and install dsh-mizar into the dev profile.
   boot        Boot the dev profile in the background; print startup lines.
+  smoke       Reboot, then run scripts/smoke-listener.mjs against it.
   stop        Stop a background boot.
   log [n]     Follow the current boot log.
   dump        Print the composed tree, filtered to Mizar rows.

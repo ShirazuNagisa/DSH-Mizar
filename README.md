@@ -83,17 +83,19 @@ npm run typecheck  # 两份 tsconfig
 npm test           # vitest
 ```
 
-端到端冒烟（需要先 `scripts/dev.sh boot`；profile 里已开启 `pairing.issueOnStart`，
-启动时会打印配对码）：
+端到端冒烟（会先重启，再对真实监听端口跑 HTTP + WebSocket 断言）：
 
 ```sh
-CODE=$(grep -oE 'pairing code: [0-9A-Z-]+' .devstate/dev.log | head -1 | sed 's/pairing code: //')
-MIZAR_CODE="$CODE" node scripts/smoke-listener.mjs
+scripts/dev.sh smoke
 ```
 
-它走真实 HTTP 与 WebSocket，断言的是真正保护操作者的行为：错误配对码被拒、已兑换的码
-无法重放、未知令牌在任何方法执行前就被拒、畸形帧与版本不符会被回以明确错误码而不是被
-半读。29 项断言。
+它走真实链路，断言的是真正保护操作者的行为：错误配对码被拒、已兑换的码无法重放、未知
+令牌在任何方法执行之前就被拒、畸形帧与版本不符会得到明确错误码而不是被半读；然后是
+Bridge ——`session.list` 返回真实会话、`session.stats` 从 token 计量投影里取出四类用量。
+53 项断言。
+
+> 为什么必须先重启：配对码是**单次使用**的，第二次跑同一个实例就没有可兑换的码了。
+> 重启同时也把整条启动路径重新走一遍，这正是我们想验证的。
 
 > **为什么 `scripts/dev.sh` 的变量叫 `MIZAR_*` 而不是 `DSH_*`？**
 > 在 DSH 会话内运行时，环境里已经有 `DSH_PROFILE=desktop` 等变量。早期版本用

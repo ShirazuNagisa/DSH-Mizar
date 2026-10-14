@@ -164,6 +164,19 @@ async function main() {
     }),
   })
   check('a valid code pairs', paired.status === 200, `got ${paired.status} ${JSON.stringify(paired.body)}`)
+
+  if (paired.status !== 200) {
+    // Everything below needs a token, so a pairing failure would otherwise
+    // cascade into two dozen misleading failures. Pairing codes are single-use,
+    // so the usual cause is re-running against an instance whose code was
+    // already redeemed — use `scripts/dev.sh smoke`, which reboots first.
+    console.error(
+      `\nmizar smoke: pairing failed (${paired.status} ${JSON.stringify(paired.body)}).\n` +
+        'Pairing codes are single use; use `scripts/dev.sh smoke` to reboot and re-issue one.',
+    )
+    process.exit(1)
+  }
+
   const token = paired.body?.deviceToken
   check('pairing returns a device token', typeof token === 'string' && token.startsWith('mz_'), String(token))
   check('pairing returns the host identity', typeof paired.body?.hostId === 'string' && paired.body.hostId !== '')
@@ -208,10 +221,12 @@ async function main() {
   const pong = await session.next()
   check('ping is answered', pong?.type === 'ok' && pong.id === 'p1', JSON.stringify(pong))
 
-  session.send({ v: 1, type: 'session.list', id: 's1' })
+  // Phase 2 adds methods, so this probes a name that no phase will implement
+  // rather than one that is merely unimplemented today.
+  session.send({ v: 1, type: 'no.such.method', id: 's1' })
   const notImplemented = await session.next()
   check(
-    'an unimplemented method answers NOT_IMPLEMENTED with its id',
+    'an unknown method answers NOT_IMPLEMENTED with its id',
     notImplemented?.code === 'NOT_IMPLEMENTED' && notImplemented.id === 's1',
     JSON.stringify(notImplemented),
   )
@@ -232,6 +247,95 @@ async function main() {
   session.send({ v: 1, type: 'ping', id: 'p3' })
   const stillAlive = await session.next()
   check('the socket survives a protocol error', stillAlive?.type === 'ok' && stillAlive.id === 'p3', JSON.stringify(stillAlive))
+
+  // ── bridge methods against the live DSH instance ──────────────────────────
+  console.log('\nbridge: host and sessions')
+  session.send({ v: 1, type: 'host.info', id: 'm1' })
+  const hostInfo = await session.next()
+  check('host.info answers ok', hostInfo?.type === 'ok' && hostInfo.id === 'm1', JSON.stringify(hostInfo))
+  check('host.info carries the host id', typeof hostInfo?.result?.hostId === 'string' && hostInfo.result.hostId !== '')
+  check('host.info carries the protocol version', hostInfo?.result?.protocolVersion === 1)
+
+  session.send({ v: 1, type: 'session.list', id: 'm2' })
+  const listed = await session.next()
+  check('session.list answers ok', listed?.type === 'ok' && listed.id === 'm2', JSON.stringify(listed).slice(0, 300))
+  const rows = listed?.result?.items
+  check('session.list returns an array', Array.isArray(rows), typeof rows)
+  check('session.list finds the sessions in this home', Array.isArray(rows) && rows.length > 0, `got ${rows?.length}`)
+  if (Array.isArray(rows) && rows.length > 0) {
+    const row = rows[0]
+    check('a row carries a sessionId', typeof row.sessionId === 'string' && row.sessionId !== '')
+    check('a row carries an updatedAt number', typeof row.updatedAt === 'number')
+    check('a row carries boolean flags', typeof row.running === 'boolean' && typeof row.blank === 'boolean')
+    check(
+      'rows are ordered by activity, newest first',
+      rows.every((r, i) => i === 0 || rows[i - 1].updatedAt >= r.updatedAt),
+    )
+
+    // The whole Phase 2a chain in one call: gateway -> session projections ->
+    // usage bridge -> wire.
+    session.send({ v: 1, type: 'session.stats', id: 'm3', payload: { sessionId: row.sessionId } })
+    const stats = await session.next()
+    check('session.stats answers ok', stats?.type === 'ok' && stats.id === 'm3', JSON.stringify(stats).slice(0, 300))
+    check('session.stats echoes the session id', stats?.result?.sessionId === row.sessionId)
+    check('session.stats reports an asOfSeq', typeof stats?.result?.asOfSeq === 'number')
+    const frame = stats?.result?.stats
+    check('the stats frame is present', frame !== null && typeof frame === 'object')
+    check('tokenUsage came through', frame?.tokenUsage !== null && typeof frame?.tokenUsage === 'object', JSON.stringify(frame?.tokenUsage))
+    check(
+      'tokenUsage carries all four counters',
+      typeof frame?.tokenUsage?.uncachedInputTokens === 'number' &&
+        typeof frame?.tokenUsage?.outputTokens === 'number' &&
+        typeof frame?.tokenUsage?.cacheReadTokens === 'number' &&
+        typeof frame?.tokenUsage?.cacheWriteTokens === 'number',
+      JSON.stringify(frame?.tokenUsage),
+    )
+    check(
+      'billedInputTokens is the sum of the three input counters',
+      frame?.tokenUsage?.billedInputTokens ===
+        frame.tokenUsage.uncachedInputTokens + frame.tokenUsage.cacheReadTokens + frame.tokenUsage.cacheWriteTokens,
+    )
+    check(
+      'an absent projection reports null rather than zero',
+      frame?.context === null || typeof frame?.context === 'object',
+      JSON.stringify(frame?.context),
+    )
+    // A blank, never-prompted session has no context sample yet, so `context`
+    // is legitimately null here. What must hold either way is that a present
+    // context carries a breakdown that is an object or explicitly null.
+    check(
+      'a present context carries an object-or-null breakdown',
+      frame?.context === null || frame?.context?.breakdown === null || typeof frame?.context?.breakdown === 'object',
+      JSON.stringify(frame?.context),
+    )
+    // sessionStats is likewise null for a session with no closed steps.
+    check(
+      'sessionStats is an object or null, never a zeroed stand-in',
+      frame?.stats === null || typeof frame?.stats === 'object',
+      JSON.stringify(frame?.stats),
+    )
+    check('cacheHit is derived host-side', frame?.cacheHit !== null && 'ratio' in (frame?.cacheHit ?? {}))
+  }
+
+  session.send({ v: 1, type: 'session.stats', id: 'm4', payload: {} })
+  const missingArg = await session.next()
+  check(
+    'session.stats without a sessionId is a malformed frame',
+    missingArg?.code === 'MALFORMED_FRAME' && missingArg.id === 'm4',
+    JSON.stringify(missingArg),
+  )
+
+  session.send({ v: 1, type: 'session.stats', id: 'm5', payload: { sessionId: 'no-such-session' } })
+  const unknown = await session.next()
+  check(
+    'session.stats on an unknown session answers ok with null stats',
+    unknown?.type === 'ok' && unknown.id === 'm5' && unknown.result?.stats === null,
+    JSON.stringify(unknown).slice(0, 200),
+  )
+
+  session.send({ v: 1, type: 'ping', id: 'p9' })
+  const aliveAfterBridge = await session.next()
+  check('the socket survives the bridge calls', aliveAfterBridge?.type === 'ok' && aliveAfterBridge.id === 'p9')
 
   session.close()
   await settle(100)

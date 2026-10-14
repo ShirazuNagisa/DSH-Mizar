@@ -25,6 +25,7 @@ import type { BindPlan } from '../net/interfaces.js'
 import { authorityOf } from '../net/interfaces.js'
 import {
   encodeFrame,
+  ERROR_CODES,
   errorFrame,
   HELLO_PATH,
   okFrame,
@@ -33,6 +34,7 @@ import {
   parseClientFrame,
   PROTOCOL_VERSION,
   WS_PATH,
+  type ErrorCode,
   type HelloResponseBody,
   type PairResponseBody,
   type ServerFrame,
@@ -83,7 +85,23 @@ export interface ListenerOptions {
   readonly log: (message: string) => void
   /** Called once per authenticated connection. */
   readonly onSession?: (session: ClientSession) => void
+  /**
+   * Wire method implementations, keyed by frame `type`.
+   *
+   * The listener stays transport-only: it moves frames and enforces
+   * authentication, and every DSH-shaped decision lives behind this table.
+   */
+  readonly methods?: Readonly<Record<string, MethodHandler>>
 }
+
+/**
+ * A wire method implementation.
+ *
+ * @param payload - the frame's `payload`, already known to be JSON.
+ * @param session - the authenticated connection making the call.
+ * @returns the value to place in the `ok` frame's `result`.
+ */
+export type MethodHandler = (payload: unknown, session: ClientSession) => Promise<unknown>
 
 /** A running listener. */
 export class MizarListener {
@@ -577,8 +595,25 @@ export class MizarListener {
           return
         }
 
-        // Phase 2 replaces this with the method dispatch table.
-        send(errorFrame('NOT_IMPLEMENTED', `method "${frame.type}" is not implemented`, frame.id))
+        const handler = this.#options.methods?.[frame.type]
+        if (handler === undefined) {
+          send(errorFrame('NOT_IMPLEMENTED', `method "${frame.type}" is not implemented`, frame.id))
+          return
+        }
+
+        try {
+          const result = await handler(frame.payload, session)
+          send(okFrame(frame.id, result))
+        } catch (error) {
+          // A method that knows its own failure code may say so; anything else
+          // is an internal fault and must not leak its message shape to a client.
+          const code = (error as { code?: unknown }).code
+          if (typeof code === 'string' && (ERROR_CODES as readonly string[]).includes(code)) {
+            send(errorFrame(code as ErrorCode, describe(error), frame.id))
+          } else {
+            send(errorFrame('INTERNAL', describe(error), frame.id))
+          }
+        }
       })().catch((error: unknown) => {
         send(errorFrame('INTERNAL', describe(error), currentId))
       })
