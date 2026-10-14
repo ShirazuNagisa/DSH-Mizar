@@ -42,15 +42,26 @@ Node **接受**这些模式但 Windows **忽略**它们。含义是：
 icacls "$env:USERPROFILE\.dsh\.mizar" /inheritance:r /grant:r "$env:USERNAME:(OI)(CI)F"
 ```
 
-### 2. 开发脚本是 bash-only
+### 2. 开发脚本：宿主侧已有跨平台版本
 
-`scripts/` 下四个脚本（`dev.sh`、`ios.sh`、`release.sh`、`swift.sh`）都是 bash，
-**在 Windows 上需要 Git Bash 或 WSL**。而且：
+`scripts/dev.mjs` 是 `dev.sh` 的 Node 重写，取代了 `dev.sh` 里四处不可移植的做法：
 
-- `ios.sh` 和 `swift.sh` 只在 macOS 上有意义（iOS 构建）
-- `dev.sh` 用了 `lsof`、`kill_tree`、`env -u` —— **Git Bash 里 `lsof` 不存在**
+| bash 做法 | Node 做法 |
+|---|---|
+| `pgrep -P` 递归杀进程树 | POSIX 下 `detached` 起进程组，一次 `kill(-pid)`；Windows 下 `taskkill /T /F` |
+| `lsof` 查端口占用 | POSIX 用 `lsof`，Windows 用 `netstat -ano` |
+| `env -u DSH_PROFILE …` 手写清单 | Node 原生在 spawn env 里删，清单不会失同步 |
+| `tail -f` | Windows 走 PowerShell `Get-Content -Wait` |
 
-所以 **Windows 上目前没有可用的开发/冒烟harness**。这是真实缺口。
+**在 macOS 上已验证等价**：`boot` 结果一致，`smoke` **107/107 通过**，`stop` 之后
+端口释放且无残留进程。
+
+`dev.sh` 保留，作为已验证的参考实现。`ios.sh`、`swift.sh`、`release.sh` 仍然是
+bash —— 但它们只在 macOS 上有意义（iOS 构建），所以不构成 Windows 缺口。
+
+**仍然没验证的**：`dev.mjs` 里的 Windows 应用安装路径是**推测的**
+（`%LOCALAPPDATA%\Programs\…` 与 `%PROGRAMFILES%\…`）。`MIZAR_APP` 可以覆盖。
+三个 Windows 专属分支（`taskkill`、`netstat`、PowerShell tail）**从未执行过**。
 
 ## 已在单元测试中覆盖的 Windows 分支
 

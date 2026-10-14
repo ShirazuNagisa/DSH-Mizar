@@ -96,6 +96,11 @@ scripts/dev.sh stop        # 停止（会清理整个进程树）
 scripts/dev.sh dump        # 打印合成后的配置树中与 Mizar 相关的行
 ```
 
+**跨平台等价版本**：`node scripts/dev.mjs <同样的命令>`。它把四处不可移植的做法
+（进程树、端口占用查询、环境清理、日志跟踪）改用 Node 实现，**在 macOS 上已验证
+与 `dev.sh` 等价**（`smoke` 107/107），这样 Windows 上不再需要 Git Bash 才能启动宿主。
+`dev.sh` 保留为已验证的参考实现。
+
 插件自身的循环：
 
 ```sh
