@@ -201,11 +201,13 @@ struct SessionDetailView: View {
                 } label: {
                     Label(stats?.model?.lastUsed?.model ?? "Model", systemImage: "cpu")
                 }
+                .accessibilityIdentifier("session.model")
                 Button {
                     showingPermissionPicker = true
                 } label: {
                     Label(stats?.permissionPreset ?? "Permissions", systemImage: "lock.shield")
                 }
+                .accessibilityIdentifier("session.permissions")
             }
         }
         .sheet(isPresented: $showingModelPicker) {

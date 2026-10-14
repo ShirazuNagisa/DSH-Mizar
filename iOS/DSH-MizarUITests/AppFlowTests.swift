@@ -162,6 +162,53 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(submit.isEnabled, "the batch could not be completed")
     }
 
+    // MARK: - Model and permission switching
+
+    func testTheModelPickerListsTheHostsProviders() {
+        let app = launch()
+        let opener = app.buttons["session.model"]
+        expect(opener, "there is no way to change the model")
+        opener.tap()
+
+        // Rows are buttons, not static text: the row carries an identifier, and
+        // an identifier makes the row one accessibility element with its label
+        // and description merged, so the inner Text is not separately visible.
+        expect(app.buttons["model.row.deepseek-flash"], "the first model is missing")
+        expect(app.buttons["model.row.deepseek-v4-pro"], "the second model is missing")
+        // The provider heading is a standalone element, so it is still text.
+        expect(app.staticTexts["DeepSeek"], "the provider is missing from the picker")
+
+        // A provider that could not be listed is shown rather than hidden: its
+        // models being absent is information. It sits below the models.
+        app.swipeUp()
+        expect(app.staticTexts["OpenRouter"], "an unavailable provider was hidden")
+    }
+
+    func testChoosingAModelRevealsItsReasoningLevels() {
+        let app = launch()
+        app.buttons["session.model"].tap()
+        let model = app.buttons["model.row.deepseek-flash"]
+        expect(model, "the model row is missing")
+        model.tap()
+        // The four levels the host actually offers. The picker must not invent
+        // its own, and must not offer a level the model rejects.
+        expect(app.buttons["Off"], "the reasoning levels were not revealed")
+        expect(app.buttons["Max"], "the highest reasoning level is missing")
+    }
+
+    func testThePermissionPickerWarnsBeforeFullAccess() {
+        let app = launch()
+        let opener = app.buttons["session.permissions"]
+        expect(opener, "there is no way to change the permission preset")
+        opener.tap()
+        expect(app.buttons["permission.row.workspace-write"], "the presets are missing")
+
+        // Only full access asks twice. A preset that grants unrestricted access
+        // to the machine should not be one tap away.
+        app.buttons["permission.row.danger-full-access"].tap()
+        expect(app.staticTexts["Allow full access?"], "full access was granted without confirmation")
+    }
+
     // MARK: - Localisation
 
     func testInterfaceFollowsTheLanguageAndContentDoesNot() {

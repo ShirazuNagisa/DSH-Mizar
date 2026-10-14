@@ -161,12 +161,15 @@ function answer(frame) {
         },
       }
     case 'model.catalog':
+      // Copied from the real catalog. The first version invented `low/medium/high`
+      // efforts; the host offers `off/low/high/max`, so the picker was being
+      // tested against options that do not exist.
       return {
         v: 1,
         type: 'ok',
         id,
         result: {
-          default: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'medium' },
+          default: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high' },
           providers: [
             {
               id: 'deepseek-official',
@@ -174,13 +177,23 @@ function answer(frame) {
               models: [
                 {
                   id: 'deepseek-flash',
-                  name: 'DeepSeek Flash',
-                  description: 'Fast, for routine work',
-                  defaultEffort: 'medium',
+                  name: 'DeepSeek-V41-Flash',
+                  defaultEffort: 'high',
                   efforts: [
-                    { id: 'low', name: 'Low' },
-                    { id: 'medium', name: 'Medium' },
-                    { id: 'high', name: 'High' },
+                    { id: 'off', name: 'Off', description: 'Use for simple tasks that do not need reasoning.' },
+                    { id: 'low', name: 'Low', description: 'Prefer for routine or latency-sensitive tasks.' },
+                    { id: 'high', name: 'High', description: 'The default balance for most tasks.' },
+                    { id: 'max', name: 'Max', description: 'Reserve for the hardest quality-first tasks.' },
+                  ],
+                },
+                {
+                  id: 'deepseek-v4-pro',
+                  name: 'DeepSeek-V4-Pro',
+                  description: 'Stronger agentic coding at higher cost.',
+                  defaultEffort: 'high',
+                  efforts: [
+                    { id: 'off', name: 'Off', description: 'Use for simple tasks.' },
+                    { id: 'high', name: 'High', description: 'The default balance.' },
                   ],
                 },
               ],

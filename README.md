@@ -9,11 +9,11 @@
 > | 宿主插件（TypeScript） | ✅ 监听、配对与吊销、鉴权 WebSocket、会话读写、模型与思考强度、权限预设、用量与上下文、审批与提问（**主动推送**）、自动绑定网卡、Tailscale 静默拉起 |
 > | Web 面板 | ✅ 绑定地址、配对二维码、设备名册 |
 > | MizarKit（协议层） | ✅ 帧、连接与重连、配对、Keychain、消息记录解析 |
-> | iOS / iPad App（SwiftUI） | ✅ 工作区选择、会话列表、对话正文、用量与缓存命中率、模型/思考强度/权限切换、审批与提问、输入与打断、中英双语跟随系统 |
+> | iOS / iPad App（SwiftUI） | ✅ 工作区选择、会话列表、对话正文、用量与缓存命中率、模型/思考强度/权限切换、审批与提问（宿主主动推送）、输入与打断、中英双语跟随系统 |
 > | 发布 | ✅ 已归档、签名、导出 TestFlight 包（v0.1.0） |
 > | Windows | ⚠️ **代码检查通过，但从未运行过** —— 见 [Windows 状态](docs/windows-status.md) |
 >
-> **测试：317（TypeScript）+ 76（Swift）+ 8（iOS UI）+ 107（真实链路冒烟断言）。**
+> **测试：323（TypeScript）+ 76（Swift）+ 11（iOS UI）+ 107（真实链路冒烟断言）。**
 >
 > 关键设计结论：[0001 进程内网关](docs/decision-0001-in-process-gateway.md)、
 > [0002 审批仲裁](docs/decision-0002-approval-arbitration.md)。
@@ -70,12 +70,12 @@ DSH-Mizar/
 ├─ dsh/                                     # Cordis 插件（TypeScript）
 │  ├─ src/          宿主半：index · config · ready · net · auth · bridge · server · panel
 │  ├─ client/       浏览器半：esbuild 封装器 + 面板
-│  ├─ test/         vitest（317）
+│  ├─ test/         vitest（323）
 │  └─ cordis.patch.yml
 ├─ iOS/
 │  ├─ MizarKit/                  Swift 包：协议层 + 单元测试（76）
 │  ├─ DSH-Mizar/                 SwiftUI App
-│  ├─ DSH-MizarUITests/          XCUITest（8）
+│  ├─ DSH-MizarUITests/          XCUITest（11）
 │  ├─ DSH-Mizar.xcodeproj/       手写 pbxproj
 │  └─ ExportOptions.plist
 └─ scripts/                      dev · ios · swift · release · mock-host · smoke-listener
@@ -194,7 +194,7 @@ scripts/ios.sh screenshot  # 截屏
 
 ### UI 测试
 
-`iOS/DSH-MizarUITests/` 有 8 个 XCUITest，跑在 `scripts/mock-host.mjs` 上：
+`iOS/DSH-MizarUITests/` 有 11 个 XCUITest，跑在 `scripts/mock-host.mjs` 上：
 
 ```sh
 node scripts/mock-host.mjs 19395 &

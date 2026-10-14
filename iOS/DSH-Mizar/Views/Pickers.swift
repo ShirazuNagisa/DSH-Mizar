@@ -90,6 +90,7 @@ struct ModelPickerView: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("model.row.\(option.id)")
 
             if isChosen && !option.efforts.isEmpty {
                 effortPicker(provider: provider.id, option: option)
@@ -154,6 +155,7 @@ struct PermissionPickerView: View {
                                 optionRow(option)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("permission.row.\(option.value)")
                         }
                     } footer: {
                         Text("Applies to this session immediately. A running turn is not interrupted.")
