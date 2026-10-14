@@ -109,40 +109,74 @@ struct SessionRowView: View {
     }
 }
 
-/// A conversation and its usage.
+/// A session: what is waiting, what it has cost, and somewhere to type.
+///
+/// The order is deliberate. Pending requests sit above usage because an agent
+/// blocked on a decision is more urgent than a number, and the composer is
+/// pinned to the bottom where the keyboard expects it.
 struct SessionDetailView: View {
     let sessionId: String
 
     @Environment(AppModel.self) private var model
     @State private var stats: SessionStatsFrame?
     @State private var loading = true
+    @State private var showingModelPicker = false
+    @State private var showingPermissionPicker = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if loading {
-                    ProgressView().frame(maxWidth: .infinity)
-                } else if let stats {
-                    UsageSection(stats: stats)
-                } else {
-                    ContentUnavailableView(
-                        "No usage yet",
-                        systemImage: "chart.bar",
-                        description: Text("This session has not sent a request."),
-                    )
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    InteractionsView()
+
+                    if loading {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else if let stats {
+                        UsageSection(stats: stats)
+                    } else {
+                        ContentUnavailableView(
+                            "No usage yet",
+                            systemImage: "chart.bar",
+                            description: Text("This session has not sent a request."),
+                        )
+                    }
+                }
+                .padding()
+            }
+            .refreshable {
+                stats = await model.stats(for: sessionId)
+                await model.refreshInteractions()
+            }
+
+            ComposerView(sessionId: sessionId)
+        }
+        .navigationTitle(stats?.title ?? "Session")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    showingModelPicker = true
+                } label: {
+                    Label(stats?.model?.lastUsed?.model ?? "Model", systemImage: "cpu")
+                }
+                Button {
+                    showingPermissionPicker = true
+                } label: {
+                    Label(stats?.permissionPreset ?? "Permissions", systemImage: "lock.shield")
                 }
             }
-            .padding()
         }
-        .navigationTitle("Session")
-        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingModelPicker) {
+            ModelPickerView(sessionId: sessionId)
+        }
+        .sheet(isPresented: $showingPermissionPicker) {
+            PermissionPickerView(sessionId: sessionId)
+        }
         .task(id: sessionId) {
             loading = true
             stats = await model.stats(for: sessionId)
             loading = false
-        }
-        .refreshable {
-            stats = await model.stats(for: sessionId)
+            await model.refreshInteractions()
         }
     }
 }

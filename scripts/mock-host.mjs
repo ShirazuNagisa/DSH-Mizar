@@ -1,0 +1,241 @@
+/**
+ * A stand-in host, for verifying UI that needs state the real host cannot be
+ * asked to produce on demand.
+ *
+ * A pending approval only exists while an agent is blocked on a tool call, so
+ * the only ways to see one are to catch it live or to fake it. Catching it live
+ * depends on a model deciding to call a tool, which makes it useless as a test.
+ * This serves the real protocol -- the same frames, the same shapes, taken from
+ * the recorded fixtures -- so the app renders actual decoded responses rather
+ * than a special-cased path.
+ *
+ * It is a test fixture, not a host: it authenticates nothing and stores nothing.
+ *
+ * Usage: node scripts/mock-host.mjs [port]
+ */
+import { createServer } from 'node:http'
+import ws from '../dsh/node_modules/ws/index.js'
+
+const { WebSocketServer } = ws
+
+const port = Number(process.argv[2] ?? 19395)
+const CODE = 'MOCK-CODE'
+
+/** A pending approval, shaped like the one the bridge builds. */
+const APPROVAL = {
+  requestId: 'a1b2c3d4-0000-4000-8000-000000000001',
+  sessionId: 'session-mock-0001',
+  toolName: 'write_file',
+  callId: 'call-1',
+  reason: 'Writing to a path outside the workspace',
+  displayReason: {
+    en: 'Writing to a path outside the workspace',
+    zh: '正在写入工作区之外的路径',
+  },
+  requestedAt: Date.now() / 1000,
+}
+
+/** A question batch, including a plan review, which is the interesting shape. */
+const QUESTION = {
+  callId: 'call-2',
+  sessionId: 'session-mock-0001',
+  requestedAt: Date.now() / 1000,
+  questions: [
+    {
+      id: 'q1',
+      header: 'Approach',
+      question: 'How should I handle the schema change?',
+      detail: 'The migration is not reversible without a backup.',
+      multiSelect: false,
+      options: [
+        { label: 'Migrate in place', description: 'Fast, and needs a backup first.' },
+        { label: 'Add a new column', description: 'Slower, and reversible.' },
+      ],
+    },
+    {
+      id: 'q2',
+      header: 'Plan',
+      question: 'Proceed with this plan?',
+      intent: { kind: 'plan-review', approve: 'Approve plan' },
+      multiSelect: false,
+      options: [{ label: 'Approve plan', description: 'Start implementing.' }],
+    },
+  ],
+}
+
+const SESSION = {
+  sessionId: 'session-mock-0001',
+  cwd: '/Users/you/projects/demo',
+  // Epoch milliseconds, which is what the host reports.
+  updatedAt: Date.now() - 120_000,
+  running: true,
+  blank: false,
+  agentAvailable: true,
+  parentSessionId: null,
+  origin: null,
+}
+
+/** Answer one client frame. */
+function answer(frame) {
+  const { id, type } = frame
+  switch (type) {
+    case 'hello':
+      return {
+        v: 1,
+        type: 'welcome',
+        id,
+        hostId: 'mock-host-0000-4000-8000-000000000000',
+        hostName: 'Mock Mac (fixture)',
+        protocolVersion: 1,
+        home: '/Users/you',
+        deviceId: 'mock-device-0000-4000-8000-000000000000',
+      }
+    case 'session.list':
+      return { v: 1, type: 'ok', id, result: { items: [SESSION] } }
+    case 'interactions.pending':
+      return { v: 1, type: 'ok', id, result: { approvals: [APPROVAL], questions: [QUESTION] } }
+    case 'session.stats':
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: {
+          stats: {
+            sessionId: SESSION.sessionId,
+            title: 'Mock session',
+            tokenUsage: {
+              uncachedInputTokens: 12_480,
+              cacheReadTokens: 180_320,
+              cacheWriteTokens: 4_096,
+              outputTokens: 3_712,
+              billedInputTokens: 196_896,
+            },
+            cacheHit: { numerator: 180_320, denominator: 196_896, percent: 92 },
+            contextPressure: {
+              contextWindow: 128_000,
+              pressureTokens: 41_000,
+              projectedTokens: 44_500,
+              percent: 35,
+            },
+            contextBreakdown: { systemTokens: 1_455, toolsTokens: 5_157, messageTokens: 34_388 },
+            stats: {
+              turns: 6,
+              steps: 14,
+              llmMs: 48_200,
+              toolMs: 6_100,
+              ttftMs: 640,
+              decodeTokensPerSecond: 58,
+            },
+            model: {
+              lastUsed: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high' },
+              next: null,
+            },
+            permissions: { preset: 'workspace-write' },
+          },
+        },
+      }
+    case 'model.catalog':
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: {
+          default: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'medium' },
+          providers: [
+            {
+              id: 'deepseek-official',
+              name: 'DeepSeek',
+              models: [
+                {
+                  id: 'deepseek-flash',
+                  name: 'DeepSeek Flash',
+                  description: 'Fast, for routine work',
+                  defaultEffort: 'medium',
+                  efforts: [
+                    { id: 'low', name: 'Low' },
+                    { id: 'medium', name: 'Medium' },
+                    { id: 'high', name: 'High' },
+                  ],
+                },
+              ],
+            },
+          ],
+          failures: [{ id: 'openrouter', name: 'OpenRouter', message: 'not signed in' }],
+        },
+      }
+    case 'permissions.catalog':
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: {
+          defaultPreset: 'workspace-write',
+          defaults: [],
+          options: [
+            { value: 'read-only', name: 'Read only', description: 'Can look, cannot touch.' },
+            { value: 'workspace-write', name: 'Workspace write', description: 'Writes inside the workspace.' },
+            { value: 'danger-full-access', name: 'Full access', description: 'Unrestricted access to this machine.' },
+          ],
+        },
+      }
+    case 'ping':
+      return { v: 1, type: 'ok', id }
+    case 'approval.answer':
+    case 'question.answer':
+      return { v: 1, type: 'ok', id, result: { accepted: true } }
+    default:
+      return { v: 1, type: 'ok', id, result: {} }
+  }
+}
+
+const server = createServer((request, response) => {
+  if (request.url?.startsWith('/mizar/v1/hello')) {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({
+      protocolVersion: 1,
+      hostId: 'mock-host-0000-4000-8000-000000000000',
+      hostName: 'Mock Mac (fixture)',
+      paired: false,
+      pairingOpen: true,
+    }))
+    return
+  }
+  if (request.url?.startsWith('/mizar/v1/pair')) {
+    let body = ''
+    request.on('data', (chunk) => { body += chunk })
+    request.on('end', () => {
+      let parsed = {}
+      try { parsed = JSON.parse(body) } catch { /* refuse below */ }
+      if (parsed.code !== CODE) {
+        response.writeHead(403, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ code: 'BAD_CODE', message: 'wrong code' }))
+        return
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        deviceToken: 'mz_mock_token',
+        deviceId: 'mock-device-0000-4000-8000-000000000000',
+        hostId: 'mock-host-0000-4000-8000-000000000000',
+        hostName: 'Mock Mac (fixture)',
+        authority: `127.0.0.1:${port}`,
+        protocolVersion: 1,
+      }))
+    })
+    return
+  }
+  response.writeHead(404).end()
+})
+
+const wss = new WebSocketServer({ server, path: '/mizar/v1/ws' })
+wss.on('connection', (socket) => {
+  socket.on('message', (raw) => {
+    let frame
+    try { frame = JSON.parse(String(raw)) } catch { return }
+    socket.send(JSON.stringify(answer(frame)))
+  })
+})
+
+server.listen(port, '127.0.0.1', () => {
+  console.log(`mock host on 127.0.0.1:${port}, code ${CODE}`)
+  console.log(`mizar://pair?h=127.0.0.1%3A${port}&c=${CODE}&n=Mock%20Mac&v=1`)
+})

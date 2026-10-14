@@ -34,7 +34,31 @@ final class AppModel {
     /// The sessions the host lists, newest activity first.
     private(set) var sessions: [SessionRow] = []
     /// The session the conversation screen is showing.
-    var selectedSessionId: String?
+    var selectedSessionId: String? {
+        didSet {
+            guard selectedSessionId != oldValue else { return }
+            pending = nil
+            Task { await refreshInteractions() }
+        }
+    }
+    /// Everything waiting on the operator right now.
+    ///
+    /// Polled rather than pushed: the host does not yet broadcast a new approval
+    /// to connected devices, so the phone has to ask. That is a real limitation
+    /// -- a request that arrives between polls waits up to one interval -- and
+    /// the interval is kept short to bound it.
+    private(set) var pending: PendingInteractions?
+    /// The models this host offers.
+    private(set) var modelCatalog: ModelCatalog?
+    /// The permission presets this host offers.
+    private(set) var permissionCatalog: PermissionCatalog?
+    /// The idempotency key for the prompt currently being submitted.
+    private var lastRequestId: String?
+    /// The poll that watches for pending interactions.
+    private var interactionPoll: Task<Void, Never>?
+
+    /// How often to ask the host for pending interactions.
+    private static let interactionPollSeconds: Duration = .seconds(4)
 
     private let credentials: any CredentialStore
     private var connection: MizarConnection?
@@ -92,8 +116,146 @@ final class AppModel {
         return arguments[arguments.index(after: index)]
     }
 
+    /// Ask the host what is waiting, and keep asking while connected.
+    private func startInteractionPoll() {
+        interactionPoll?.cancel()
+        interactionPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshInteractions()
+                try? await Task.sleep(for: Self.interactionPollSeconds)
+            }
+        }
+    }
+
+    /// Read the pending approvals and questions.
+    func refreshInteractions() async {
+        guard let connection else { return }
+        pending = try? await connection.call("interactions.pending", as: PendingInteractions.self)
+    }
+
+    /// Answer an approval.
+    ///
+    /// - Parameters:
+    ///   - approval: the request being answered.
+    ///   - outcome: what to do with it.
+    func answerApproval(_ approval: PendingApproval, outcome: ApprovalOutcome) async {
+        guard let connection else { return }
+        let payload = JSONValue.object([
+            "requestId": .string(approval.requestId),
+            "outcome": .string(outcome.rawValue),
+        ])
+        _ = try? await connection.call("approval.answer", payload: payload, as: AcceptanceResult.self)
+        // Re-read rather than removing locally: the host is the authority on
+        // what is still outstanding, and a racing device may have answered it.
+        await refreshInteractions()
+    }
+
+    /// Answer a whole question batch.
+    /// - Parameters:
+    ///   - question: the batch being answered.
+    ///   - answers: one answer per question, in the batch's order.
+    func answerQuestion(_ question: PendingQuestion, answers: [QuestionAnswer]) async {
+        guard let connection else { return }
+        let payload = JSONValue.object(["callId": .string(question.callId)])
+        let batch = QuestionAnswerBatch(answers: answers)
+        guard let encoded = try? JSONEncoder().encode(batch),
+              let value = try? JSONDecoder().decode(JSONValue.self, from: encoded)
+        else { return }
+        var merged = payload
+        if case .object(var fields) = merged, case .object(let batchFields) = value {
+            for (key, fieldValue) in batchFields { fields[key] = fieldValue }
+            merged = .object(fields)
+        }
+        _ = try? await connection.call("question.answer", payload: merged, as: AcceptanceResult.self)
+        await refreshInteractions()
+    }
+
+    /// Load the model and permission catalogs, once.
+    func loadCatalogs() async {
+        guard let connection else { return }
+        if modelCatalog == nil {
+            modelCatalog = try? await connection.call("model.catalog", as: ModelCatalog.self)
+        }
+        if permissionCatalog == nil {
+            permissionCatalog = try? await connection.call("permissions.catalog", as: PermissionCatalog.self)
+        }
+    }
+
+    /// Send a prompt to a session.
+    ///
+    /// - Parameters:
+    ///   - text: what to say.
+    ///   - sessionId: the session to say it to.
+    /// - Returns: whether the host accepted it.
+    @discardableResult
+    func sendPrompt(_ text: String, to sessionId: String) async -> Bool {
+        guard let connection, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        // A fresh key per submission: the host uses it to make a retry of the
+        // same prompt idempotent, and reusing one would make a second, genuinely
+        // different prompt look like a duplicate.
+        let requestId = UUID().uuidString
+        let payload = JSONValue.object([
+            "sessionId": .string(sessionId),
+            "text": .string(text),
+            "requestId": .string(requestId),
+        ])
+        do {
+            let result = try await connection.call("session.prompt", payload: payload, as: PromptResult.self)
+            if result.accepted { lastRequestId = result.requestId }
+            return result.accepted
+        } catch {
+            phase = .failed(Self.describe(error))
+            return false
+        }
+    }
+
+    /// Ask the host to stop the current turn.
+    func cancelTurn(sessionId: String) async {
+        guard let connection else { return }
+        let payload = JSONValue.object(["sessionId": .string(sessionId)])
+        _ = try? await connection.call("session.cancel", payload: payload, as: AcceptanceResult.self)
+    }
+
+    /// Switch the session's model, and optionally its reasoning effort.
+    /// - Parameters:
+    ///   - provider: the provider id.
+    ///   - model: the model id.
+    ///   - effort: the reasoning level, or `nil` for the provider default.
+    ///   - sessionId: the session to change.
+    func setModel(provider: String, model: String, effort: String?, sessionId: String) async {
+        guard let connection else { return }
+        var fields: [String: JSONValue] = [
+            "sessionId": .string(sessionId),
+            "provider": .string(provider),
+            "model": .string(model),
+        ]
+        if let effort { fields["reasoningEffort"] = .string(effort) }
+        _ = try? await connection.call(
+            "session.model.set",
+            payload: .object(fields),
+            as: SelectModelResult.self,
+        )
+    }
+
+    /// Switch the session's permission preset.
+    /// - Parameters:
+    ///   - preset: the preset value.
+    ///   - sessionId: the session to change.
+    /// - Returns: the host's report, or `nil` when it could not be reached.
+    func setPermission(_ preset: String, sessionId: String) async -> SetPermissionResult? {
+        guard let connection else { return nil }
+        let payload = JSONValue.object([
+            "sessionId": .string(sessionId),
+            "preset": .string(preset),
+        ])
+        return try? await connection.call("session.permission.set", payload: payload, as: SetPermissionResult.self)
+    }
+
     /// Forget the pairing and return to the pairing screen.
     func unpair() async {
+        interactionPoll?.cancel()
         await connection?.disconnect()
         connection = nil
         welcome = nil
@@ -173,6 +335,7 @@ final class AppModel {
         self.welcome = welcome
         phase = .ready
         await refreshSessions()
+        startInteractionPoll()
 
         if let requested = Self.launchSelectedSession {
             selectedSessionId = requested == "first" ? sessions.first?.sessionId : requested
