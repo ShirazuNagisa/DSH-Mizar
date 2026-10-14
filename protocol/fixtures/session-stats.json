@@ -1,0 +1,41 @@
+{
+  "v": 1,
+  "type": "ok",
+  "id": "m3",
+  "result": {
+    "sessionId": "session-b2d4a92f-1429-4960-85a5-e0aed72df371",
+    "asOfSeq": 15,
+    "stats": {
+      "tokenUsage": {
+        "uncachedInputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "billedInputTokens": 0
+      },
+      "cacheHit": {
+        "ratio": null,
+        "displayPercent": null
+      },
+      "context": null,
+      "stats": {
+        "turns": 0,
+        "steps": 0,
+        "llmMs": 0,
+        "toolMs": 0,
+        "ttftMs": null,
+        "decodeTokensPerSecond": null
+      },
+      "model": {
+        "lastUsed": null,
+        "next": {
+          "provider": "deepseek-official",
+          "model": "deepseek-flash",
+          "reasoningEffort": "off"
+        }
+      },
+      "permissionPreset": "read-only",
+      "title": "Mizar smoke session"
+    }
+  }
+}

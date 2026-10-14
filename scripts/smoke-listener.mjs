@@ -25,6 +25,39 @@ const WS_URL = BASE.replace(/^http/, 'ws') + '/mizar/v1/ws'
 let passed = 0
 let failed = 0
 
+/**
+ * Golden frames captured from the live host, shared with the Swift side.
+ *
+ * Set MIZAR_WRITE_FIXTURES=1 to refresh them (via scripts/dev.sh smoke). Both
+ * test suites decode these files, so a change to what the host actually sends
+ * fails on the side that did not change — which is the only way a two-language
+ * contract stays honest.
+ */
+const FIXTURE_DIR = new URL('../protocol/fixtures/', import.meta.url)
+const recordFixtures = process.env['MIZAR_WRITE_FIXTURES'] === '1'
+const fixtures = {}
+
+/**
+ * Record one frame for the fixture set.
+ * @param {string} name - fixture file name, without extension.
+ * @param {any} frame - the frame exactly as it arrived.
+ */
+function record(name, frame) {
+  if (!recordFixtures || frame === undefined || frame === null) return
+  fixtures[name] = frame
+}
+
+/** Write the recorded frames, or report why nothing was written. */
+async function flushFixtures() {
+  if (!recordFixtures) return
+  const { mkdir, writeFile } = await import('node:fs/promises')
+  await mkdir(FIXTURE_DIR, { recursive: true })
+  for (const [name, frame] of Object.entries(fixtures)) {
+    await writeFile(new URL(`${name}.json`, FIXTURE_DIR), `${JSON.stringify(frame, null, 2)}\n`, 'utf8')
+  }
+  console.log(`\nfixtures: wrote ${Object.keys(fixtures).length} frame(s) to protocol/fixtures/`)
+}
+
 /** Small pause helper. */
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -216,6 +249,7 @@ async function main() {
   check('a valid token is accepted', welcome?.type === 'welcome', JSON.stringify(welcome))
   check('welcome carries the host name', typeof welcome?.hostName === 'string' && welcome.hostName !== '')
   check('welcome carries the device id', typeof welcome?.deviceId === 'string' && welcome.deviceId !== '')
+  record('welcome', welcome)
 
   session.send({ v: 1, type: 'ping', id: 'p1' })
   const pong = await session.next()
@@ -255,12 +289,14 @@ async function main() {
   check('host.info answers ok', hostInfo?.type === 'ok' && hostInfo.id === 'm1', JSON.stringify(hostInfo))
   check('host.info carries the host id', typeof hostInfo?.result?.hostId === 'string' && hostInfo.result.hostId !== '')
   check('host.info carries the protocol version', hostInfo?.result?.protocolVersion === 1)
+  record('host-info', hostInfo)
 
   session.send({ v: 1, type: 'session.list', id: 'm2' })
   const listed = await session.next()
   check('session.list answers ok', listed?.type === 'ok' && listed.id === 'm2', JSON.stringify(listed).slice(0, 300))
   const rows = listed?.result?.items
   check('session.list returns an array', Array.isArray(rows), typeof rows)
+  record('session-list', listed)
   check('session.list finds the sessions in this home', Array.isArray(rows) && rows.length > 0, `got ${rows?.length}`)
   if (Array.isArray(rows) && rows.length > 0) {
     const row = rows[0]
@@ -279,6 +315,7 @@ async function main() {
     check('session.stats answers ok', stats?.type === 'ok' && stats.id === 'm3', JSON.stringify(stats).slice(0, 300))
     check('session.stats echoes the session id', stats?.result?.sessionId === row.sessionId)
     check('session.stats reports an asOfSeq', typeof stats?.result?.asOfSeq === 'number')
+    record('session-stats', stats)
     const frame = stats?.result?.stats
     check('the stats frame is present', frame !== null && typeof frame === 'object')
     check('tokenUsage came through', frame?.tokenUsage !== null && typeof frame?.tokenUsage === 'object', JSON.stringify(frame?.tokenUsage))
@@ -343,6 +380,7 @@ async function main() {
   const models = await session.next()
   check('model.catalog answers ok', models?.type === 'ok' && models.id === 'c1', JSON.stringify(models).slice(0, 200))
   check('the catalog lists providers', Array.isArray(models?.result?.providers), typeof models?.result?.providers)
+  record('model-catalog', models)
   const firstModel = models?.result?.providers?.[0]?.models?.[0]
   check('a provider group carries models', firstModel !== undefined, JSON.stringify(models?.result?.providers?.[0]))
   check('a model carries a reasoning effort list', Array.isArray(firstModel?.efforts), JSON.stringify(firstModel))
@@ -352,6 +390,7 @@ async function main() {
   check('permissions.catalog answers ok', permissions?.type === 'ok' && permissions.id === 'c2', JSON.stringify(permissions).slice(0, 200))
   const presetValues = (permissions?.result?.options ?? []).map((option) => option.value)
   check('the permission catalog lists presets', presetValues.length > 0, JSON.stringify(presetValues))
+  record('permissions-catalog', permissions)
   check('every preset option carries a name', (permissions?.result?.options ?? []).every((o) => typeof o.name === 'string' && o.name !== ''))
   // `custom` is derived-only and must never be offered as a target; `auto` is
   // live-only, so it may legitimately be present or absent.
@@ -385,6 +424,7 @@ async function main() {
       refused?.type === 'error' && refused.id === 'w4',
       JSON.stringify(refused).slice(0, 200),
     )
+    record('error-frame', refused)
 
     if (firstModel !== undefined) {
       session.send({
@@ -467,6 +507,7 @@ async function main() {
   const pendingNow = await session.next()
   check('interactions.pending answers ok', pendingNow?.type === 'ok' && pendingNow.id === 'i1', JSON.stringify(pendingNow).slice(0, 200))
   check('the pending view carries both lists', Array.isArray(pendingNow?.result?.approvals) && Array.isArray(pendingNow?.result?.questions), JSON.stringify(pendingNow?.result))
+  record('interactions-pending', pendingNow)
 
   session.send({ v: 1, type: 'approval.answer', id: 'i2', payload: { requestId: 'no-such-request', outcome: 'allowed-once' } })
   const staleApproval = await session.next()
@@ -524,6 +565,8 @@ async function main() {
   // request. Runs last because issuing a code here invalidates the one the
   // device-pairing section consumed.
   await panelSection()
+
+  await flushFixtures()
 
   console.log(`\nmizar smoke: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)

@@ -248,6 +248,7 @@ cmd_smoke() {
     MIZAR_CODE="$code" \
     MIZAR_WEB_BASE="http://127.0.0.1:$MIZAR_WEB_PORT" \
     MIZAR_WEB_TOKEN="$webToken" \
+    MIZAR_WRITE_FIXTURES="${MIZAR_WRITE_FIXTURES:-0}" \
     node "$ROOT/scripts/smoke-listener.mjs"
 }
 

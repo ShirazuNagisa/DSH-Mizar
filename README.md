@@ -2,11 +2,14 @@
 
 **远程监控并指导 DSH Agent 工作。** 一个 DSH 插件 + 一个 Swift 原生 iOS/iPad App。
 
-> **当前状态：Phase 0 / 1 / 2 / 3 完成。** 宿主插件已能启动独立监听端口、配对设备、持久化
-> 凭据、通过鉴权 WebSocket 通信，并完成 Bridge：会话读写、模型与思考强度、权限预设、
-> 用量统计、审批与提问。DSH Web GUI 里的 **Mizar 面板**显示绑定地址、配对二维码与设备名册。
-> 全部经真实链路端到端验证（**107/107**），另有 243 个单元测试。
-> 下一步是 Phase 4–5（iOS）。
+> **当前状态：Phase 0 / 1 / 2 / 3 / 4 完成。**
+> **宿主插件（全部做完）**：独立监听端口、设备配对与吊销、鉴权 WebSocket、会话读写、
+> 模型与思考强度、权限预设、用量统计、审批与提问；DSH GUI 里的 **Mizar 面板**显示绑定
+> 地址、配对二维码与设备名册。真实链路端到端验证 **107/107**。
+> **iOS 协议层（MizarKit）**：帧解析、连接与重连、配对、凭据存储、黄金帧契约测试。
+>
+> 测试总计 **255（TypeScript）+ 68（Swift）**，其中 23 个是两端共读同一批黄金帧的契约测试。
+> 下一步是 Phase 5（iOS UI）。
 >
 > 关键设计结论：[0001 进程内网关](docs/decision-0001-in-process-gateway.md)、
 > [0002 审批仲裁](docs/decision-0002-approval-arbitration.md)。
@@ -108,6 +111,44 @@ Bridge —— 会话列表与用量、模型目录、权限目录、会话创建
 > 用 `env -u` 清掉继承来的 DSH 会话标记。
 
 ---
+
+## iOS：MizarKit（协议层）
+
+`iOS/MizarKit/` 是一个 Swift 包，**先用 `swift test` 在 Mac 本机上跑**，而不是一开始就手写
+`project.pbxproj` 走模拟器——一轮测试约 0.13 秒。App 工程稍后建立并引用这个本地包。
+
+```
+iOS/MizarKit/Sources/MizarKit/
+├─ JSONValue.swift          任意 JSON 的 Codable 表示
+├─ Frames.swift             协议 v1：帧、错误码、握手体
+├─ DomainModels.swift       会话/用量/模型/权限/交互的类型
+├─ PairingURI.swift         mizar:// 配对 URI（与 TS 侧逐字节一致）
+├─ PairingClient.swift      唯一一次免鉴权交互（hello + pair）
+├─ MizarConnection.swift    鉴权连接：请求关联、事件推送、断线清理
+├─ WebSocketTransport.swift 协议 + URLSession 实现
+├─ Backoff.swift            带抖动的重试节奏
+└─ CredentialStore.swift    Keychain 存储（测试注入内存实现）
+```
+
+```sh
+scripts/swift.sh test      # 构建并运行 Swift 测试
+scripts/swift.sh build
+```
+
+> 为什么包装一层脚本：SwiftPM 自己会用 `sandbox-exec` 编译 manifest，而它**无法嵌套在
+> DSH 会话的文件沙箱里**（报 `sandbox_apply: Operation not permitted`），必须
+> `--disable-sandbox`；另外 SwiftPM 默认缓存目录在 `~/Library` 下、工作区外，三个路径都要
+> 重定向进仓库。
+
+### 黄金帧契约
+
+`protocol/fixtures/` 里的帧是**从真实运行的宿主捕获的**，不是手写的，并且
+**TypeScript 与 Swift 两套测试读同一批文件**。手写的帧和真实的帧只有在有人记得同步时才
+一致，而它们不同步时不会有任何东西失败；两个解码器读一个产物才能真正把契约钉住。
+
+```sh
+MIZAR_WRITE_FIXTURES=1 scripts/dev.sh smoke   # 重新捕获
+```
 
 ## Web 面板
 

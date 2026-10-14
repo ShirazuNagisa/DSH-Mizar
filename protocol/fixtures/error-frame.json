@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "type": "error",
+  "code": "REMOTE_ERROR",
+  "message": "MethodError: unknown preset \"not-a-preset\" (available: read-only, workspace-write, danger-full-access)",
+  "retryable": false,
+  "id": "w4"
+}

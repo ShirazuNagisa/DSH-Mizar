@@ -1,0 +1,99 @@
+{
+  "v": 1,
+  "type": "ok",
+  "id": "m2",
+  "result": {
+    "items": [
+      {
+        "sessionId": "session-b2d4a92f-1429-4960-85a5-e0aed72df371",
+        "updatedAt": 1791968497496,
+        "running": false,
+        "blank": false,
+        "agentAvailable": false,
+        "cwd": "/Users/shirazu/Documents/project/DSH-Mizar",
+        "parentSessionId": null,
+        "origin": null
+      },
+      {
+        "sessionId": "session-a0181820-5b6b-4a33-9c35-e2a047a70426",
+        "updatedAt": 1791968482635,
+        "running": false,
+        "blank": false,
+        "agentAvailable": false,
+        "cwd": "/Users/shirazu/Documents/project/DSH-Mizar",
+        "parentSessionId": null,
+        "origin": null
+      },
+      {
+        "sessionId": "session-49043b79-a529-4e33-a492-42af1c88db7b",
+        "updatedAt": 1791968457068,
+        "running": false,
+        "blank": false,
+        "agentAvailable": false,
+        "cwd": "/Users/shirazu/Documents/project/DSH-Mizar",
+        "parentSessionId": null,
+        "origin": null
+      },
+      {
+        "sessionId": "session-0df0da18-1b62-45a5-a584-a9831cbf777f",
+        "updatedAt": 1791968270252,
+        "running": false,
+        "blank": false,
+        "agentAvailable": false,
+        "cwd": "/Users/shirazu/Documents/project/DSH-Mizar",
+        "parentSessionId": null,
+        "origin": null
+      },
+      {
+        "sessionId": "session-49ddc8ab-04c1-4823-9e2c-7bf6dc699856",
+        "updatedAt": 1791968109591,
+        "running": false,
+        "blank": false,
+        "agentAvailable": false,
+        "cwd": "/Users/shirazu/Documents/project/DSH-Mizar",
+        "parentSessionId": null,
+        "origin": null
+      },
+      {
+        "sessionId": "session-4116161b-1295-4cfa-b860-732aad82362c",
+        "updatedAt": 1791968086322,
+        "running": false,
+        "blank": true,
+        "agentAvailable": false,
+        "cwd": "/Users/shirazu/Documents/project/DSH-Mizar",
+        "parentSessionId": null,
+        "origin": null
+      },
+      {
+        "sessionId": "session-4d2d67d6-4581-47f4-9114-48f3798e806c",
+        "updatedAt": 1791968086286,
+        "running": false,
+        "blank": false,
+        "agentAvailable": false,
+        "cwd": "/Users/shirazu/Documents/project/DSH-Mizar",
+        "parentSessionId": null,
+        "origin": null
+      },
+      {
+        "sessionId": "session-5525b4da-565c-4f46-977c-d3dbb913d9f5",
+        "updatedAt": 1791966296674,
+        "running": false,
+        "blank": true,
+        "agentAvailable": false,
+        "cwd": "/Users/shirazu/Documents/project/DSH-Mizar",
+        "parentSessionId": null,
+        "origin": null
+      },
+      {
+        "sessionId": "session-36d7bf3c-c4fa-469f-9f6b-d7e372531345",
+        "updatedAt": 1791966220931,
+        "running": false,
+        "blank": true,
+        "agentAvailable": false,
+        "cwd": "/Users/shirazu/Documents/project/DSH-Mizar",
+        "parentSessionId": null,
+        "origin": null
+      }
+    ]
+  }
+}
