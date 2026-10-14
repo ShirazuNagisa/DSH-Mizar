@@ -18,7 +18,14 @@ import { createMethodTable } from './bridge/index.js'
 import { InteractionBroker } from './bridge/interactions.js'
 import { registerPanelApi } from './panel/api.js'
 import { MizarStore, resolveMizarHome } from './auth/store.js'
-import { selectBindAddresses, snapshotInterfaces } from './net/interfaces.js'
+import { selectBindAddresses, snapshotInterfaces, type BindPlan } from './net/interfaces.js'
+import {
+  bringTailscaleUp,
+  describeTailscaleState,
+  findTailscaleCli,
+  readTailscaleState,
+} from './net/tailscale.js'
+import { awaitRequestedPlan, bindKey, needsRebind } from './net/watch.js'
 import { PROTOCOL_VERSION } from './protocol/frames.js'
 import { MizarListener } from './server/listener.js'
 import { runSpike } from './spike.js'
@@ -35,6 +42,85 @@ export const name = 'mizar'
  * `ctx.typert` to a plugin that does not declare it.
  */
 export const inject = ['typert', 'typertGateway', 'sessionProjections', 'sessions']
+
+/**
+ * Watch the bind plan and rebind when the host's addresses change.
+ *
+ * Covers the case the startup wait cannot: Tailscale connected long after DSH
+ * started, reconnected after a reboot, or moved to a different address. Without
+ * this the listener would sit on loopback forever and the phone would simply
+ * never reach it.
+ *
+ * @param config - plugin configuration.
+ * @param readPlan - reads the current plan.
+ * @param holder - the listener handle, swapped on rebind.
+ * @param initial - the plan the listener is bound to now.
+ * @param signal - aborted when the plugin unloads.
+ */
+function startBindWatcher(
+  config: MizarConfig,
+  readPlan: () => BindPlan,
+  holder: { current: MizarListener | null },
+  initial: BindPlan,
+  signal: AbortSignal,
+): void {
+  let current = bindKey(initial)
+
+  const timer = setInterval(() => {
+    void (async () => {
+      const next = readPlan()
+      if (!needsRebind(current, next)) return
+      const listener = holder.current
+      if (listener === null) return
+
+      report(`network changed — rebinding from [${current}] to [${bindKey(next)}]`)
+      try {
+        await listener.rebind(next)
+        current = bindKey(next)
+      } catch (error) {
+        report(`rebind failed, staying on [${current}] — ${describe(error)}`)
+      }
+    })()
+  }, Math.max(1000, config.bind.pollMs))
+  timer.unref?.()
+  signal.addEventListener('abort', () => clearInterval(timer))
+}
+
+/**
+ * Say why a tailnet address was not found, and optionally fix it.
+ *
+ * "No Tailscale interface found" covers three different situations with three
+ * different remedies, and only one of them is something the plugin can do.
+ *
+ * @param config - plugin configuration.
+ * @param fallback - the plan that was chosen instead.
+ */
+async function explainTailscale(config: MizarConfig, fallback: BindPlan): Promise<void> {
+  if (config.bind.mode !== 'tailscale') {
+    report(`binding fallback — ${fallback.reason}`)
+    return
+  }
+
+  const cli = findTailscaleCli()
+  if (cli === null) {
+    report(describeTailscaleState({ kind: 'absent' }))
+    return
+  }
+
+  let state = await readTailscaleState(cli)
+  report(describeTailscaleState(state))
+
+  if (!config.bind.autoConnect || state.kind !== 'stopped') return
+
+  report('bind.autoConnect is enabled — bringing Tailscale up')
+  const result = await bringTailscaleUp(cli)
+  if (!result.ok) {
+    report(`could not bring Tailscale up (${result.detail}); start it yourself and the listener will follow`)
+    return
+  }
+  state = await readTailscaleState(cli)
+  report(`after tailscale up: ${describeTailscaleState(state)}`)
+}
 
 /** Operator-facing diagnostics, on plain stdout. */
 function report(message: string): void {
@@ -62,7 +148,25 @@ async function startListener(
   const stateDir = resolveMizarHome()
   const store = await MizarStore.open(stateDir)
 
-  const plan = selectBindAddresses(snapshotInterfaces(), config.bind.mode, config.bind.addresses)
+  const readPlan = (): BindPlan =>
+    selectBindAddresses(snapshotInterfaces(), config.bind.mode, config.bind.addresses)
+
+  // Wait for the requested mode to take effect before accepting a fallback. DSH
+  // and Tailscale both start at login with nothing ordering them, and a one-shot
+  // decision that lands on loopback stays there for the life of the process.
+  let plan = await awaitRequestedPlan(readPlan, {
+    waitMs: config.bind.waitForMs,
+    pollMs: 1000,
+    signal,
+    onGiveUp: (fallback) => {
+      report(
+        `no ${config.bind.mode} address after ${Math.round(config.bind.waitForMs / 1000)}s — ` +
+          `${fallback.reason}`,
+      )
+      void explainTailscale(config, fallback)
+    },
+  })
+
   const liveDevices = store.state.devices.filter((d) => d.revokedAt === undefined).length
   report(`state: ${stateDir} · devices: ${liveDevices} live`)
 
@@ -81,6 +185,10 @@ async function startListener(
     },
     broker,
   )
+
+  // A stable handle the rest of the plugin reads through, so a rebind can swap
+  // the listener without every consumer holding a stale reference.
+  const holder: { current: MizarListener | null } = { current: null }
 
   const listener = await MizarListener.start({
     plan,
@@ -114,12 +222,32 @@ async function startListener(
     ),
   })
 
-  broker.setSender((frame) => listener.broadcast(frame))
+  holder.current = listener
+  broker.setSender((frame) => holder.current?.broadcast(frame))
 
   // Panel routes ride DSH's own authenticated /api channel; a composition with
   // no browser carrier simply gets no panel and keeps everything else.
+  // The host is read through the holder so a rebind is visible to the panel
+  // without re-registering the routes.
   registerPanelApi(ctx, {
-    host: listener,
+    host: {
+      get authorities() {
+        return holder.current?.authorities ?? []
+      },
+      get clientCount() {
+        return holder.current?.clientCount ?? 0
+      },
+      issuePairingCode: () => {
+        const current = holder.current
+        if (current === null) throw new Error('the listener is not running')
+        return current.issuePairingCode()
+      },
+      revokeDevice: (deviceId: string) => {
+        const current = holder.current
+        if (current === null) return Promise.resolve(false)
+        return current.revokeDevice(deviceId)
+      },
+    },
     store,
     plan,
     hostName: hostname(),
@@ -129,6 +257,8 @@ async function startListener(
   // Registered with `prepend`, so the phone is asked alongside the desktop GUI
   // rather than only when the GUI declines.
   registerAnswerers(ctx, broker)
+
+  startBindWatcher(config, readPlan, holder, plan, signal)
 
   signal.addEventListener('abort', () => {
     // Release anything still waiting before the transport disappears, so no

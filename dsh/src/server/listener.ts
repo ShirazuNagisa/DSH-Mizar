@@ -117,6 +117,7 @@ export class MizarListener {
   readonly #sessions = new Set<ClientSession>()
   readonly #limiter: RateLimiter
   readonly #options: ListenerOptions
+  #plan: BindPlan
   readonly #hostName: string
   #wss: WebSocketServer | undefined
   #heartbeat: NodeJS.Timeout | undefined
@@ -125,6 +126,7 @@ export class MizarListener {
 
   private constructor(options: ListenerOptions) {
     this.#options = options
+    this.#plan = options.plan
     this.#hostName = hostname()
     this.#limiter = new RateLimiter(options.maxAttemptsPerMinute, 60_000)
   }
@@ -153,12 +155,12 @@ export class MizarListener {
 
   /** The addresses actually bound. */
   get addresses(): readonly string[] {
-    return this.#options.plan.addresses
+    return this.#plan.addresses
   }
 
   /** The `host:port` authorities a phone can dial, one per bound address. */
   get authorities(): readonly string[] {
-    return this.#options.plan.addresses.map((address) => authorityOf(address, this.#boundPort))
+    return this.#plan.addresses.map((address) => authorityOf(address, this.#boundPort))
   }
 
   /** Every live authenticated session. */
@@ -240,9 +242,31 @@ export class MizarListener {
     this.#servers.length = 0
   }
 
+  /**
+   * Move the listener to a different set of addresses.
+   *
+   * Used when the host's network changes under it — most often a tailnet that
+   * appeared, or came back, after DSH had already started. Connected clients are
+   * dropped rather than migrated: their sockets were accepted on an address that
+   * may no longer exist, and a phone reconnecting is cheaper than a socket that
+   * silently stops delivering.
+   *
+   * @param plan - the new plan to bind.
+   */
+  async rebind(plan: BindPlan): Promise<void> {
+    await this.#closeServers()
+    for (const socket of this.#sockets) socket.terminate()
+    this.#sockets.clear()
+    this.#sessions.clear()
+    this.#options.onClientCount?.(0)
+    this.#plan = plan
+    await this.#bind()
+  }
+
   /** Bind all planned addresses, probing ports when allowed. */
   async #bind(): Promise<void> {
-    const { plan, port, portFallback } = this.#options
+    const plan = this.#plan
+    const { port, portFallback } = this.#options
     const candidates = portFallback
       ? Array.from({ length: PORT_PROBE_RANGE }, (_, index) => port + index)
       : [port]
