@@ -122,6 +122,11 @@ final class AppFlowTests: XCTestCase {
         expect(usage, "the usage tab is missing")
         usage.tap()
         expect(app.staticTexts["Tokens"], "the token card is missing")
+        expect(app.staticTexts["12,480"], "the host's input count is not shown")
+        // The rows below the fold are not in the accessibility tree until they
+        // are scrolled into it, so asserting on them without this reads exactly
+        // like the value being wrong.
+        app.swipeUp()
         expect(app.staticTexts["Cache hit"], "the cache hit rate is missing")
         expect(app.staticTexts["92%"], "the cache hit rate is not the host's value")
         expect(app.staticTexts["Context"], "the context card is missing")

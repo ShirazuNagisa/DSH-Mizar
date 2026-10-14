@@ -2,7 +2,10 @@
 #
 # Build and run the iOS app.
 #
-# Usage: scripts/ios.sh build|run|screenshot [simulator name]
+# Usage: scripts/ios.sh build|run|test|screenshot [simulator name]
+#
+# The UI tests need scripts/mock-host.mjs running on port 19395 first:
+#   node scripts/mock-host.mjs 19395 &
 #
 # The project compiles MizarKit as an in-project framework target rather than as
 # a Swift package reference. That is not a style choice: Xcode resolves a package
@@ -55,13 +58,16 @@ case "${1:-build}" in
     xcrun simctl terminate "$SIMULATOR" "$BUNDLE_ID" 2>/dev/null || true
     xcrun simctl launch "$SIMULATOR" "$BUNDLE_ID"
     ;;
+  test)
+    xcodebuild test -project "$ROOT/iOS/DSH-Mizar.xcodeproj"       -scheme DSH-Mizar       -destination "platform=iOS Simulator,name=$SIMULATOR"       -derivedDataPath "$DERIVED"       CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES       "${@:2}" 2>&1 | grep -E "Test Case .*(passed|failed)|Executed .* tests|error:|TEST (SUCCEEDED|FAILED)" || true
+    ;;
   screenshot)
     OUT="${3:-/tmp/dsh-mizar.png}"
     xcrun simctl io "$SIMULATOR" screenshot "$OUT"
     echo "ios.sh: $OUT"
     ;;
   *)
-    echo "usage: scripts/ios.sh build|run|screenshot [simulator] [out.png]" >&2
+    echo "usage: scripts/ios.sh build|run|test|screenshot [simulator] [out.png]" >&2
     exit 1
     ;;
 esac

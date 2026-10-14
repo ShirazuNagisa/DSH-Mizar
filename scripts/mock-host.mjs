@@ -108,29 +108,38 @@ function answer(frame) {
         result: WITH_PENDING ? { approvals: [APPROVAL], questions: [QUESTION] } : { approvals: [], questions: [] },
       }
     case 'session.stats':
+      // Field names and nesting copied from the fixture recorded off a live
+      // host. The first version of this used plausible-looking names that the
+      // client could not decode, so the usage screen silently rendered "no
+      // usage yet" and the UI test for it failed -- which is how the mistake
+      // was found rather than shipped.
       return {
         v: 1,
         type: 'ok',
         id,
         result: {
+          sessionId: SESSION.sessionId,
+          asOfSeq: 17,
           stats: {
-            sessionId: SESSION.sessionId,
             title: 'Mock session',
             tokenUsage: {
               uncachedInputTokens: 12_480,
+              outputTokens: 3_712,
               cacheReadTokens: 180_320,
               cacheWriteTokens: 4_096,
-              outputTokens: 3_712,
               billedInputTokens: 196_896,
             },
-            cacheHit: { numerator: 180_320, denominator: 196_896, percent: 92 },
-            contextPressure: {
-              contextWindow: 128_000,
+            // A bare number, no percent sign: the host formats it that way and the
+            // app appends the symbol. Returning '92%' here made the app render
+            // '92%%', which the test caught.
+            cacheHit: { ratio: 0.92, displayPercent: '92' },
+            context: {
+              window: 128_000,
               pressureTokens: 41_000,
               projectedTokens: 44_500,
               percent: 35,
+              breakdown: { systemTokens: 1_455, toolsTokens: 5_157, messageTokens: 34_388 },
             },
-            contextBreakdown: { systemTokens: 1_455, toolsTokens: 5_157, messageTokens: 34_388 },
             stats: {
               turns: 6,
               steps: 14,
@@ -140,10 +149,14 @@ function answer(frame) {
               decodeTokensPerSecond: 58,
             },
             model: {
-              lastUsed: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high' },
+              lastUsed: {
+                provider: 'deepseek-official',
+                model: 'deepseek-flash',
+                reasoningEffort: 'high',
+              },
               next: null,
             },
-            permissions: { preset: 'workspace-write' },
+            permissionPreset: 'workspace-write',
           },
         },
       }
