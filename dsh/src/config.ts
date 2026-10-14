@@ -25,6 +25,7 @@ export interface Config {
   pairing: {
     codeTtlSeconds: number
     maxAttemptsPerMinute: number
+    issueOnStart: boolean
   }
   reconnect: {
     heartbeatMs: number
@@ -47,6 +48,14 @@ export const Config: z<Config> = z.object({
   pairing: z.object({
     codeTtlSeconds: z.natural().default(300),
     maxAttemptsPerMinute: z.natural().default(5),
+    /**
+     * Issue a pairing code as soon as the listener is up and log it.
+     *
+     * The Web panel is the normal way to get a code, but a headless or CLI
+     * profile has no panel. Turning this on is what makes Mizar usable without
+     * the GUI, and what lets the end-to-end smoke test run without a browser.
+     */
+    issueOnStart: z.boolean().default(false),
   }),
   reconnect: z.object({
     heartbeatMs: z.natural().default(15000),

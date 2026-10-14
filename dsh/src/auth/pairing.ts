@@ -56,7 +56,7 @@ export interface IssuedCode {
 /** Outcome of redeeming a code. */
 export type RedeemResult =
   | { readonly ok: true; readonly slot: PairingSlot }
-  | { readonly ok: false; readonly reason: 'no-code' | 'expired' | 'mismatch' }
+  | { readonly ok: false; readonly reason: 'no-code' | 'consumed' | 'expired' | 'mismatch' }
 
 /**
  * Encode bytes as Crockford base32.
@@ -149,6 +149,12 @@ export function issueCode(
  * Comparison is constant-time over equal-length buffers, so the response time
  * does not reveal how much of a wrong guess was correct.
  *
+ * `consumed` and `expired` are reported separately here because the audit log is
+ * the operator's only forensic trail and "someone replayed a code" is a
+ * different story from "the code timed out". Callers must still answer both with
+ * the same client-facing code — telling a caller which of the two it hit turns
+ * the endpoint into an oracle.
+ *
  * @param hostSecret - the per-installation secret.
  * @param slot - the outstanding pairing slot, carrying its own deadline.
  * @param input - the code the phone sent.
@@ -162,7 +168,10 @@ export function redeemCode(
   now: number = Date.now(),
 ): RedeemResult {
   if (slot === null) return { ok: false, reason: 'no-code' }
-  if (slot.expiresAt === 0 || now > slot.expiresAt) return { ok: false, reason: 'expired' }
+  // A cleared deadline means the code was already redeemed and the epoch has
+  // moved on, so this is a replay rather than a timeout.
+  if (slot.expiresAt === 0) return { ok: false, reason: 'consumed' }
+  if (now > slot.expiresAt) return { ok: false, reason: 'expired' }
 
   const expected = deriveCode(hostSecret, slot.epoch)
   const provided = normalizeCode(input)

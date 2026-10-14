@@ -2,9 +2,10 @@
 
 **远程监控并指导 DSH Agent 工作。** 一个 DSH 插件 + 一个 Swift 原生 iOS/iPad App。
 
-> **当前状态：Phase 0 完成**（三个未知接缝已全部打通，见
-> [决策记录 0001](docs/decision-0001-in-process-gateway.md)）。宿主插件目前只包含
-> 健康探针与一个占位面板；Phase 1 起实现真正的监听器、配对与 Bridge。
+> **当前状态：Phase 0 与 Phase 1 完成。** 宿主插件已能启动独立监听端口、配对设备、
+> 持久化凭据并通过鉴权 WebSocket 通信，全部经真实链路端到端验证（29/29）。
+> Bridge（把 DSH 会话数据变成手机友好的帧）从 Phase 2 开始。
+> 关键设计结论见 [决策记录 0001](docs/decision-0001-in-process-gateway.md)。
 
 ---
 
@@ -81,6 +82,18 @@ npm run build      # tsc（宿主半）+ esbuild 封装（浏览器半）
 npm run typecheck  # 两份 tsconfig
 npm test           # vitest
 ```
+
+端到端冒烟（需要先 `scripts/dev.sh boot`；profile 里已开启 `pairing.issueOnStart`，
+启动时会打印配对码）：
+
+```sh
+CODE=$(grep -oE 'pairing code: [0-9A-Z-]+' .devstate/dev.log | head -1 | sed 's/pairing code: //')
+MIZAR_CODE="$CODE" node scripts/smoke-listener.mjs
+```
+
+它走真实 HTTP 与 WebSocket，断言的是真正保护操作者的行为：错误配对码被拒、已兑换的码
+无法重放、未知令牌在任何方法执行前就被拒、畸形帧与版本不符会被回以明确错误码而不是被
+半读。29 项断言。
 
 > **为什么 `scripts/dev.sh` 的变量叫 `MIZAR_*` 而不是 `DSH_*`？**
 > 在 DSH 会话内运行时，环境里已经有 `DSH_PROFILE=desktop` 等变量。早期版本用

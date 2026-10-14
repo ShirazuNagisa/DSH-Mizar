@@ -1,12 +1,10 @@
 /**
  * dsh-mizar — host half.
  *
- * Companion plugin that backs the DSH-Mizar iOS app: it owns a standalone
- * listener (never the shared DSH webserver), pairs devices, and bridges DSH's
- * own session/model/permission/usage/services into mobile-shaped frames.
- *
- * Phase 0.1 ships only the load path plus the spike that settles whether a
- * third-party plugin can drive the shipped Remotes in-process.
+ * Companion plugin backing the DSH-Mizar iOS app. It owns a standalone listener
+ * (never the shared DSH webserver, whose bind policy DSH deliberately keeps
+ * loopback-only), pairs devices, and — from Phase 2 — bridges DSH's own session,
+ * model, permission and usage services into mobile-shaped frames.
  *
  * @module dsh-mizar
  */
@@ -15,6 +13,9 @@ import { join } from 'node:path'
 import type { Context } from './dsh.js'
 import { Config } from './config.js'
 import type { Config as MizarConfig } from './config.js'
+import { MizarStore, resolveMizarHome } from './auth/store.js'
+import { selectBindAddresses, snapshotInterfaces } from './net/interfaces.js'
+import { MizarListener } from './server/listener.js'
 import { runSpike } from './spike.js'
 
 /** Cordis plugin name. */
@@ -30,41 +31,118 @@ export const name = 'mizar'
  */
 export const inject = ['typert', 'typertGateway', 'sessionProjections', 'sessions']
 
+/** Operator-facing diagnostics, on plain stdout. */
+function report(message: string): void {
+  console.log(`[mizar] ${message}`)
+}
+
+/** Render an unknown thrown value as one line. */
+function describe(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`
+  return String(error)
+}
+
+/**
+ * Start the listener for one plugin mount and return its disposer.
+ *
+ * @param ctx - the plugin context, used for the lifecycle effect.
+ * @param config - validated plugin configuration.
+ * @param signal - aborted when the plugin unloads.
+ */
+async function startListener(
+  ctx: Context,
+  config: MizarConfig,
+  signal: AbortSignal,
+): Promise<MizarListener> {
+  const stateDir = resolveMizarHome()
+  const store = await MizarStore.open(stateDir)
+
+  const plan = selectBindAddresses(snapshotInterfaces(), config.bind.mode, config.bind.addresses)
+  report(
+    `state: ${stateDir} · devices: ${store.state.devices.filter((d) => d.revokedAt === undefined).length} live`,
+  )
+
+  const listener = await MizarListener.start({
+    plan,
+    port: config.port,
+    portFallback: config.portFallback,
+    store,
+    pairingTtlSeconds: config.pairing.codeTtlSeconds,
+    maxAttemptsPerMinute: config.pairing.maxAttemptsPerMinute,
+    heartbeatMs: config.reconnect.heartbeatMs,
+    pongTimeoutMs: config.reconnect.pongTimeoutMs,
+    log: report,
+    onSession: (session) => {
+      report(`client connected: ${session.deviceName} from ${session.remote}`)
+    },
+  })
+
+  signal.addEventListener('abort', () => {
+    void listener.stop().catch((error: unknown) => {
+      report(`listener shutdown failed — ${describe(error)}`)
+    })
+  })
+
+  if (config.pairing.issueOnStart) {
+    const issued = await listener.issuePairingCode()
+    report(`pairing code: ${issued.display} (valid for ${config.pairing.codeTtlSeconds}s)`)
+  }
+
+  return listener
+}
+
 /**
  * Mount the Mizar host half.
  * @param ctx - the plugin context.
  * @param config - validated plugin configuration.
  */
 export function apply(ctx: Context, config: MizarConfig): void {
-  // Phase 0.1 load marker. `apply` runs only once every name in `inject`
-  // resolves, so this line distinguishes "the bundle loaded and activated" from
-  // "the row is composed but still waiting on a service". Plain stdout, because
-  // a Cordis logger's visibility depends on the composition's exporters.
-  console.log('[mizar] apply() entered — injects resolved')
-  const logger = ctx.logger('mizar')
+  // `apply` runs only once every name in `inject` resolves, so this line
+  // distinguishes "the bundle loaded and activated" from "the row is composed
+  // but still waiting on a service". Plain stdout, because a Cordis logger's
+  // visibility depends on the composition's exporters.
+  report('apply() entered — injects resolved')
+
   if (!config.enabled) {
-    logger.info('mizar: disabled by configuration')
+    report('disabled by configuration')
     return
   }
 
-  logger.info(
-    'mizar: mounted (bind=%s port=%d fallback=%s tls=%s)',
-    config.bind.mode,
-    config.port,
-    String(config.portFallback),
-    config.tls.mode,
+  report(
+    `mounted (bind=${config.bind.mode} port=${config.port} fallback=${String(config.portFallback)} tls=${config.tls.mode})`,
   )
+
+  ctx.effect(() => {
+    const controller = new AbortController()
+
+    void (async () => {
+      try {
+        const listener = await startListener(ctx, config, controller.signal)
+        if (controller.signal.aborted) {
+          await listener.stop()
+          return
+        }
+        report(
+          `ready — pair with the code shown in the DSH Web panel, or reach ${listener.authorities.join(' / ')}`,
+        )
+      } catch (error) {
+        report(`listener failed to start — ${describe(error)}`)
+      }
+    })()
+
+    return () => controller.abort()
+  }, 'mizar:listener')
 
   if (!config.spike) return
 
-  const workspace = process.env.DSH_MIZAR_SPIKE_WORKSPACE ?? join(homedir(), 'Documents')
+  const workspace = process.env['DSH_MIZAR_SPIKE_WORKSPACE'] ?? join(homedir(), 'Documents')
   ctx.effect(() => {
     const controller = new AbortController()
     void (async () => {
       try {
         if (!controller.signal.aborted) await runSpike(ctx, workspace)
       } catch (error) {
-        console.error('[mizar] spike crashed —', error)
+        report(`spike crashed — ${describe(error)}`)
       }
     })()
     return () => controller.abort()

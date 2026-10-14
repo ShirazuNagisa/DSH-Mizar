@@ -103,12 +103,12 @@ describe('pairing codes', () => {
     })
   })
 
-  it('rejects a code at a cleared deadline', () => {
-    // `expiresAt: 0` is the "nothing outstanding" state, and must not read as
-    // "expired in 1970, therefore fine" or as an unbounded deadline.
+  it('reports a cleared deadline as consumed, not expired', () => {
+    // `expiresAt: 0` is the "already redeemed" state. The operator needs to see
+    // a replay as a replay; the client-facing answer stays uniform.
     expect(redeemCode(SECRET, { epoch: 1, expiresAt: 0 }, 'ABCD1234', T0)).toEqual({
       ok: false,
-      reason: 'expired',
+      reason: 'consumed',
     })
   })
 
@@ -133,15 +133,18 @@ describe('pairing codes', () => {
     expect(redeemCode(SECRET, null, 'ABCD1234', T0)).toEqual({ ok: false, reason: 'no-code' })
   })
 
-  it('issues single-use codes: redeeming advances the epoch so replay fails', () => {
+  it('issues single-use codes: a replay is reported as consumed', () => {
     const issued = issueCode(SECRET, null, T0)
     const first = redeemCode(SECRET, issued.slot, issued.code, T0 + 1000)
     expect(first.ok).toBe(true)
     if (!first.ok) return
 
-    // The replayed code is compared against the *advanced* epoch.
-    const replay = redeemCode(SECRET, first.slot, issued.code, T0 + 2000)
-    expect(replay.ok).toBe(false)
+    // The replayed code is compared against the *advanced* epoch, and the
+    // cleared deadline marks it as a replay rather than a timeout.
+    expect(redeemCode(SECRET, first.slot, issued.code, T0 + 2000)).toEqual({
+      ok: false,
+      reason: 'consumed',
+    })
   })
 
   it('invalidates an outstanding code when a new one is issued', () => {

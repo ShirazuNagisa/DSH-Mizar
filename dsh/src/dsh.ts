@@ -2,12 +2,16 @@
  * The one place the host half pulls in the Cordis `Context` module
  * augmentations it codes against.
  *
- * Every import here is **type-only and fully erased**. That is load-bearing:
- * `dsh-mizar` is installed into a profile on its own, so a *runtime* import of
- * `@deepseek-ai/dsh-session` would fail to resolve from the profile's
- * `node_modules`. DSH's own packages supply these services from the running
- * installation, and the peer ranges in `package.json` are what assert they are
- * present.
+ * Every import here is **type-only and fully erased**, which is deliberate:
+ * `dsh-mizar` is installed into a profile on its own, so its runtime
+ * dependencies are only what the profile's `node_modules` actually contains.
+ * The peer ranges in `package.json` are what assert the services exist, and DSH
+ * supplies them from the running installation.
+ *
+ * The one runtime import of the DSH tree anywhere in this plugin is
+ * `@deepseek-ai/schemastery` in `config.ts`, which the Cordis plugin `Config`
+ * convention requires and which resolves from the installation anchor — proven
+ * in Phase 0, where the plugin loaded and applied its config.
  *
  * @module dsh-mizar/dsh
  */
