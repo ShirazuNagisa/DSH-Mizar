@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { ERROR_CODES, PROTOCOL_VERSION } from '../src/protocol/frames.js'
 
-const FIXTURE_DIR = fileURLToPath(new URL('../../protocol/fixtures/', import.meta.url))
+const FIXTURE_DIR = fileURLToPath(new URL('../protocol/fixtures/', import.meta.url))
 
 /** Every fixture, keyed by name. */
 function loadFixtures(): Map<string, Record<string, unknown>> {

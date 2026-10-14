@@ -21,6 +21,27 @@
 
 ---
 
+## 安装
+
+```bash
+# 从仓库地址（推荐）
+dsh plugin --profile <profile> add ShirazuNagisa/DSH-Mizar
+
+# 或用完整 URL
+dsh plugin --profile <profile> add https://github.com/ShirazuNagisa/DSH-Mizar
+
+# 或从 Release 的 tarball
+dsh plugin --profile <profile> add \
+  https://github.com/ShirazuNagisa/DSH-Mizar/releases/download/v0.1.0/dsh-mizar-0.1.0.tgz
+```
+
+装完重启 DSH，侧边栏会出现 **DSH-Mizar** 面板，里面显示监听地址和配对二维码。
+
+**手机端**要另装 —— 见 [TestFlight 发布步骤](docs/testflight.md)。两端都装好并且在同一
+网络里，App 才能用。
+
+---
+
 ## 它做什么
 
 DSH 桌面版本只监听 `127.0.0.1`，并且**明确拒绝**绑定到 `0.0.0.0`（官方理由：那会把
@@ -56,8 +77,19 @@ endpoint 的复杂度、`SessionHistoryRecord` 与 40+ 会话事件变体的投�
 
 ## 仓库结构
 
+**仓库根目录就是插件包。** 这不是风格选择：DSH 装仓库地址时，是把整个仓库当作一个包
+交给 pnpm 克隆的——**它不会去找子目录，也不会替你构建**。根目录没有 `package.json`
+就装不上，`lib/` 不在仓库里就没有可加载的代码。
+
 ```
-DSH-Mizar/
+DSH-Mizar/                     ← 插件包根目录（package.json 在这里）
+├─ package.json                # 插件清单：main · dsh.bundle.patch · dsh.client
+├─ cordis.patch.yml            # 宿主半的装配补丁
+├─ src/                        宿主半：index · config · ready · net · auth · bridge · server · panel
+├─ client/                     浏览器半：esbuild 封装器 + 面板
+├─ lib/                        **已提交的构建产物** —— 装的时候不需要构建步骤
+├─ test/                       vitest（323）
+├─ tsconfig.json · vitest.config.ts
 ├─ docs/
 │  ├─ decision-0001-in-process-gateway.md   # Phase 0.1 结论（必读）
 │  ├─ decision-0002-approval-arbitration.md
@@ -66,12 +98,7 @@ DSH-Mizar/
 │  ├─ testflight.md                         # 如何发布到 TestFlight
 │  ├─ windows-status.md                     # Windows：什么验证过、什么没有
 │  └─ screenshots/                          # 各界面实机截图
-├─ protocol/fixtures/                       # 从真实宿主捕获的黄金帧（两端共读）
-├─ dsh/                                     # Cordis 插件（TypeScript）
-│  ├─ src/          宿主半：index · config · ready · net · auth · bridge · server · panel
-│  ├─ client/       浏览器半：esbuild 封装器 + 面板
-│  ├─ test/         vitest（323）
-│  └─ cordis.patch.yml
+├─ protocol/fixtures/           从真实宿主捕获的黄金帧（两端共读）
 ├─ iOS/
 │  ├─ MizarKit/                  Swift 包：协议层 + 单元测试（76）
 │  ├─ DSH-Mizar/                 SwiftUI App
@@ -80,6 +107,11 @@ DSH-Mizar/
 │  └─ ExportOptions.plist
 └─ scripts/                      dev · ios · swift · release · mock-host · smoke-listener
 ```
+
+> **为什么 `lib/` 进了版本库？** 从 git 地址安装时，pnpm 克隆仓库后**没有构建步骤**，
+> 除非包里有 `prepare` 脚本——而那需要网络拉编译器。把编译结果提交进去，安装就是
+> 纯粹的复制，不需要 TypeScript、不需要 esbuild、不需要联网装 devDependencies。
+> 代价是 `lib/` 可能落后于 `src/`：**改完源码一定要 `npm run build` 再提交**。
 
 ---
 
@@ -105,7 +137,6 @@ scripts/dev.sh dump        # 打印合成后的配置树中与 Mizar 相关的�
 插件自身的循环：
 
 ```sh
-cd dsh
 npm run build      # tsc（宿主半）+ esbuild 封装（浏览器半）
 npm run typecheck  # 两份 tsconfig
 npm test           # vitest
@@ -262,7 +293,7 @@ headless / SDK 这类没有浏览器载体的组合仍然拥有完整的监听�
    DSH 的 strict Typert 描述符稍后才注册。此时立即 `invoke()` 会报
    `gateway/invocation-unavailable`（"no active Remote method exports this endpoint"）。
    这是**时序问题，不是能力缺失**。所有网关消费者都必须先用
-   [`awaitEndpoints()`](dsh/src/ready.ts) 等描述符就绪（实测稳定在 126 个）。
+   [`awaitEndpoints()`](src/ready.ts) 等描述符就绪（实测稳定在 126 个）。
 2. **读 `ctx.typert` 必须在 `inject` 里声明 `typert`。** 否则 Cordis 会直接抛
    `cannot get property "typert" without inject`。
 
@@ -276,7 +307,7 @@ DSH 对插件浏览器半**只接受一种产物形态**：调用
 `window.__ModuleLoader__.load({ id, factory })` 的脚本，其中 `factory` 是一个
 CommonJS 模块体。没有 ESM 路径，而 DSH 自己的客户端构建链**没有作为包发布**。
 
-[`client/build.mjs`](dsh/client/build.mjs) 因此自己复刻了这个信封。三个容易搞错的点：
+[`client/build.mjs`](client/build.mjs) 因此自己复刻了这个信封。三个容易搞错的点：
 
 - 模块体必须在 factory **内部**，否则会在脚本解析时就执行，而不是在 shell
   物化 bundle 时执行；
@@ -284,7 +315,7 @@ CommonJS 模块体。没有 ESM 路径，而 DSH 自己的客户端构建链**�
 - 九个基线模块（react ×4、cordis、client-store、ui-slots、ui-primitives、
   ui-dockkit）由 shell 提供，必须保持 external——打包进第二份 React 会破坏 hooks。
 
-[`test/client-bundle.test.ts`](dsh/test/client-bundle.test.ts) 用 shell 的方式物化产物
+[`test/client-bundle.test.ts`](test/client-bundle.test.ts) 用 shell 的方式物化产物
 并断言以上三点，另外断言 `apply` 确实向 `main` 与 `sidebar.panellist` 注册了面板。
 
 ---

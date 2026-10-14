@@ -24,7 +24,7 @@ context might not carry.
 
 ## What the spike did
 
-`dsh/src/spike.ts`, enabled by `config.spike`, runs five probes once the required
+`src/spike.ts`, enabled by `config.spike`, runs five probes once the required
 strict endpoints are registered, and prints PASS/FAIL per probe. It was run
 against a real `mizar-dev` profile (`@deepseek-ai/dsh-base` + `dsh-web-app` +
 `dsh-mizar`) on 2026-10-14, DSH `0.2.0-rc.2`.
@@ -59,7 +59,7 @@ These are not obvious from the docs, and both cost a failed run to find:
    An immediate `invoke()` fails with `gateway/invocation-unavailable`
    ("no active Remote method exports this endpoint"). The failure is
    *ordering*, not a missing capability. Every gateway consumer must gate on
-   descriptor availability — see `awaitEndpoints()` in `dsh/src/ready.ts`.
+   descriptor availability — see `awaitEndpoints()` in `src/ready.ts`.
    In the measured run the registry settled at **126 descriptors**.
 
 2. **Reading `ctx.typert` requires declaring `typert` in the plugin's `inject`.**

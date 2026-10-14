@@ -28,7 +28,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEAM_ID="${MIZAR_TEAM_ID:-5Q2A46685M}"
 SCHEME="DSH-Mizar"
 PROJECT="$ROOT/iOS/DSH-Mizar.xcodeproj"
-PLUGIN_DIR="$ROOT/dsh"
+PLUGIN_DIR="$ROOT"
 # Deliberately NOT under .devcache: that is a hidden directory, Finder does not
 # show it, and "open the archive in Organizer" is an instruction somebody has to
 # be able to follow. DerivedData stays hidden because nobody opens it by hand.

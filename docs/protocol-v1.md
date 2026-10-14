@@ -8,7 +8,7 @@
 测试存在的原因。
 
 > 本文是从代码里读出来的，不是设计稿。写它时对照的是
-> `dsh/src/protocol/frames.ts`、`dsh/src/bridge/index.ts`、`dsh/src/server/listener.ts`。
+> `src/protocol/frames.ts`、`src/bridge/index.ts`、`src/server/listener.ts`。
 
 ---
 

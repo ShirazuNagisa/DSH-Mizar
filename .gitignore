@@ -9,9 +9,8 @@ node_modules/
 *.log
 
 # --- Build output ---
-dsh/lib/
 iOS/MizarKit/.build/
-dsh/client/dist/
+client/dist/
 
 # --- macOS ---
 .DS_Store

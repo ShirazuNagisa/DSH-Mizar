@@ -39,7 +39,7 @@ import process from 'node:process'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const DEV_HOME = join(ROOT, '.devhome')
-const PLUGIN_DIR = join(ROOT, 'dsh')
+const PLUGIN_DIR = ROOT
 const STATE_DIR = join(ROOT, '.devstate')
 const LOG_FILE = join(STATE_DIR, 'dev.log')
 const PID_FILE = join(STATE_DIR, 'dev.pid')
@@ -285,7 +285,7 @@ const commands = {
       { cwd: PLUGIN_DIR, stdio: 'inherit' },
     )
     if (built.status !== 0) die('tsc failed')
-    console.log('dev: host half built to dsh/lib')
+    console.log('dev: host half built to lib/')
   },
 
   /** Install the plugin into the dev profile. */

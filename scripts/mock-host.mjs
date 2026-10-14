@@ -14,7 +14,7 @@
  * Usage: node scripts/mock-host.mjs [port]
  */
 import { createServer } from 'node:http'
-import ws from '../dsh/node_modules/ws/index.js'
+import ws from '../node_modules/ws/index.js'
 
 const { WebSocketServer } = ws
 
