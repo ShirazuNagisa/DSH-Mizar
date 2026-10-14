@@ -207,6 +207,11 @@ async function readIfPresent(path: string): Promise<string | null> {
  */
 async function writeAtomic(path: string, contents: string): Promise<void> {
   const temp = `${path}.${process.pid}.${randomUUID()}.tmp`
+  // The POSIX mode is a no-op on Windows -- Node accepts it and the OS ignores
+  // it, so the state file there is protected by the user profile's ACL instead.
+  // That is still "only this account and administrators", which is the same
+  // guarantee by a different mechanism, but it is a different mechanism and
+  // pretending otherwise would be wrong.
   const handle = await open(temp, 'w', 0o600)
   try {
     await handle.writeFile(contents, 'utf8')
