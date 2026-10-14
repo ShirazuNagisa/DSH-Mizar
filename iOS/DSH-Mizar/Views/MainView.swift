@@ -15,6 +15,7 @@ import MizarKit
 
 struct MainView: View {
     @Environment(AppModel.self) private var model
+    @State private var showingNewSession = false
 
     var body: some View {
         @Bindable var model = model
@@ -23,13 +24,21 @@ struct MainView: View {
             SessionListView()
                 .navigationTitle(model.welcome?.hostName ?? "Sessions")
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button {
+                            showingNewSession = true
+                        } label: {
+                            Label("New session", systemImage: "plus")
+                        }
                         Button {
                             Task { await model.refreshSessions() }
                         } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
                     }
+                }
+                .sheet(isPresented: $showingNewSession) {
+                    NewSessionView()
                 }
         } detail: {
             if let sessionId = model.selectedSessionId {

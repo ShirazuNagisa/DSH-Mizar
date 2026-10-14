@@ -211,6 +211,35 @@ final class AppModel {
         }
     }
 
+    /// Every working directory the host has already used, newest first.
+    ///
+    /// Derived from the session list rather than a workspace API: the host
+    /// reports a `cwd` for each session, and those are exactly the directories
+    /// the operator works in. Offerring them costs nothing and avoids asking a
+    /// question the host has already answered.
+    var knownWorkingDirectories: [String] {
+        var seen = Set<String>()
+        return sessions.compactMap(\.cwd).filter { seen.insert($0).inserted }
+    }
+
+    /// Start a session in a directory.
+    ///
+    /// - Parameter cwd: the directory to work in.
+    /// - Returns: the new session's id, or `nil` when the host refused.
+    func createSession(cwd: String) async -> String? {
+        guard let connection else { return nil }
+        let payload = JSONValue.object(["cwd": .string(cwd)])
+        do {
+            let result = try await connection.call("session.create", payload: payload, as: CreateSessionResult.self)
+            await refreshSessions()
+            selectedSessionId = result.sessionId
+            return result.sessionId
+        } catch {
+            phase = .failed(Self.describe(error))
+            return nil
+        }
+    }
+
     /// Ask the host to stop the current turn.
     func cancelTurn(sessionId: String) async {
         guard let connection else { return }
