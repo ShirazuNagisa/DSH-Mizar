@@ -23,9 +23,15 @@
 /* Begin PBXFileReference section */
 		AA0000000000000000000005 /* DSH-Mizar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "DSH-Mizar.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000021 /* MizarKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = MizarKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000031 /* DSH-MizarUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "DSH-MizarUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		AA0000000000000000000035 /* DSH-MizarUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "DSH-MizarUITests";
+			sourceTree = "<group>";
+		};
 		AA0000000000000000000025 /* MizarKit */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "MizarKit/Sources/MizarKit";
@@ -54,6 +60,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000033 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -62,6 +75,7 @@
 			children = (
 				AA0000000000000000000009 /* DSH-Mizar */,
 				AA0000000000000000000025 /* MizarKit */,
+				AA0000000000000000000035 /* DSH-MizarUITests */,
 				AA0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -71,6 +85,7 @@
 			children = (
 				AA0000000000000000000005 /* DSH-Mizar.app */,
 				AA0000000000000000000021 /* MizarKit.framework */,
+				AA0000000000000000000031 /* DSH-MizarUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -121,13 +136,51 @@
 		};
 /* End PBXNativeTarget section */
 
+		AA0000000000000000000030 /* DSH-MizarUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000036 /* Build configuration list for PBXNativeTarget "DSH-MizarUITests" */;
+			buildPhases = (
+				AA0000000000000000000032 /* Sources */,
+				AA0000000000000000000033 /* Frameworks */,
+				AA0000000000000000000034 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA0000000000000000000039 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000035 /* DSH-MizarUITests */,
+			);
+			name = "DSH-MizarUITests";
+			productName = "DSH-MizarUITests";
+			productReference = AA0000000000000000000031 /* DSH-MizarUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
 /* Begin PBXTargetDependency section */
 		AA0000000000000000000029 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = AA0000000000000000000020 /* MizarKit */;
 			targetProxy = AA000000000000000000002A /* PBXContainerItemProxy */;
 		};
+		AA0000000000000000000039 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000004 /* DSH-Mizar */;
+			targetProxy = AA000000000000000000003A /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section (UI tests) */
+		AA000000000000000000003A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000004;
+			remoteInfo = "DSH-Mizar";
+		};
+/* End PBXContainerItemProxy section (UI tests) */
 
 /* Begin PBXProject section */
 		AA0000000000000000000001 /* Project object */ = {
@@ -142,6 +195,10 @@
 					};
 					AA0000000000000000000020 = {
 						CreatedOnToolsVersion = 27.0;
+					};
+					AA0000000000000000000030 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = AA0000000000000000000004;
 					};
 				};
 			};
@@ -162,6 +219,7 @@
 			targets = (
 				AA0000000000000000000020 /* MizarKit */,
 				AA0000000000000000000004 /* DSH-Mizar */,
+				AA0000000000000000000030 /* DSH-MizarUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -181,6 +239,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000034 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -192,6 +257,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		AA0000000000000000000022 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000032 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -360,6 +432,36 @@
 			};
 			name = Release;
 		};
+		AA0000000000000000000037 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.shirazu.dshmizar.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "DSH-Mizar";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000038 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.shirazu.dshmizar.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "DSH-Mizar";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -386,6 +488,15 @@
 			buildConfigurations = (
 				AA0000000000000000000027 /* Debug */,
 				AA0000000000000000000028 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000036 /* Build configuration list for PBXNativeTarget "DSH-MizarUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000037 /* Debug */,
+				AA0000000000000000000038 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

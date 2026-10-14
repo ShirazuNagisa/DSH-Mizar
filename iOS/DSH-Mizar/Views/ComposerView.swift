@@ -29,6 +29,7 @@ struct ComposerView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18))
+                .accessibilityIdentifier("composer.field")
 
             Button {
                 Task { await send() }
@@ -38,6 +39,7 @@ struct ComposerView: View {
             }
             .disabled(!canSend)
             .opacity(canSend ? 1 : 0.4)
+            .accessibilityIdentifier("composer.send")
 
             Button {
                 Task { await model.cancelTurn(sessionId: sessionId) }
@@ -47,6 +49,7 @@ struct ComposerView: View {
                     .foregroundStyle(.red)
             }
             .accessibilityLabel("Stop")
+            .accessibilityIdentifier("composer.stop")
         }
         .padding(.horizontal)
         .padding(.vertical, 8)

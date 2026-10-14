@@ -78,6 +78,7 @@ struct ApprovalCard: View {
                     Text("Reject").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
+                .accessibilityIdentifier("approval.reject")
 
                 Button {
                     Task { await answer(.allowedOnce) }
@@ -85,6 +86,7 @@ struct ApprovalCard: View {
                     Text("Allow once").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("approval.allowOnce")
             }
             .disabled(answering)
         }
@@ -135,6 +137,7 @@ struct QuestionCard: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(!isComplete || submitting)
+            .accessibilityIdentifier("question.submit")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()

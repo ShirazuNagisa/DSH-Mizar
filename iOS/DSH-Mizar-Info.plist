@@ -44,6 +44,13 @@
 			</array>
 		</dict>
 	</array>
+	<!--
+	  The app uses only HTTPS and standard TLS through URLSession, which is exempt
+	  from export documentation. Declaring it here answers the export compliance
+	  question at upload instead of leaving a build stuck in "Missing Compliance".
+	-->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<!-- The pairing QR is scanned in-app, so the camera is used only for that. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing code shown on your Mac.</string>

@@ -30,11 +30,13 @@ struct MainView: View {
                         } label: {
                             Label("New session", systemImage: "plus")
                         }
+                        .accessibilityIdentifier("sessions.new")
                         Button {
                             Task { await model.refreshSessions() }
                         } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
+                        .accessibilityIdentifier("sessions.refresh")
                     }
                 }
                 .sheet(isPresented: $showingNewSession) {
