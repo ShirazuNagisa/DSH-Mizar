@@ -131,31 +131,55 @@ struct SessionDetailView: View {
     @State private var loading = true
     @State private var showingModelPicker = false
     @State private var showingPermissionPicker = false
+    @State private var items: [ConversationItem] = []
+    @State private var loadingConversation = true
+    @State private var tab: Tab = .conversation
+
+    /// Which half of the session is on screen.
+    ///
+    /// Two peers rather than one stacked on the other: a monitoring app is used
+    /// to answer either "what is it doing" or "what has it cost", and making one
+    /// of those mean scrolling past the other gets the priority wrong half the
+    /// time.
+    private enum Tab: String, CaseIterable, Identifiable {
+        case conversation = "Conversation"
+        case usage = "Usage"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
+            Picker("View", selection: $tab) {
+                ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.top, 8)
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     InteractionsView()
 
-                    if loading {
-                        ProgressView().frame(maxWidth: .infinity)
-                    } else if let stats {
-                        UsageSection(stats: stats)
-                    } else {
-                        ContentUnavailableView(
-                            "No usage yet",
-                            systemImage: "chart.bar",
-                            description: Text("This session has not sent a request."),
-                        )
+                    switch tab {
+                    case .conversation:
+                        ConversationView(items: items, loading: loadingConversation)
+                    case .usage:
+                        if loading {
+                            ProgressView().frame(maxWidth: .infinity)
+                        } else if let stats {
+                            UsageSection(stats: stats)
+                        } else {
+                            ContentUnavailableView(
+                                "No usage yet",
+                                systemImage: "chart.bar",
+                                description: Text("This session has not sent a request."),
+                            )
+                        }
                     }
                 }
                 .padding()
             }
-            .refreshable {
-                stats = await model.stats(for: sessionId)
-                await model.refreshInteractions()
-            }
+            .refreshable { await reload() }
 
             ComposerView(sessionId: sessionId)
         }
@@ -181,11 +205,21 @@ struct SessionDetailView: View {
         .sheet(isPresented: $showingPermissionPicker) {
             PermissionPickerView(sessionId: sessionId)
         }
-        .task(id: sessionId) {
-            loading = true
-            stats = await model.stats(for: sessionId)
-            loading = false
-            await model.refreshInteractions()
-        }
+        .task(id: sessionId) { await reload() }
+    }
+
+    /// Refresh everything the screen shows.
+    private func reload() async {
+        loading = true
+        loadingConversation = true
+        // Run together: the two reads are independent, and a conversation that
+        // waits for a stats call would make the screen feel slower than it is.
+        async let statsResult = model.stats(for: sessionId)
+        async let conversationResult = model.conversation(for: sessionId)
+        stats = await statsResult
+        items = await conversationResult
+        loading = false
+        loadingConversation = false
+        await model.refreshInteractions()
     }
 }

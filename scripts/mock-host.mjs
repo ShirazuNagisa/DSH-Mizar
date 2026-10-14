@@ -20,6 +20,9 @@ const { WebSocketServer } = ws
 
 const port = Number(process.argv[2] ?? 19395)
 const CODE = 'MOCK-CODE'
+// A real host rarely has pending requests and a conversation at the same time;
+// the flag lets each be seen on its own.
+const WITH_PENDING = process.env['MIZAR_MOCK_PENDING'] !== '0'
 
 /** A pending approval, shaped like the one the bridge builds. */
 const APPROVAL = {
@@ -75,6 +78,11 @@ const SESSION = {
   origin: null,
 }
 
+/** Build one history record, shaped like the host's. */
+function ev(seq, type, data) {
+  return { type: 'event', event: { type, seq, time: Date.now() - (20 - seq) * 1000, data } }
+}
+
 /** Answer one client frame. */
 function answer(frame) {
   const { id, type } = frame
@@ -93,7 +101,12 @@ function answer(frame) {
     case 'session.list':
       return { v: 1, type: 'ok', id, result: { items: [SESSION] } }
     case 'interactions.pending':
-      return { v: 1, type: 'ok', id, result: { approvals: [APPROVAL], questions: [QUESTION] } }
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: WITH_PENDING ? { approvals: [APPROVAL], questions: [QUESTION] } : { approvals: [], questions: [] },
+      }
     case 'session.stats':
       return {
         v: 1,
@@ -175,6 +188,65 @@ function answer(frame) {
             { value: 'read-only', name: 'Read only', description: 'Can look, cannot touch.' },
             { value: 'workspace-write', name: 'Workspace write', description: 'Writes inside the workspace.' },
             { value: 'danger-full-access', name: 'Full access', description: 'Unrestricted access to this machine.' },
+          ],
+        },
+      }
+    case 'session.messages':
+      // Record shapes copied from a real session log, including the failure this
+      // machine's host produces on every turn.
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: {
+          sessionId: SESSION.sessionId,
+          asOfSeq: 17,
+          hasMore: false,
+          records: [
+            ev(0, 'permission/preset', { preset: 'workspace-write' }),
+            ev(1, 'turn/start', { turn: 1 }),
+            ev(2, 'user/message', {
+              content: [{ type: 'text', text: 'Refactor the parser and run the tests.' }],
+              source: { kind: 'user', rpcId: 'r1' },
+              role: 'user',
+              id: 'm1',
+            }),
+            ev(3, 'step/start', { turn: 1, step: 1 }),
+            ev(4, 'assistant/attempt', {
+              turn: 1,
+              step: 1,
+              stream: [
+                { type: 'chunk', time: 1, chunk: { type: 'delta', text: 'I split the tokenizer out of ' } },
+                { type: 'chunk', time: 1, chunk: { type: 'delta', text: 'the parser so it can be tested alone.' } },
+              ],
+            }),
+            ev(5, 'user/message', {
+              content: [{ type: 'text', text: 'Now add a case for trailing commas.' }],
+              role: 'user',
+              id: 'm2',
+            }),
+            ev(6, 'assistant/attempt', {
+              turn: 2,
+              step: 1,
+              stream: [
+                {
+                  type: 'chunk',
+                  time: 1,
+                  chunk: {
+                    type: 'finish',
+                    reason: {
+                      kind: 'error',
+                      failure: {
+                        message:
+                          'llm-deepseek: no API key for provider route "deepseek-official"',
+                        code: 'MISSING_CREDENTIAL',
+                      },
+                    },
+                  },
+                },
+              ],
+            }),
+            ev(7, 'step/end', { turn: 2, step: 1 }),
           ],
         },
       }

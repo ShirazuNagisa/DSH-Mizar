@@ -306,6 +306,28 @@ final class AppModel {
         }
     }
 
+    /// Read a session's recent log, as items a view can draw.
+    ///
+    /// - Parameter sessionId: the session to read.
+    /// - Returns: the items, oldest first.
+    func conversation(for sessionId: String) async -> [ConversationItem] {
+        guard let connection else { return [] }
+        do {
+            let payload = JSONValue.object([
+                "sessionId": .string(sessionId),
+                "maxMessages": .number(40),
+            ])
+            let result = try await connection.call(
+                "session.messages",
+                payload: payload,
+                as: SessionMessagesResult.self,
+            )
+            return result.conversationItems()
+        } catch {
+            return []
+        }
+    }
+
     /// Read one session's usage frame.
     /// - Parameter sessionId: the session to read.
     /// - Returns: the frame, or `nil` when it could not be read.
