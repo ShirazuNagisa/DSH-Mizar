@@ -42,6 +42,18 @@ export interface Config {
      * Tailscale on purpose is not fought by a relaunch loop.
      */
     autoConnect: boolean
+    /**
+     * Make sure "Launch Tailscale at Login" is on.
+     *
+     * On by default, and it is the setting that matters most for a silent
+     * experience: macOS then starts Tailscale itself at every login, as a
+     * menu-bar-only app with no window and no focus change. Turning it on once
+     * beats launching the app on every DSH start.
+     *
+     * Writes to Tailscale's own preferences, which is why it is a named setting
+     * rather than something done unconditionally.
+     */
+    ensureStartOnLogin: boolean
   }
   tls: {
     mode: 'off' | 'self-signed'
@@ -68,6 +80,7 @@ export const Config: z<Config> = z.object({
     waitForMs: z.natural().default(30_000),
     pollMs: z.natural().default(15_000),
     autoConnect: z.boolean().default(true),
+    ensureStartOnLogin: z.boolean().default(true),
   }),
   tls: z.object({
     mode: z.union([z.const('off'), z.const('self-signed')]).default('off'),
