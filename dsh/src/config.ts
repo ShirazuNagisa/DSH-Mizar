@@ -18,6 +18,25 @@ export interface Config {
   bind: {
     mode: BindMode
     addresses: string[]
+    /**
+     * How long to wait for the requested mode to produce an address before
+     * accepting a fallback, in milliseconds.
+     *
+     * DSH and Tailscale both start at login and nothing orders them, so a
+     * one-shot decision can land on loopback and stay there. Waiting turns that
+     * race into a delay.
+     */
+    waitForMs: number
+    /** How often to re-check the bind addresses once listening, in milliseconds. */
+    pollMs: number
+    /**
+     * Bring Tailscale up automatically when no tailnet address is present.
+     *
+     * Off by default: it runs an external binary and changes system network
+     * state, which should be the operator's decision rather than a side effect
+     * of starting DSH.
+     */
+    autoConnect: boolean
   }
   tls: {
     mode: 'off' | 'self-signed'
@@ -41,6 +60,9 @@ export const Config: z<Config> = z.object({
   bind: z.object({
     mode: z.union(BIND_MODES.map((mode) => z.const(mode))).default('tailscale'),
     addresses: z.array(z.string()).default([]),
+    waitForMs: z.natural().default(30_000),
+    pollMs: z.natural().default(15_000),
+    autoConnect: z.boolean().default(false),
   }),
   tls: z.object({
     mode: z.union([z.const('off'), z.const('self-signed')]).default('off'),
