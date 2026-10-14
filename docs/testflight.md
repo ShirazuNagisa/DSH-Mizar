@@ -54,8 +54,9 @@
 
 ```
 release/
-├─ DSH-Mizar.xcarchive     ← 双击打开 Organizer，用它上传
-└─ export/DSH-Mizar.ipa    ← 已签名的构建，可以手动用 Transporter 上传
+├─ DSH-Mizar.xcarchive        ← 双击打开 Organizer，用它上传
+├─ export/DSH-Mizar.ipa       ← 已签名的构建，可以手动用 Transporter 上传
+└─ dsh-mizar-0.1.0.tgz        ← Mac 端插件本体（npm 包，装到 DSH 里）
 ```
 
 ---
