@@ -20,9 +20,12 @@ import { registerPanelApi } from './panel/api.js'
 import { MizarStore, resolveMizarHome } from './auth/store.js'
 import { selectBindAddresses, snapshotInterfaces, type BindPlan } from './net/interfaces.js'
 import {
-  bringTailscaleUp,
+  applyStartupPlan,
   describeTailscaleState,
+  enableStartOnLogin,
   findTailscaleCli,
+  planStartup,
+  readStartOnLogin,
   readTailscaleState,
 } from './net/tailscale.js'
 import { awaitRequestedPlan, bindKey, isRequested, needsRebind } from './net/watch.js'
@@ -89,13 +92,14 @@ function startBindWatcher(
 /**
  * Report why no tailnet address was found, and start Tailscale if we can.
  *
- * "No Tailscale interface found" covers three situations with three different
- * remedies, and only one of them is something a plugin should do. Saying which
- * one it is matters more than the boolean.
+ * "No Tailscale interface found" covers several situations with different
+ * remedies, and only some of them are a plugin's business. Naming which one it
+ * is matters more than the boolean return.
  *
+ * @param config - plugin configuration.
  * @returns whether something was started, so the caller knows to wait again.
  */
-async function ensureTailscaleRunning(): Promise<boolean> {
+async function ensureTailscaleRunning(config: MizarConfig): Promise<boolean> {
   const cli = findTailscaleCli()
   if (cli === null) {
     report(describeTailscaleState({ kind: 'absent' }))
@@ -105,21 +109,56 @@ async function ensureTailscaleRunning(): Promise<boolean> {
   const state = await readTailscaleState(cli)
   report(describeTailscaleState(state))
 
-  if (state.kind !== 'stopped') {
-    // Running but with no usable address, or unreadable: starting it again would
-    // not help, so the listener falls back and the watcher keeps looking.
+  // Launch at Login is the mechanism that makes every *later* start invisible,
+  // so it is worth arranging once rather than launching the app forever. It is
+  // also what turns "the plugin sorted it out this time" into "the operator
+  // never thinks about Tailscale again".
+  if (config.bind.ensureStartOnLogin) await ensureStartOnLogin()
+
+  if (!config.bind.autoConnect) return false
+
+  const plan = planStartup(state)
+  if (plan.action === 'sign-in') {
+    report('sign in to Tailscale once and the listener will pick the address up on its own')
     return false
   }
+  if (plan.action === 'none' || plan.action === 'install') return false
 
-  report('bind.autoConnect is on — starting Tailscale')
-  const result = await bringTailscaleUp(cli)
-  if (!result.ok) {
-    report(`could not start Tailscale (${result.detail}) — start it yourself and the listener will follow`)
-    return false
-  }
-
+  report(
+    plan.action === 'cli-up'
+      ? 'bringing Tailscale up through its CLI (no user interface)'
+      : 'starting Tailscale in the background',
+  )
+  const result = await applyStartupPlan(state)
   report(result.detail)
-  return true
+  if (!result.started && plan.action === 'cli-up') {
+    report('start it yourself and the listener will follow — it rebinds automatically')
+  }
+  return result.started
+}
+
+/**
+ * Make sure Tailscale will start at login, silently.
+ *
+ * Reported either way, including when it is already on: an operator who has just
+ * been told "this only happens once" should be able to confirm it stuck.
+ */
+async function ensureStartOnLogin(): Promise<void> {
+  const enabled = await readStartOnLogin()
+  if (enabled === true) {
+    report('Tailscale starts at login — later starts will be silent')
+    return
+  }
+
+  const result = await enableStartOnLogin()
+  if (result.ok) {
+    report(`${result.detail} — this is a one-time change to Tailscale's settings`)
+  } else {
+    report(
+      `could not turn on "Launch Tailscale at Login" (${result.detail}); ` +
+        'turn it on in the Tailscale menu and later starts will be silent',
+    )
+  }
 }
 
 /** Operator-facing diagnostics, on plain stdout. */
@@ -166,7 +205,7 @@ async function startListener(
   // most once per startup on purpose: a host that relaunched Tailscale every
   // time it went away would be fighting an operator who quit it deliberately.
   if (config.bind.autoConnect && !isRequested(plan) && config.bind.mode === 'tailscale') {
-    if (await ensureTailscaleRunning()) {
+    if (await ensureTailscaleRunning(config)) {
       plan = await awaitRequestedPlan(readPlan, {
         waitMs: config.bind.waitForMs,
         pollMs: 1000,
