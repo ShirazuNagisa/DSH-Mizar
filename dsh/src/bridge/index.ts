@@ -29,6 +29,7 @@ import {
   listSessions,
   promptSession,
   renameSession,
+  sessionMessages,
   sessionStats,
 } from './sessions.js'
 
@@ -152,6 +153,14 @@ export function createMethodTable(
      */
     'session.stats': async (payload) =>
       sessionStats(ctx, requireString(payload, 'sessionId', 'session.stats')),
+    'session.messages': async (payload) => {
+      const limit = (payload as Record<string, unknown> | undefined)?.['maxMessages']
+      return sessionMessages(
+        ctx,
+        requireString(payload, 'sessionId', 'session.messages'),
+        typeof limit === 'number' ? limit : undefined,
+      )
+    },
 
     /**
      * Create a session, or adopt/resume one when `sessionId` is supplied.
