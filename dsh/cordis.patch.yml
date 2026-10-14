@@ -1,0 +1,12 @@
+# dsh-mizar bundle patch.
+#
+# Inserts the Mizar host row into the profile tree. The row resolves from the
+# profile's own node_modules (this package is installed as a profile
+# dependency), so no installation-anchor package is required.
+#
+# Every field of this row's `config` belongs to the profile's own patch layer
+# (@see ~/.dsh/profiles/<profile>/cordis.patch.yml), not here, so two profiles
+# can configure Mizar independently.
+- insert:
+    - id: mizar
+      name: 'dsh-mizar'

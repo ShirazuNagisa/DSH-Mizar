@@ -1,0 +1,22 @@
+# --- Dev sandbox (workspace-local DSH home, package caches) ---
+.devhome/
+.devcache/
+.devstate/
+.pnpm-store/
+
+# --- Node ---
+node_modules/
+*.log
+
+# --- Build output ---
+dsh/lib/
+dsh/client/dist/
+
+# --- macOS ---
+.DS_Store
+
+# --- Xcode ---
+iOS/build/
+iOS/DerivedData/
+xcuserdata/
+*.xcuserstate
