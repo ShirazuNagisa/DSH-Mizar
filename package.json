@@ -77,5 +77,13 @@
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",
     "ws": "^8.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ShirazuNagisa/DSH-Mizar.git"
+  },
+  "homepage": "https://github.com/ShirazuNagisa/DSH-Mizar#readme",
+  "bugs": {
+    "url": "https://github.com/ShirazuNagisa/DSH-Mizar/issues"
   }
 }

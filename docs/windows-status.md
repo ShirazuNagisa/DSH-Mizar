@@ -5,7 +5,7 @@
 
 ## 代码检查：没有会崩的东西
 
-对整个 `dsh/src/` 做过排查：
+对整个 `src/` 做过排查：
 
 | 检查项 | 结果 |
 |---|---|
@@ -65,7 +65,7 @@ bash —— 但它们只在 macOS 上有意义（iOS 构建），所以不构成
 
 ## 已在单元测试中覆盖的 Windows 分支
 
-`dsh/test/tailscale.test.ts` 里的 `describe('Windows')` 有 7 个用例，通过注入
+`test/tailscale.test.ts` 里的 `describe('Windows')` 有 7 个用例，通过注入
 `platform` 参数执行 Windows 代码路径（本机无法真正运行）：
 
 - 找到 `C:\Program Files\Tailscale\tailscale.exe`

@@ -529,7 +529,7 @@ async function main() {
   // needs provider credentials this dev home does not have. What is verifiable
   // here is the surface: the pending view, and that every rejection path refuses
   // rather than silently accepting. The waterfall semantics themselves are unit
-  // tested in dsh/test/interactions.test.ts.
+  // tested in test/interactions.test.ts.
   console.log('\nbridge: interactions')
   session.send({ v: 1, type: 'interactions.pending', id: 'i1' })
   const pendingNow = await session.next()

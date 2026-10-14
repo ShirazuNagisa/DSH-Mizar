@@ -39,7 +39,7 @@ MIZAR_PROFILE="${MIZAR_PROFILE:-mizar-dev}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV_HOME="$ROOT/.devhome"
-PLUGIN_DIR="$ROOT/dsh"
+PLUGIN_DIR="$ROOT"
 LOG_FILE="$ROOT/.devstate/dev.log"
 PID_FILE="$ROOT/.devstate/dev.pid"
 
@@ -162,7 +162,7 @@ cmd_build() {
       npm install --no-audit --no-fund)
   }
   (cd "$PLUGIN_DIR" && ./node_modules/.bin/tsc -p tsconfig.json)
-  echo "dev.sh: host half built to dsh/lib"
+  echo "dev.sh: host half built to lib/"
 }
 
 cmd_install() {
@@ -279,7 +279,7 @@ case "${1:-}" in
 dev.sh <command>
 
   bootstrap   Create .devhome and initialize the mizar-dev profile.
-  build       Compile the host half to dsh/lib.
+  build       Compile the host half to lib/.
   install     Build and install dsh-mizar into the dev profile.
   boot        Boot the dev profile in the background; print startup lines.
   smoke       Reboot, then run scripts/smoke-listener.mjs against it.
