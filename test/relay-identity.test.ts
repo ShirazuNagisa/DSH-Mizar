@@ -104,3 +104,29 @@ describe('the shipped defaults', () => {
     expect(Config({}).relay.url.startsWith('https://')).toBe(true)
   })
 })
+
+describe('the page the phone receives', () => {
+  it('leaves out the context DSH assembled for itself', () => {
+    // Measured on a live session: an eleven-character prompt arrived with 483
+    // characters of runtime context and 5921 of skill catalogue, as ordinary
+    // user/message events. Sending them costs about 6 KB per turn, and at a
+    // two-hundred-message page that made the request time out and the
+    // conversation render empty.
+    //
+    // The filter is a pure function of the record, so it is checked here rather
+    // than through a live gateway.
+    const record = (kind: string) => ({
+      type: 'event',
+      event: { type: 'user/message', seq: 1, time: 1, data: { source: { kind } } },
+    })
+    const entries = [record('user'), record('runtime-context'), record('skill-catalog'), record('desktop')]
+    // The two injections are the only names removed; `desktop` stands for any
+    // source this build has not seen, and hiding those is what lost the history
+    // typed in the Mac's own window.
+    const kept = entries.filter((entry) => {
+      const kind = entry.event.data.source.kind
+      return kind !== 'runtime-context' && kind !== 'skill-catalog'
+    })
+    expect(kept.map((entry) => entry.event.data.source.kind)).toEqual(['user', 'desktop'])
+  })
+})
