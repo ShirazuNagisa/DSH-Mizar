@@ -33,6 +33,12 @@ public struct CachedConversation: Codable, Sendable, Equatable {
     public let syncedAt: Date
     /// Whether the host said there was more history before this.
     public let hasMore: Bool
+    /// The same conversation grouped into turns.
+    ///
+    /// Optional so a cache written before grouping existed still decodes -- a
+    /// cache that fails to read is a conversation that looks lost, which is the
+    /// thing this file exists to prevent.
+    public let turns: [ConversationTurn]?
 
     public init(
         sessionId: String,
@@ -40,7 +46,9 @@ public struct CachedConversation: Codable, Sendable, Equatable {
         throughSeq: Int?,
         syncedAt: Date = Date(),
         hasMore: Bool = false,
+        turns: [ConversationTurn]? = nil,
     ) {
+        self.turns = turns
         self.sessionId = sessionId
         self.items = items
         self.throughSeq = throughSeq
@@ -232,6 +240,30 @@ public func mergeConversations(
     for item in fresh { byId[item.id] = item }
     return byId.values.sorted { left, right in
         (time(of: left) ?? .distantPast) < (time(of: right) ?? .distantPast)
+    }
+}
+
+/// Fold a fresh page of turns into what is already stored.
+///
+/// By turn number, newest winning, the same way items are merged and for the
+/// same reason: consecutive pages overlap, and appending one to the other
+/// duplicates the turns they share.
+///
+/// - Parameters:
+///   - cached: turns the phone already had.
+///   - fresh: turns the host just sent.
+/// - Returns: the union, oldest first.
+public func mergeTurns(
+    cached: [ConversationTurn],
+    fresh: [ConversationTurn],
+) -> [ConversationTurn] {
+    var byId: [String: ConversationTurn] = [:]
+    for turn in cached { byId[turn.id] = turn }
+    for turn in fresh { byId[turn.id] = turn }
+    // A turn with no number is one the log did not place; it sorts last rather
+    // than first, because "unknown" is not "earliest".
+    return byId.values.sorted { left, right in
+        (left.turn ?? Int.max) < (right.turn ?? Int.max)
     }
 }
 

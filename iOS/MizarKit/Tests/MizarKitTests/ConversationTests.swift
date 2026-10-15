@@ -448,3 +448,129 @@ struct ConversationCacheTests {
         #expect(!files[0].contains("/"))
     }
 }
+
+@Suite("Turns")
+struct TurnTests {
+    /// A turn as the log holds it: prompts, then the steps the agent took.
+    private func page(_ payload: String) throws -> SessionMessagesResult {
+        try JSONDecoder().decode(SessionMessagesResult.self, from: Data(payload.utf8))
+    }
+
+    @Test("a turn's steps are grouped, and its prompt is not")
+    func grouping() throws {
+        // The shape that made the model look like it was talking to itself: one
+        // prompt, three steps, and a reader with no idea they belonged together.
+        // Every record carries `data.turn`; that is what does the grouping.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":20,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"user/message","seq":2,"time":1100,
+            "data":{"content":[{"type":"text","text":"fix the parser"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"step/start","seq":3,"time":1200,"data":{"turn":1,"step":1}}},
+          {"type":"event","event":{"type":"assistant/message","seq":4,"time":1300,
+            "data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"Looking at it."}]}}}},
+          {"type":"event","event":{"type":"step/end","seq":5,"time":1400,"data":{"turn":1,"step":1}}},
+          {"type":"event","event":{"type":"assistant/message","seq":6,"time":1500,
+            "data":{"turn":1,"step":2,"message":{"role":"assistant","content":[{"type":"text","text":"Found it."}]}}}},
+          {"type":"event","event":{"type":"assistant/message","seq":7,"time":1600,
+            "data":{"turn":1,"step":3,"message":{"role":"assistant","content":[{"type":"text","text":"Fixed."}]}}}},
+          {"type":"event","event":{"type":"turn/end","seq":8,"time":2000,
+            "data":{"turn":1,"reason":{"kind":"completed"}}}}
+        ]}
+        """)
+        let turns = result.conversationTurns()
+        #expect(turns.count == 1)
+        let turn = try #require(turns.first)
+        // The prompt stays out of the collapse: it is what the operator typed.
+        #expect(turn.prompts.count == 1)
+        #expect(turn.steps.count == 3)
+        #expect(turn.duration == 1)
+        #expect(!turn.failed)
+        #expect(turn.isCollapsible)
+    }
+
+    @Test("one step is not collapsed")
+    func singleStepStaysOpen() throws {
+        // Hiding a single answer behind a tap gains nothing -- the answer is the
+        // whole point of the turn.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"user/message","seq":2,"time":1100,
+            "data":{"content":[{"type":"text","text":"hello"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"assistant/message","seq":3,"time":1200,
+            "data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(!turn.isCollapsible)
+    }
+
+    @Test("a failed turn says so")
+    func failure() throws {
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"turn/end","seq":2,"time":5000,
+            "data":{"turn":1,"reason":{"kind":"error","error":{"message":"no API key"}}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(turn.failed)
+        #expect(turn.duration == 4)
+    }
+
+    @Test("several turns stay in order")
+    func ordering() throws {
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"assistant/message","seq":2,"time":1100,
+            "data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"one"}]}}}},
+          {"type":"event","event":{"type":"turn/start","seq":3,"time":2000,"data":{"turn":2}}},
+          {"type":"event","event":{"type":"assistant/message","seq":4,"time":2100,
+            "data":{"turn":2,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"two"}]}}}}
+        ]}
+        """)
+        #expect(result.conversationTurns().map(\.turn) == [1, 2])
+    }
+}
+
+@Suite("Turn merging")
+struct TurnMergeTests {
+    private func turn(_ n: Int?, _ text: String) -> ConversationTurn {
+        ConversationTurn(
+            turn: n,
+            prompts: [],
+            steps: [.message(id: "t\(n ?? -1)", role: .assistant, text: text, at: Date(timeIntervalSince1970: Double(n ?? 0)))],
+            startedAt: nil,
+            endedAt: nil,
+            endedReason: nil,
+        )
+    }
+
+    @Test("overlapping pages do not duplicate turns")
+    func noDuplicates() {
+        // Consecutive pages overlap, and appending one to the other would double
+        // every turn they share.
+        let merged = mergeTurns(cached: [turn(1, "one"), turn(2, "two")], fresh: [turn(2, "two"), turn(3, "three")])
+        #expect(merged.map(\.turn) == [1, 2, 3])
+    }
+
+    @Test("the fresh page wins")
+    func freshWins() {
+        let merged = mergeTurns(cached: [turn(1, "old")], fresh: [turn(1, "new")])
+        guard case .message(_, _, let text, _) = merged.first?.steps.first else {
+            Issue.record("expected a step")
+            return
+        }
+        #expect(text == "new")
+    }
+
+    @Test("a turn with no number sorts last, not first")
+    func unnumberedLast() {
+        // "Unknown" is not "earliest".
+        let merged = mergeTurns(cached: [turn(1, "one")], fresh: [turn(nil, "loose")])
+        #expect(merged.map(\.turn) == [1, nil])
+    }
+}

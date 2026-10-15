@@ -325,3 +325,168 @@ extension SessionRecord {
         }
     }
 }
+
+/// One turn of the conversation: what the agent did in response to one prompt.
+///
+/// DSH groups by turn and this did not, so a single prompt that took eleven
+/// steps arrived as eleven separate messages and read as the model talking to
+/// itself. The grain is in the log -- every record from `turn/start` to
+/// `turn/end` carries `data.turn`, and `step/start` and `step/end` bracket the
+/// parts within it -- so the grouping is a reading of what is already there
+/// rather than a guess at it.
+public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
+    /// Which turn, or `nil` for anything outside one.
+    public let turn: Int?
+    /// What the operator said, oldest first. Always shown.
+    public let prompts: [ConversationItem]
+    /// What the agent produced, oldest first. Collapsed behind the summary.
+    public let steps: [ConversationItem]
+    /// When the turn began.
+    public let startedAt: Date?
+    /// When it ended.
+    public let endedAt: Date?
+    /// How it ended, when the host said.
+    public let endedReason: String?
+
+    public var id: String { turn.map(String.init) ?? "unopened" }
+
+    public init(
+        turn: Int?,
+        prompts: [ConversationItem],
+        steps: [ConversationItem],
+        startedAt: Date?,
+        endedAt: Date?,
+        endedReason: String?,
+    ) {
+        self.turn = turn
+        self.prompts = prompts
+        self.steps = steps
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.endedReason = endedReason
+    }
+
+    /// How long the turn took, when both ends are known.
+    public var duration: TimeInterval? {
+        guard let startedAt, let endedAt else { return nil }
+        return max(0, endedAt.timeIntervalSince(startedAt))
+    }
+
+    /// Whether the turn ended without finishing.
+    public var failed: Bool { endedReason == "error" }
+
+    /// Everything in the turn, for a caller that wants a flat list.
+    public var items: [ConversationItem] { prompts + steps }
+
+    /// Whether there is anything to collapse.
+    ///
+    /// One step is not a crowd: collapsing a turn that produced a single reply
+    /// hides the answer behind a tap for no gain, and the answer is the whole
+    /// point.
+    ///
+    /// A turn that failed is never folded either. Failure is the one thing that
+    /// has to be visible without a tap -- an operator who has to open a turn to
+    /// discover it went wrong will not open it.
+    public var isCollapsible: Bool { steps.count > 1 && !failed }
+}
+
+extension SessionMessagesResult {
+    /// Read the page as turns, in order.
+    ///
+    /// Grouping rules, each from the log rather than from taste:
+    ///
+    /// - `data.turn` on a record says which turn it belongs to.
+    /// - **A prompt has no turn of its own.** Measured on a real log, the
+    ///   `user/message` that starts a turn carries no `data.turn` -- it is
+    ///   written before `turn/start`. So a prompt is held and attached to the
+    ///   turn that follows it, which is the turn it caused. A prompt with no
+    ///   turn after it keeps its own unopened group rather than being dropped.
+    /// - Within a turn, the prompt is what the operator typed and stays visible;
+    ///   the steps are the agent working, and they are what reads as noise.
+    /// - `turn/end.reason.kind` distinguishes a turn that finished from one that
+    ///   ran into something.
+    ///
+    /// - Returns: the turns, oldest first.
+    public func conversationTurns() -> [ConversationTurn] {
+        var order: [Int?] = []
+        var prompts: [Int?: [ConversationItem]] = [:]
+        var steps: [Int?: [ConversationItem]] = [:]
+        var started: [Int?: Date] = [:]
+        var ended: [Int?: Date] = [:]
+        var reason: [Int?: String] = [:]
+        /// Prompts seen before the turn they started.
+        var pending: [ConversationItem] = []
+
+        for record in records {
+            let payload = record.payload
+            let name = payload["type"]?.stringValue ?? record.type
+            let turn = payload["data"]?["turn"]?.intValue
+            let at = payload["time"]?.numberValue.map { Date(timeIntervalSince1970: $0 / 1000) }
+
+            switch name {
+            case "turn/start":
+                if !order.contains(turn) { order.append(turn) }
+                started[turn] = at
+                if !pending.isEmpty {
+                    prompts[turn, default: []].append(contentsOf: pending)
+                    pending.removeAll()
+                }
+            case "turn/end":
+                ended[turn] = at
+                reason[turn] = payload["data"]?["reason"]?["kind"]?.stringValue
+            case "user/message", "assistant/message", "assistant/attempt", "system/message":
+                let items = record.conversationItems()
+                guard !items.isEmpty else { continue }
+                if name == "user/message" {
+                    // A prompt belongs to the turn it starts, and it is written
+                    // before that turn exists.
+                    if let turn, order.contains(turn) {
+                        prompts[turn, default: []].append(contentsOf: items)
+                    } else {
+                        pending.append(contentsOf: items)
+                    }
+                    continue
+                }
+                if !order.contains(turn) { order.append(turn) }
+                // A prompt can also arrive after its `turn/start` -- the log
+                // holds both orders -- so it is claimed by whichever of the two
+                // comes first.
+                if !pending.isEmpty {
+                    prompts[turn, default: []].append(contentsOf: pending)
+                    pending.removeAll()
+                }
+                steps[turn, default: []].append(contentsOf: items)
+            default:
+                continue
+            }
+        }
+
+        // A prompt with nothing after it still has to be on screen.
+        if !pending.isEmpty {
+            order.append(nil)
+            prompts[nil, default: []].append(contentsOf: pending)
+        }
+
+        return order.map { turn in
+            ConversationTurn(
+                turn: turn,
+                prompts: prompts[turn] ?? [],
+                steps: steps[turn] ?? [],
+                startedAt: started[turn],
+                endedAt: ended[turn] ?? (steps[turn] ?? []).last.map(Self.time(of:)),
+                endedReason: reason[turn],
+            )
+        }
+    }
+
+    /// When an item happened.
+    /// - Parameter item: the item.
+    /// - Returns: its time.
+    private static func time(of item: ConversationItem) -> Date {
+        switch item {
+        case .message(_, _, _, let at): at
+        case .activity(_, _, let at): at
+        case .failure(_, _, let at): at
+        }
+    }
+}

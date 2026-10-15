@@ -638,16 +638,20 @@ final class AppModel {
                 as: SessionMessagesResult.self,
             )
             let fresh = result.conversationItems()
-            let merged = mergeConversations(
-                cached: await conversations.load(sessionId: sessionId)?.items ?? [],
-                fresh: fresh,
-            )
+            let freshTurns = result.conversationTurns()
+            let cached = await conversations.load(sessionId: sessionId)
+            let merged = mergeConversations(cached: cached?.items ?? [], fresh: fresh)
+            // Grouped on the fresh page and kept beside it, because a page is
+            // where the turn boundaries are -- they are in the records, and the
+            // merged item list has already lost which step belonged to what.
+            let mergedTurns = mergeTurns(cached: cached?.turns ?? [], fresh: freshTurns)
             await conversations.save(
                 CachedConversation(
                     sessionId: sessionId,
                     items: merged,
                     throughSeq: result.asOfSeq,
                     hasMore: result.hasMore,
+                    turns: mergedTurns,
                 ),
             )
             lastError = nil

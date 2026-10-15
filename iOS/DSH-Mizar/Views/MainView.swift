@@ -355,6 +355,8 @@ struct SessionDetailView: View {
     @State private var showingModelPicker = false
     @State private var showingPermissionPicker = false
     @State private var items: [ConversationItem] = []
+    /// The same conversation grouped into turns, when the host gave turn numbers.
+    @State private var turns: [ConversationTurn] = []
     @State private var loadingConversation = true
     @State private var tab: Tab = .conversation
 
@@ -392,7 +394,11 @@ struct SessionDetailView: View {
 
                     switch tab {
                     case .conversation:
-                        ConversationView(items: items, loading: loadingConversation)
+                        ConversationView(
+                            items: items,
+                            turns: turns,
+                            loading: loadingConversation,
+                        )
                     case .usage:
                         if loading {
                             ProgressView().frame(maxWidth: .infinity)
@@ -475,6 +481,7 @@ struct SessionDetailView: View {
         // network is not, and the fetch below replaces it when it lands.
         if let cached = await model.cachedConversation(for: sessionId), !cached.items.isEmpty {
             items = cached.items
+            turns = cached.turns ?? []
             loadingConversation = false
         }
         // Run together: the two reads are independent, and a conversation that
@@ -490,6 +497,7 @@ struct SessionDetailView: View {
         // populated screen is what "pull to refresh loses my history" was.
         let fresh = conversationResult
         if !fresh.isEmpty || items.isEmpty { items = fresh }
+        turns = (await model.cachedConversation(for: sessionId))?.turns ?? []
         loading = false
         loadingConversation = false
         await model.refreshInteractions()

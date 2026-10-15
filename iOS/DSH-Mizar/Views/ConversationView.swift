@@ -18,6 +18,9 @@ import MizarKit
 
 struct ConversationView: View {
     let items: [ConversationItem]
+    /// The conversation grouped into turns. Empty when the host sent no turn
+    /// numbers, in which case the flat list is drawn instead.
+    var turns: [ConversationTurn] = []
     let loading: Bool
 
     var body: some View {
@@ -33,18 +36,114 @@ struct ConversationView: View {
                     systemImage: "bubble.left.and.bubble.right",
                     description: Text("This session has no messages."),
                 )
-            } else {
+            } else if turns.isEmpty {
                 ForEach(items) { item in
-                    switch item {
-                    case .message(let id, let role, let text, _):
-                        MessageBubble(id: id, role: role, text: text)
-                    case .activity(_, let label, let at):
-                        ActivityMarker(label: label, at: at)
-                    case .failure(_, let message, _):
-                        FailureCard(message: message)
-                    }
+                    ConversationRow(item: item)
+                }
+            } else {
+                // One row per turn rather than one per message. A prompt that
+                // took eleven steps arrived as eleven bubbles and read as the
+                // model talking to itself; DSH folds them and so does this.
+                ForEach(turns) { turn in
+                    TurnSection(turn: turn)
                 }
             }
+        }
+    }
+}
+
+/// One turn: the prompt in the open, the agent's work folded behind a summary.
+private struct TurnSection: View {
+    let turn: ConversationTurn
+
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(turn.prompts) { item in
+                ConversationRow(item: item)
+            }
+
+            if turn.isCollapsible {
+                // The turn's last word stays on screen whether the turn is open
+                // or folded. It is the answer, and an answer behind a tap is not
+                // an answer; the tap is for the eleven steps it took to get
+                // there.
+                let conclusion = turn.steps.last
+                if !open, let conclusion {
+                    ConversationRow(item: conclusion)
+                }
+                DisclosureGroup(isExpanded: $open) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(turn.steps) { item in
+                            ConversationRow(item: item)
+                        }
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    TurnSummary(turn: turn)
+                }
+                .accessibilityIdentifier("turn.\(turn.id)")
+            } else {
+                // A turn that produced one reply is not a crowd, and hiding a
+                // single answer behind a tap gains nothing.
+                ForEach(turn.steps) { item in
+                    ConversationRow(item: item)
+                }
+            }
+        }
+    }
+}
+
+/// "Completed in 2m 14s", or why it did not.
+private struct TurnSummary: View {
+    let turn: ConversationTurn
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: turn.failed ? "exclamationmark.triangle" : "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(turn.failed ? .orange : .secondary)
+            Text(headline)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("\(turn.steps.count) 条")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .accessibilityIdentifier("turn.summary.\(turn.id)")
+    }
+
+    private var headline: String {
+        if turn.failed {
+            return turn.duration.map { "未完成，用时 \(Self.spell($0))" } ?? "未完成"
+        }
+        return turn.duration.map { "已完成，用时 \(Self.spell($0))" } ?? "已完成"
+    }
+
+    /// Minutes and seconds, because that is the unit a turn is measured in.
+    /// - Parameter seconds: the duration.
+    /// - Returns: the duration as words.
+    static func spell(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        if total < 60 { return "\(total) 秒" }
+        return "\(total / 60) 分 \(total % 60) 秒"
+    }
+}
+
+/// One item, drawn by kind.
+private struct ConversationRow: View {
+    let item: ConversationItem
+
+    var body: some View {
+        switch item {
+        case .message(let id, let role, let text, _):
+            MessageBubble(id: id, role: role, text: text)
+        case .activity(_, let label, let at):
+            ActivityMarker(label: label, at: at)
+        case .failure(_, let message, _):
+            FailureCard(message: message)
         }
     }
 }

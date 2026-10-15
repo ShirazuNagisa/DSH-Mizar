@@ -118,9 +118,31 @@ final class AppFlowTests: XCTestCase {
         XCTAssertFalse(app.buttons["composer.send"].isEnabled, "send is enabled while empty")
     }
 
+    /// Open every folded turn, so the steps inside can be asserted on.
+    ///
+    /// A turn's steps are folded behind a summary by default -- one prompt that
+    /// took eleven steps read as the model talking to itself -- so a test that
+    /// looks for a step has to open the turn it is in first.
+    ///
+    /// - Parameter app: the running app.
+    private func expandTurns(_ app: XCUIApplication) {
+        var guardCount = 0
+        while guardCount < 20 {
+            let summary = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier BEGINSWITH 'turn.summary.'"))
+                .firstMatch
+            guard summary.exists, summary.isHittable else { break }
+            summary.tap()
+            guardCount += 1
+        }
+    }
+
     func testTheConversationRendersMessagesAndAFailedTurn() {
         let app = launch()
         expect(app.staticTexts["Refactor the parser and run the tests."], "the user's message is missing")
+        // The prompt is never folded: it is what the operator typed. The steps
+        // are, so they have to be opened.
+        expandTurns(app)
         // Streamed deltas have to be joined into one bubble, not shown per chunk.
         expect(
             app.staticTexts["I split the tokenizer out of the parser so it can be tested alone."],
@@ -297,6 +319,7 @@ final class AppFlowTests: XCTestCase {
         chinese.terminate()
 
         let english = launch(language: "en")
+        expandTurns(english)
         expect(english.staticTexts["The turn ended without a response"], "the failure card did not translate")
         expect(english.buttons["Conversation"], "the interface did not follow English")
     }
