@@ -14,7 +14,7 @@
 | 发布 | ✅ 已归档、签名、导出 TestFlight 包（v0.1.0） |
 > | Windows | ⚠️ **代码检查通过，但从未运行过** —— 见 [Windows 状态](docs/windows-status.md) |
 >
-> **测试：366（插件）+ 59（中继）+ 96（Swift）+ 11（iOS UI）+ 110（真实链路冒烟断言）。**
+> **测试：370（插件）+ 62（中继）+ 96（Swift）+ 11（iOS UI）+ 111（真实链路冒烟断言）。**
 > iOS UI 中有 1 个已知失败，见文末「已知问题」。
 >
 > 关键设计结论：[0001 进程内网关](docs/decision-0001-in-process-gateway.md)、
