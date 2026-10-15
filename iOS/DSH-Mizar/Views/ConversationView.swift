@@ -21,7 +21,10 @@ struct ConversationView: View {
     let loading: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // Lazy, not eager. A conversation can hold hundreds of items and every
+        // one of them was being laid out whether or not it was on screen, which
+        // is what the dropped frames were.
+        LazyVStack(alignment: .leading, spacing: 10) {
             if loading && items.isEmpty {
                 ProgressView().frame(maxWidth: .infinity)
             } else if items.isEmpty {

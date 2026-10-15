@@ -62,6 +62,14 @@ export const ERROR_CODES = [
   'REMOTE_ERROR',
   'NOT_IMPLEMENTED',
   'INTERNAL',
+  /**
+   * The answer exists but is too large to deliver.
+   *
+   * Its own code because it is not a fault in the request and not a bug in the
+   * host: the answer is real and the transport cannot carry it. Saying so lets
+   * the client ask for less instead of retrying the same thing.
+   */
+  'RESPONSE_TOO_LARGE',
 ] as const
 
 /** One failure code. */

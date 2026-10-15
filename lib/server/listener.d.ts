@@ -1,7 +1,6 @@
 import { MizarStore } from '../auth/store.js';
 import type { BindPlan } from '../net/interfaces.js';
 import { type ServerFrame } from '../protocol/frames.js';
-/** An authenticated client connection. */
 export interface ClientSession {
     /** The device this session speaks for. */
     readonly deviceId: string;

@@ -92,6 +92,15 @@ struct MainView: View {
         } detail: {
             if let sessionId = model.selectedSessionId {
                 SessionDetailView(sessionId: sessionId)
+                    .sheet(isPresented: namingPrompt) {
+                        if let host = model.pendingNameHostId.flatMap({ id in
+                            model.hosts.first { $0.hostId == id }
+                        }) {
+                            RenameSheet(host: host) { name in
+                                Task { await model.rename(hostId: host.hostId, to: name) }
+                            }
+                        }
+                    }
             } else {
                 ContentUnavailableView(
                     "Pick a session",
