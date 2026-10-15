@@ -51,6 +51,48 @@ struct ConversationView: View {
 
 /// One message.
 private struct MessageBubble: View {
+    /// The message as Markdown, falling back to plain text.
+    ///
+    /// An agent answers in Markdown -- bold, lists, `code`, fenced blocks -- and
+    /// showing it raw puts asterisks and backticks on screen where formatting
+    /// belongs. Agents write in it constantly, so this is the common case rather
+    /// than a nicety.
+    ///
+    /// Three attempts, narrowest last, because `AttributedString` refuses a
+    /// string it cannot parse and a half-streamed answer is exactly that: an
+    /// unterminated code fence fails `.full`, so it is retried as inline-only,
+    /// and plain text is the floor. Something readable beats nothing.
+    ///
+    /// - Parameter text: the message.
+    /// - Returns: the attributed string to draw.
+    static func markdown(_ text: String) -> AttributedString? {
+        guard Self.looksLikeMarkdown(text) else { return nil }
+        if let full = try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .full),
+        ) {
+            return full
+        }
+        return try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace),
+        )
+    }
+
+    /// Whether a string carries Markdown worth parsing.
+    ///
+    /// Cheap and deliberately narrow: a false negative shows backticks, a false
+    /// positive costs a parse. Anything without one of these characters is a
+    /// sentence, and a sentence needs no parser.
+    ///
+    /// - Parameter text: the message.
+    /// - Returns: whether to parse it.
+    static func looksLikeMarkdown(_ text: String) -> Bool {
+        text.contains("**") || text.contains("`") || text.contains("\n# ")
+            || text.contains("\n- ") || text.contains("\n* ") || text.contains("\n1. ")
+            || text.contains("](") || text.contains("\n> ") || text.contains("\n```")
+    }
+
     let id: String
     let role: ConversationItem.Role
     let text: String
@@ -64,8 +106,17 @@ private struct MessageBubble: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
-                Text(text)
-                    .textSelection(.enabled)
+                if let formatted = Self.markdown(text) {
+                    Text(formatted)
+                        .textSelection(.enabled)
+                        .accessibilityLabel(text)
+                } else {
+                    // Plain text stays plain. Running it through the Markdown
+                    // parser would produce an identical string and a different
+                    // view, and the common case deserves the cheaper one.
+                    Text(text)
+                        .textSelection(.enabled)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)

@@ -489,7 +489,7 @@ final class AppModel {
             // Reported, not fatal. The pairing is still good and most of the
             // screen is still usable; throwing the operator out to a failure
             // screen over one dropped request is a worse answer than saying so.
-            lastError = Self.describe(error)
+            lastError = Self.describe(error).isEmpty ? nil : Self.describe(error)
         }
     }
 
@@ -556,7 +556,8 @@ final class AppModel {
                 startInteractionPoll()
                 return true
             } catch {
-                lastError = Self.describe(error, authority: host.authority ?? host.baseURL)
+                let message = Self.describe(error, authority: host.authority ?? host.baseURL)
+                lastError = message.isEmpty ? nil : message
             }
         }
         return false
@@ -625,7 +626,8 @@ final class AppModel {
             lastError = nil
             return merged
         } catch {
-            lastError = Self.describe(error, authority: host?.authority ?? host?.baseURL)
+            let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
+            if !message.isEmpty { lastError = message }
             return await conversations.load(sessionId: sessionId)?.items ?? []
         }
     }
@@ -657,7 +659,8 @@ final class AppModel {
             // same "no messages" screen as a session that genuinely has none --
             // so a broken read looked like an empty conversation, and there was
             // nothing on screen to say which it was.
-            lastError = Self.describe(error, authority: host?.authority ?? host?.baseURL)
+            let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
+            if !message.isEmpty { lastError = message }
             return []
         }
     }
@@ -871,6 +874,21 @@ final class AppModel {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
     }
 
+    /// Whether an error is something the operator should be told about.
+    ///
+    /// A cancelled task is not a failure: it is a screen that went away or a
+    /// request that got superseded, and both happen constantly in a list that
+    /// reloads as you scroll. Showing them put "未能完成操作。（CancellationError
+    /// 错误1。）" on screen for something nobody did wrong.
+    ///
+    /// - Parameter error: the error to judge.
+    /// - Returns: whether to surface it.
+    private static func isWorthReporting(_ error: any Error) -> Bool {
+        if error is CancellationError { return false }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return false }
+        return true
+    }
+
     /// Render an error for a human.
     ///
     /// `String(describing:)` on a `URLError` produces the entire `UserInfo`
@@ -883,6 +901,7 @@ final class AppModel {
     ///   - authority: the address that was being reached, when known.
     /// - Returns: text to put in front of the operator.
     private static func describe(_ error: any Error, authority: String? = nil) -> String {
+        if !isWorthReporting(error) { return "" }
         if let mizar = error as? MizarError { return mizar.message }
         guard let authority else { return error.localizedDescription }
         return ConnectionDiagnosis.of(error, authority: authority).message

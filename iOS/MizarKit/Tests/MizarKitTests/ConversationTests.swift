@@ -284,8 +284,11 @@ struct ConversationTests {
         #expect(result.conversationItems().isEmpty)
     }
 
-    @Test("a system message is read from the same deeper placement")
-    func systemMessageRealShape() throws {
+    @Test("the system prompt is not shown as a message")
+    func systemPromptIsHidden() throws {
+        // Copied from a real session: `system/message` carries the whole prompt
+        // DSH hands the model, several thousand characters of it, at the top of
+        // every conversation. It is not something either party said.
         let result = try page("""
         {"sessionId":"s1","asOfSeq":7,"hasMore":false,"records":[
           {"type":"event","event":{"type":"system/message","seq":7,"time":1,
@@ -294,12 +297,7 @@ struct ConversationTests {
             ]}}}}
         ]}
         """)
-        guard case .message(_, let role, let text, _) = result.conversationItems().first else {
-            Issue.record("expected a system message")
-            return
-        }
-        #expect(role == .system)
-        #expect(text.hasPrefix("You are an AI agent"))
+        #expect(result.conversationItems().isEmpty)
     }
 
     @Test("a whole exchange renders in order")

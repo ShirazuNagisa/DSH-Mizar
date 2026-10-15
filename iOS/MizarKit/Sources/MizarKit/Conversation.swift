@@ -197,8 +197,13 @@ extension SessionRecord {
             return [.message(id: id, role: .user, text: text, at: at)]
 
         case "system/message":
-            guard let text = Self.messageText(in: event) else { return [] }
-            return [.message(id: id, role: .system, text: text, at: at)]
+            // Dropped. This is not a message between anyone -- it is the prompt
+            // DSH hands the model: "You are an AI agent powered by DeepSeek
+            // Harness. You are a coding agent powered by the deepseek-flash
+            // model..." followed by the whole instruction set. Measured on a
+            // real session it is several thousand characters at the top of every
+            // conversation, and it is not something either party said.
+            return []
 
         case "assistant/message":
             // The committed reply. `assistant/attempt` is the streaming attempt
