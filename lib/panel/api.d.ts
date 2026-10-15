@@ -52,6 +52,23 @@ export interface PanelHost {
      */
     revokeDevice(deviceId: string): Promise<boolean>;
 }
+/**
+ * The reverse tunnel, read through getters.
+ *
+ * Getters because both the connection state and the room change while the panel
+ * is open, and re-registering the routes on every change would be a worse way to
+ * keep them current than reading them when a request arrives.
+ */
+export interface PanelRelay {
+    readonly enabled: boolean;
+    readonly state: {
+        connected: boolean;
+        room: string | null;
+        lastError: string | null;
+    };
+    /** The base URL a phone should be paired against, or `null` before a room exists. */
+    readonly pairBaseURL: string | null;
+}
 /** Wiring for the panel routes. */
 export interface PanelOptions {
     readonly host: PanelHost;
@@ -59,6 +76,8 @@ export interface PanelOptions {
     readonly plan: BindPlan;
     readonly hostName: string;
     readonly protocolVersion: number;
+    /** The reverse tunnel, or `null` when none is configured. */
+    readonly relay: PanelRelay | null;
     /** Sink for operator-facing diagnostics. */
     readonly log: (message: string) => void;
 }

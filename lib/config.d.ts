@@ -56,6 +56,39 @@ export interface Config {
     tls: {
         mode: 'off' | 'self-signed';
     };
+    /**
+     * The reverse tunnel that makes this Mac reachable from a network that blocks
+     * inbound traffic.
+     *
+     * Off by default. Turning it on means one machine's agent traffic flows
+     * through another machine, which is a decision an operator should make
+     * deliberately rather than inherit.
+     */
+    relay: {
+        enabled: boolean;
+        /** The relay's base URL, e.g. `https://mizar.example.com`. */
+        url: string;
+        /** The tunnel token, shared with the relay's own configuration. */
+        token: string;
+        /**
+         * The base URL a phone should use, when it differs from {@link url}.
+         *
+         * A Mac on the same LAN as the relay can dial it on a private address while
+         * phones must use the public one. Empty means "the same host, with the
+         * scheme a phone needs".
+         */
+        publicUrl: string;
+        /**
+         * Whether to bind loopback while the tunnel is up.
+         *
+         * On by default, and it is the point of the feature: with a tunnel the phone
+         * never needs to reach this machine directly, so leaving the listener on a
+         * LAN address exports it for no reason.
+         */
+        preferLoopback: boolean;
+        reconnectBaseMs: number;
+        reconnectMaxMs: number;
+    };
     pairing: {
         codeTtlSeconds: number;
         maxAttemptsPerMinute: number;
