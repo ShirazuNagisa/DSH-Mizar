@@ -28,6 +28,7 @@ import { awaitRequestedPlan, bindKey, isRequested, needsRebind } from './net/wat
 import { PROTOCOL_VERSION } from './protocol/frames.js'
 import { MizarListener } from './server/listener.js'
 import { RelayClient, phoneBaseURL } from './relay/client.js'
+import { loadOrCreateTunnelSecret } from './relay/identity.js'
 import type { RelayClientState } from './relay/client.js'
 import { runSpike } from './spike.js'
 
@@ -202,11 +203,21 @@ async function startListener(
   // replays phone requests onto the listener's port, so it has nothing to talk
   // to until the port exists, and nothing to say once it is gone.
   let relayState: RelayClientState = { connected: false, room: null, lastError: null }
+
+  // No token configured is the normal case, not an error: this install invents
+  // its own identity and the relay derives the room from it. That is what makes
+  // "install and scan" possible -- there is no per-user credential for anyone to
+  // issue, hand out or keep in sync.
+  const tunnelToken =
+    config.relay.token !== ''
+      ? config.relay.token
+      : await loadOrCreateTunnelSecret(stateDir, report)
+
   const relay =
-    config.relay.enabled && config.relay.url !== '' && config.relay.token !== ''
+    config.relay.enabled && config.relay.url !== ''
       ? new RelayClient({
           url: config.relay.url,
-          token: config.relay.token,
+          token: tunnelToken,
           localPort: listener.port,
           log: report,
           reconnectBaseMs: config.relay.reconnectBaseMs,
@@ -221,7 +232,7 @@ async function startListener(
         })
       : null
   if (config.relay.enabled && relay === null) {
-    report('relay: enabled but url or token is empty — not connecting')
+    report('relay: enabled but no url is configured — not connecting')
   }
   relay?.start()
 
