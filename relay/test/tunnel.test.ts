@@ -5,6 +5,7 @@ import {
   Tunnel,
   TunnelGoneError,
   TunnelTimeoutError,
+  saneCloseCode,
   type TunnelSocket,
 } from '../src/tunnel.js'
 
@@ -239,6 +240,32 @@ describe('Tunnel liveness', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('saneCloseCode', () => {
+  it('passes through the codes that may be sent', () => {
+    for (const code of [1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 3000, 4001, 4999]) {
+      expect(saneCloseCode(code)).toBe(code)
+    }
+  })
+
+  it('replaces the codes that describe the absence of a code', () => {
+    // 1005 is 'no status received' and 1006 is 'closed abnormally'. A close
+    // handler is given them; a close *frame* must never carry them, and `ws`
+    // throws a TypeError if one does -- which took the plugin down.
+    expect(saneCloseCode(1005)).toBe(1000)
+    expect(saneCloseCode(1006)).toBe(1000)
+    expect(saneCloseCode(1015)).toBe(1000)
+  })
+
+  it('replaces anything unknown', () => {
+    expect(saneCloseCode(0)).toBe(1000)
+    expect(saneCloseCode(999)).toBe(1000)
+    expect(saneCloseCode(1004)).toBe(1000)
+    expect(saneCloseCode(2999)).toBe(1000)
+    expect(saneCloseCode(5000)).toBe(1000)
+    expect(saneCloseCode(undefined)).toBe(1000)
   })
 })
 

@@ -51,6 +51,23 @@ export interface RelaySocket {
     on(event: 'open', listener: () => void): unknown;
 }
 /**
+ * Make a close code safe to send.
+ *
+ * A close frame carries a code, and a few codes describe *the absence* of one:
+ * 1005 is "no status received" and 1006 is "connection closed abnormally". They
+ * are reported to a `close` handler but are reserved -- RFC 6455 says they must
+ * never appear *in* a close frame, and `ws` throws a TypeError if you try. Since
+ * a bridged socket forwards the code it was given, the far end has to be able to
+ * receive one of these, and without this it takes the process down.
+ *
+ * Anything reserved or unknown becomes 1000: the peer learns the stream closed
+ * and loses only the detail of why, which is better than losing the connection.
+ *
+ * @param code - the code a socket reported, if any.
+ * @returns a code that is legal to send.
+ */
+export declare function saneCloseCode(code: number | undefined): number;
+/**
  * Turn a relay URL into the WebSocket URL for the tunnel.
  *
  * @param url - `https://relay.example.com`, `wss://…`, or either with a path.

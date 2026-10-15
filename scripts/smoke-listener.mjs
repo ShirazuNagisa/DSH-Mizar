@@ -642,7 +642,24 @@ async function panelSection() {
   const uri = withCode?.pairing?.uri ?? ''
   const parsed = new URLSearchParams(uri.slice(uri.indexOf('?') + 1))
   check('the QR payload uses the mizar scheme', uri.startsWith('mizar://pair?'), uri)
-  check('the QR payload carries the authority', parsed.get('h') === withCode?.authorities?.[0], `${parsed.get('h')} vs ${withCode?.authorities?.[0]}`)
+  // A QR must carry *an* address, but not necessarily a direct one. With a relay
+  // the listener binds loopback, and a loopback authority is deliberately left
+  // out -- a phone cannot reach 127.0.0.1 on the Mac, and offering it would make
+  // every scan spend its direct-connection timeout before trying the relay.
+  const authority = parsed.get('h')
+  const relayBase = parsed.get('u')
+  const direct = withCode?.authorities?.[0]
+  const expectedDirect = direct !== undefined && !direct.startsWith('127.0.0.1') ? direct : null
+  check(
+    'the QR payload carries an address a phone can use',
+    (authority !== null && authority === expectedDirect) || relayBase !== null,
+    `h=${authority} u=${relayBase} authorities=${JSON.stringify(withCode?.authorities)}`,
+  )
+  check(
+    'the QR payload does not offer a loopback authority',
+    authority === null || !authority.startsWith('127.0.0.1'),
+    `h=${authority}`,
+  )
   check('the QR payload carries the same code the panel shows', parsed.get('c') === withCode?.pairing?.display, `${parsed.get('c')} vs ${withCode?.pairing?.display}`)
 
   const rejectedType = await fetch(`${webBase}/api/mizar.revoke`, {

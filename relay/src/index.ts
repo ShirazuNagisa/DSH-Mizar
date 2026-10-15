@@ -26,7 +26,7 @@ import { createSocket, type Socket as UdpSocket } from 'node:dgram'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { loadConfig, type RelayConfig } from './config.js'
 import { deriveRoom, secretsEqual } from './room.js'
-import { RoomRegistry, Tunnel, type TunnelStream } from './tunnel.js'
+import { RoomRegistry, Tunnel, saneCloseCode, type TunnelStream } from './tunnel.js'
 import {
   ROOM_PREFIX,
   TUNNEL_PATH,
@@ -261,7 +261,7 @@ export async function startRelay(
       onClose: (code, reason) => {
         clearTimeout(entry.timer)
         waiting.delete(entry)
-        opened.phone?.close(code, reason)
+        opened.phone?.close(saneCloseCode(code), reason)
       },
     })
 
@@ -286,7 +286,10 @@ export async function startRelay(
       stream.send(Buffer.isBuffer(data) ? data : Buffer.from(String(data)), isBinary)
     })
     phone.on('close', (code: number, reason: Buffer) => {
-      stream.close(code, reason.toString('utf8'))
+      // The phone's code is forwarded, and a `close` handler is given reserved
+      // codes like 1006 that must not be sent on. Replaying one unexamined took
+      // the plugin down with a TypeError.
+      stream.close(saneCloseCode(code), reason.toString('utf8'))
     })
     phone.on('error', () => {
       stream.close(1011, 'phone socket error')

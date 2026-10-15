@@ -57,6 +57,33 @@ interface PendingStream extends StreamHandlers {
   readonly timer: NodeJS.Timeout
 }
 
+/**
+ * Make a close code safe to send.
+ *
+ * A close frame carries a code, and a few codes describe *the absence* of one:
+ * 1005 is "no status received" and 1006 is "connection closed abnormally". They
+ * are reported to a `close` handler but are reserved -- RFC 6455 says they must
+ * never appear *in* a close frame, and `ws` throws a TypeError if you try. Since
+ * a bridged socket forwards the code it was given, the far end has to be able to
+ * receive one of these, and without this it takes the process down.
+ *
+ * Anything reserved or unknown becomes 1000: the peer learns the stream closed
+ * and loses only the detail of why, which is better than losing the connection.
+ *
+ * @param code - the code a socket reported, if any.
+ * @returns a code that is legal to send.
+ */
+export function saneCloseCode(code: number | undefined): number {
+  if (code === undefined) return 1000
+  if (code === 1000) return 1000
+  // Everything RFC 6455 defines as sendable. 1004, 1005, 1006 and 1015 are
+  // deliberately absent: they are reserved.
+  if (code >= 1001 && code <= 1003) return code
+  if (code >= 1007 && code <= 1011) return code
+  if (code >= 3000 && code <= 4999) return code
+  return 1000
+}
+
 /** A tunnel that is not connected cannot serve anything. */
 export class TunnelGoneError extends Error {
   constructor(message = 'the Mac is not connected to the relay') {
@@ -217,8 +244,14 @@ export class Tunnel {
         this.#write({ t: 'ws-msg', id, data: data.toString('base64'), binary })
       },
       close: (code, reason) => {
-        this.#write({ t: 'ws-close', id, ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) })
-        this.#dropStream(id, code ?? 1000, reason ?? '')
+        const safe = saneCloseCode(code)
+        this.#write({
+          t: 'ws-close',
+          id,
+          code: safe,
+          ...(reason === undefined ? {} : { reason }),
+        })
+        this.#dropStream(id, safe, reason ?? '')
       },
     }
   }
