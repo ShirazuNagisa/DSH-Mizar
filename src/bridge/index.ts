@@ -155,10 +155,12 @@ export function createMethodTable(
       sessionStats(ctx, requireString(payload, 'sessionId', 'session.stats')),
     'session.messages': async (payload) => {
       const limit = (payload as Record<string, unknown> | undefined)?.['maxMessages']
+      const before = (payload as Record<string, unknown> | undefined)?.['beforeSeq']
       return sessionMessages(
         ctx,
         requireString(payload, 'sessionId', 'session.messages'),
         typeof limit === 'number' ? limit : undefined,
+        typeof before === 'number' ? before : undefined,
       )
     },
 

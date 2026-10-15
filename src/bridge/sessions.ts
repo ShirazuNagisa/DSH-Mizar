@@ -167,6 +167,7 @@ export async function sessionMessages(
   ctx: Context,
   sessionId: string,
   maxMessages?: number,
+  beforeSeq?: number,
 ): Promise<SessionMessagesResult> {
   const snapshot = (await ctx.typertGateway.invoke({
     namespace: 'session',
@@ -188,6 +189,12 @@ export async function sessionMessages(
       request: {
         address: { kind: 'session', sessionId },
         throughSeq: asOfSeq,
+        // The lower bound. Without it a page starts at the beginning of the log,
+        // which for a session with any history means a conversation view made
+        // entirely of the first few turns -- and, because a single prompt emits
+        // sixteen bookkeeping records for every two messages, very little of it
+        // is conversation at all.
+        ...(beforeSeq === undefined ? {} : { beforeSeq }),
         ...(maxMessages === undefined ? {} : { maxMessages }),
       },
     },
