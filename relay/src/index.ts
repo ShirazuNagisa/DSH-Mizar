@@ -258,6 +258,24 @@ export async function startRelay(
         }
       },
       onMessage: (data, binary) => {
+        // The last hop before the phone, and the only place that knows the
+        // phone's limit. iOS's `URLSessionWebSocketTask` refuses any message
+        // over one mebibyte and **closes the socket** -- so forwarding an
+        // oversized frame does not deliver an answer, it kills the connection:
+        //
+        //   input message size 4959085 exceeds maximum message size 1048576
+        //   Read completed with an error Message too long
+        //
+        // The plugin guards its own output too, but a plugin older than this
+        // relay is a normal state during an upgrade, and a limit that depends on
+        // the far end having been upgraded is not a limit.
+        if (data.length > config.maxMessageBytes) {
+          log(
+            `relay: refusing a ${Math.round(data.length / 1024)}KB frame for room ${split.room} — ` +
+              'the phone would drop the connection instead',
+          )
+          return
+        }
         opened.phone?.send(data, { binary })
       },
       onClose: (code, reason) => {

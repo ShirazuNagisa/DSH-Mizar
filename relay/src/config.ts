@@ -42,7 +42,13 @@ export interface RelayConfig {
   readonly maxRooms: number
   /** Largest request body the relay will carry, in bytes. */
   readonly maxBodyBytes: number
-  /** Largest single WebSocket message the relay will carry, in bytes. */
+  /**
+   * Largest single WebSocket message the relay will carry, in bytes.
+   *
+   * Below iOS's hard limit of one mebibyte, because exceeding it does not
+   * truncate the message -- it closes the socket, and the operator loses the
+   * connection rather than the answer.
+   */
   readonly maxMessageBytes: number
   /** Concurrent client connections allowed per room. */
   readonly maxClientsPerRoom: number
@@ -99,7 +105,7 @@ export function loadConfig(
     maxRooms: Number(pick(env['MIZAR_RELAY_MAX_ROOMS'], file.maxRooms, 10_000)),
     maxBodyBytes: Number(pick(env['MIZAR_RELAY_MAX_BODY'], file.maxBodyBytes, 4 * 1024 * 1024)),
     maxMessageBytes: Number(
-      pick(env['MIZAR_RELAY_MAX_MESSAGE'], file.maxMessageBytes, 4 * 1024 * 1024),
+      pick(env['MIZAR_RELAY_MAX_MESSAGE'], file.maxMessageBytes, 900 * 1024),
     ),
     maxClientsPerRoom: Number(pick(env['MIZAR_RELAY_MAX_CLIENTS'], file.maxClientsPerRoom, 8)),
     requestTimeoutMs: Number(pick(env['MIZAR_RELAY_REQUEST_TIMEOUT'], file.requestTimeoutMs, 30_000)),

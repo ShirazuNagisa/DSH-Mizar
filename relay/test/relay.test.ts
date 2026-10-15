@@ -117,6 +117,18 @@ class FakeMac {
     this.#handler = () => undefined
   }
 
+  /** Send a stream message of the given size, as the Mac would. */
+  sendStreamMessage(payload: string): void {
+    this.#socket.send(
+      JSON.stringify({
+        t: 'ws-msg',
+        id: 'r1',
+        data: Buffer.from(payload).toString('base64'),
+        binary: false,
+      }),
+    )
+  }
+
   close(): void {
     this.#socket.close()
   }
@@ -390,5 +402,38 @@ describe('abuse limits', () => {
     await new Promise((resolve) => setTimeout(resolve, 120))
     const second = await FakeMac.connect(`ws://127.0.0.1:${relay.port}`, 'i'.repeat(43))
     expect(second.room).toMatch(/^[0-9A-HJKMNP-TV-Z]{12}$/)
+  })
+})
+
+describe('the frame size guard', () => {
+  it('refuses to forward a frame the phone would reject', async () => {
+    // The last hop before the phone, and the only place that knows the phone's
+    // limit. iOS refuses anything over one mebibyte and closes the socket, so an
+    // oversized frame does not deliver an answer -- it kills the connection.
+    // `maxMessageBytes` is checked in the phone's direction here; the plugin
+    // guards its own output too, but a plugin older than the relay is a normal
+    // state during an upgrade.
+    const lines: string[] = []
+    relay = await startRelay(config({ maxMessageBytes: 64 }), (m) => lines.push(m))
+    const mac = await FakeMac.connect(`ws://127.0.0.1:${relay.port}`)
+
+    mac.echoStreams()
+
+    const phone = new WebSocket(`ws://127.0.0.1:${relay.port}/r/${mac.room}/mizar/v1/ws`)
+    await new Promise<void>((resolve, reject) => {
+      phone.once('open', () => resolve())
+      phone.once('error', reject)
+    })
+
+    // The Mac sends something far too big for the phone leg.
+    mac.sendStreamMessage('x'.repeat(4096))
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(lines.some((line) => line.includes('refusing a'))).toBe(true)
+
+    // And the phone is still connected, which is the point: refusing must cost
+    // the message, not the socket.
+    expect(phone.readyState).toBe(WebSocket.OPEN)
+    phone.close()
   })
 })
