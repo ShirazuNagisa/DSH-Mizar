@@ -40,3 +40,25 @@ describe('the session page budget', () => {
     expect(SOURCE).toContain('records: withinBudget(useful)')
   })
 })
+
+it('measures bytes, not UTF-16 code units', () => {
+  // The bug this pins produced a five-megabyte frame from a half-megabyte
+  // budget. `String.length` counts UTF-16 code units, and a Chinese character
+  // is one of those but three bytes of UTF-8 -- so the page was budgeted in a
+  // unit three times smaller than what the transport counts. The device log
+  // showed the result twice, at 2.0 MB and again at 5.1 MB.
+  expect(SOURCE).toContain('Buffer.byteLength')
+  expect(SOURCE).not.toMatch(/JSON\.stringify\(record\)\?\.length/)
+})
+
+it('leaves the frame guard a margin under the transport limit', () => {
+  const listener = readFileSync(new URL('../src/server/listener.ts', import.meta.url), 'utf8')
+  expect(listener).toContain('MAX_FRAME_BYTES')
+  // Per-method budgets only cover the methods that were measured; the guard is
+  // what makes the limit hold for every answer.
+  expect(listener).toContain('RESPONSE_TOO_LARGE')
+  const match = /MAX_FRAME_BYTES = ([0-9 *]+)/.exec(listener)
+  const bytes = (match?.[1] ?? '').split('*').map((p) => Number(p.trim())).reduce((a, b) => a * b, 1)
+  expect(bytes).toBeGreaterThan(0)
+  expect(bytes).toBeLessThan(1048576)
+})

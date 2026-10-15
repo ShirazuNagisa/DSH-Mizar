@@ -50,6 +50,15 @@ const PORT_PROBE_RANGE = 10
 const RATE_LIMIT_SWEEP_MS = 60_000
 
 /** An authenticated client connection. */
+/**
+ * The largest frame this listener will put on the wire, in bytes.
+ *
+ * 512 KB against the transport's one mebibyte: JSON is escaped, the phone's
+ * limit is a hard refusal rather than a truncation, and being wrong on the high
+ * side costs the connection.
+ */
+const MAX_FRAME_BYTES = 512 * 1024
+
 export interface ClientSession {
   /** The device this session speaks for. */
   readonly deviceId: string
@@ -557,7 +566,39 @@ export class MizarListener {
     })
 
     const send = (frame: ServerFrame): void => {
-      if (socket.readyState === socket.OPEN) socket.send(encodeFrame(frame))
+      if (socket.readyState !== socket.OPEN) return
+      const encoded = encodeFrame(frame)
+      const bytes = Buffer.byteLength(encoded, 'utf8')
+      // A frame over this size is not delivered, it is a disconnect. iOS's
+      // `URLSessionWebSocketTask` refuses anything above one mebibyte and closes
+      // the socket, so the operator loses the connection rather than the answer:
+      //
+      //   input message size 5344030 exceeds maximum message size 1048576
+      //   Read completed with an error Message too long
+      //
+      // Per-method budgets cannot cover this on their own -- they were written
+      // for the one method that was measured, and the next oversized response
+      // came from somewhere else. This is the backstop: whatever a method
+      // returns, what leaves here fits.
+      if (bytes > MAX_FRAME_BYTES) {
+        this.#options.log(
+          `mizar: refusing to send a ${Math.round(bytes / 1024)}KB "${frame.type}" frame — ` +
+            'the transport would drop the connection instead',
+        )
+        if (frame.type === 'ok' && frame.id !== undefined) {
+          socket.send(
+            encodeFrame(
+              errorFrame(
+                'RESPONSE_TOO_LARGE',
+                `the answer to ${frame.id} is ${Math.round(bytes / 1024)}KB, too large to deliver`,
+                frame.id,
+              ),
+            ),
+          )
+        }
+        return
+      }
+      socket.send(encoded)
     }
 
     // A client that never authenticates is dropped rather than left open; the
