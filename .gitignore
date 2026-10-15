@@ -9,8 +9,13 @@ node_modules/
 *.log
 
 # --- Build output ---
+# Only the relay's lib/ is ignored. The plugin's lib/ is committed on purpose:
+# `dsh plugin add` installs a git checkout with no build step, so a missing
+# lib/ is a plugin that does not work at all. The relay is deployed by running
+# `npm run build` on the server, so its output does not belong in the repo.
 iOS/MizarKit/.build/
 client/dist/
+relay/lib/
 
 # --- macOS ---
 .DS_Store
