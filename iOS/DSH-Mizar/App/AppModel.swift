@@ -397,12 +397,18 @@ final class AppModel {
                 code: target.code,
                 deviceName: deviceName,
                 deviceModel: Self.deviceModel,
+                // Without this the pairing request goes to an address that does
+                // not exist, and the failure reads as "" not being dialable --
+                // which is what a simulator run against a relay-only QR found.
+                baseURL: target.baseURL,
             )
             try await credentials.save(paired)
             host = paired
             try await connect(using: paired)
         } catch {
-            phase = .failed(Self.describe(error, authority: target.authority))
+            phase = .failed(
+                Self.describe(error, authority: target.authority ?? target.baseURL),
+            )
         }
     }
 

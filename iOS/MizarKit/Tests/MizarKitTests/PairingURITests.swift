@@ -208,4 +208,21 @@ struct PairingURITests {
                 .absoluteString == "https://relay.example.com/r/ROOM/mizar/v1/pair",
         )
     }
+
+    @Test("a relay-only target has no direct authority but does have a base URL")
+    func relayOnlyTargetIsUsable() throws {
+        // The gap this pins: the parser can understand `u` perfectly while the
+        // pairing call never passes it on, which shows up only when something
+        // tries to dial the relay. A simulator run against a relay-only QR is
+        // what found it.
+        let target = try #require(
+            PairingURI.parse("mizar://pair?u=https://relay.example.com/r/ROOM&c=AB2C-D3EF&v=1"),
+        )
+        #expect(target.authority == nil)
+        #expect(target.baseURL == "https://relay.example.com/r/ROOM")
+        // Both legs must be constructible from the base URL alone, since that is
+        // all a relay-only scan provides.
+        #expect(PairingURI.relayHTTPURL(baseURL: try #require(target.baseURL), path: "/mizar/v1/pair") != nil)
+        #expect(PairingURI.relayWebSocketURL(baseURL: try #require(target.baseURL)) != nil)
+    }
 }
