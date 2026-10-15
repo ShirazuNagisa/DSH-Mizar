@@ -369,7 +369,13 @@ struct SessionDetailView: View {
         async let statsResult = model.stats(for: sessionId)
         async let conversationResult = model.conversation(for: sessionId)
         stats = await statsResult
-        items = await conversationResult
+        // Only replace what is on screen when there is something to replace it
+        // with. A read that failed returns nothing, and assigning that wiped the
+        // whole conversation -- which is what "pull to refresh loses my history"
+        // was. Keeping the old items means a failed refresh costs freshness, not
+        // the history.
+        let fresh = await conversationResult
+        if !fresh.isEmpty || items.isEmpty { items = fresh }
         loading = false
         loadingConversation = false
         await model.refreshInteractions()

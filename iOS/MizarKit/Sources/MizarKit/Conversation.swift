@@ -48,9 +48,33 @@ public struct SessionMessagesResult: Decodable, Sendable, Equatable {
 /// `type` is `event` for a single event or `chunks` for a packed run of
 /// assistant deltas. The payload is kept as ``JSONValue`` rather than decoded
 /// into a fixed shape, for the same reason the host does not normalise it.
+///
+/// The whole record is kept, not just the `event` key, because the two places
+/// these records come from disagree about shape. The gateway wraps them as
+/// `{"type":"event","event":{…}}`; the same record written to a session log has
+/// `type`, `seq`, `time` and `data` at the top level with no wrapper at all.
+/// Decoding only `event` means a log-shaped record arrives with no payload and
+/// renders as nothing, silently.
 public struct SessionRecord: Decodable, Sendable, Equatable {
+    /// The record type: `event`, `chunks`, or -- unwrapped -- the event's own
+    /// name such as `assistant/message`.
     public let type: String
+    /// The gateway's wrapper, when there is one.
     public let event: JSONValue?
+    /// Everything the record held.
+    private let raw: JSONValue
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case event
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let single = try decoder.singleValueContainer()
+        self.raw = try single.decode(JSONValue.self)
+        self.type = raw["type"]?.stringValue ?? ""
+        self.event = raw["event"]
+    }
 }
 
 /// Something worth showing in the conversation.
@@ -79,20 +103,31 @@ public enum ConversationItem: Sendable, Equatable, Identifiable {
 }
 
 extension SessionRecord {
+    /// The payload, whether or not it arrived wrapped.
+    ///
+    /// The gateway hands back `{"type":"event","event":{…}}`. The same records
+    /// written to a session log on disk have no wrapper -- `type`, `seq`, `time`
+    /// and `data` sit at the top level. Reading both means a change on either
+    /// side degrades to nothing rendered rather than to a parser crash or, worse,
+    /// to a record that looks like it has no name.
+    var payload: JSONValue {
+        event ?? raw
+    }
+
     /// The event's name, or `nil` when this record carries none.
     public var eventName: String? {
-        event?["type"]?.stringValue
+        payload["type"]?.stringValue ?? type
     }
 
     /// When the event happened.
     public var timestamp: Date? {
-        guard let millis = event?["time"]?.numberValue else { return nil }
+        guard let millis = payload["time"]?.numberValue else { return nil }
         return Date(timeIntervalSince1970: millis / 1000)
     }
 
     /// A stable identity for the record.
     public var recordId: String {
-        if let seq = event?["seq"]?.intValue { return "seq-\(seq)" }
+        if let seq = payload["seq"]?.intValue { return "seq-\(seq)" }
         return "unknown-\(eventName ?? type)"
     }
 }
@@ -129,6 +164,8 @@ extension SessionRecord {
     /// The items this record contributes, if any.
     /// - Returns: zero or more items.
     func conversationItems() -> [ConversationItem] {
+        // The payload, whether the gateway wrapped it or not.
+        let event = payload
         let at = timestamp ?? Date(timeIntervalSince1970: 0)
         let id = recordId
         let name = eventName ?? type
@@ -202,15 +239,29 @@ extension SessionRecord {
     /// - Returns: whether to hide it.
     private static func isInjectedContext(_ event: JSONValue?) -> Bool {
         let kind = event?["data"]?["source"]?["kind"]?.stringValue
+            ?? event?["data"]?["message"]?["source"]?["kind"]?.stringValue
         guard let kind else { return false }
         return kind == "runtime-context" || kind == "skill-catalog"
     }
 
     /// Pull text out of a message event's typed content parts.
+    ///
+    /// There are two placements and both are real, read off a session log:
+    ///
+    ///   user/message       data.content[]
+    ///   assistant/message  data.message.content[]
+    ///   system/message     data.message.content[]
+    ///
+    /// Reading only the first is why the model's replies never appeared on the
+    /// phone while the Mac showed the whole exchange. The text was there, one
+    /// key deeper, and the parser looked in the wrong one.
+    ///
     /// - Parameter event: the event payload.
     /// - Returns: the joined text, or `nil` when there is none.
     private static func messageText(in event: JSONValue?) -> String? {
-        guard let parts = event?["data"]?["content"]?.arrayValue else { return nil }
+        let parts = event?["data"]?["message"]?["content"]?.arrayValue
+            ?? event?["data"]?["content"]?.arrayValue
+        guard let parts else { return nil }
         let text = parts.compactMap { part -> String? in
             guard part["type"]?.stringValue == "text" else { return nil }
             return part["text"]?.stringValue

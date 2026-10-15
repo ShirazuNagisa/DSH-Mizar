@@ -239,4 +239,145 @@ struct ConversationTests {
         """)
         #expect(result.conversationItems().isEmpty)
     }
+
+    // MARK: - Shapes taken from a real session log
+
+    @Test("the model's reply is found where a real log puts it")
+    func assistantMessageRealShape() throws {
+        // Copied from a live session log, trimmed. The text is at
+        // `data.message.content`, one key deeper than a user message's
+        // `data.content` -- and reading only the latter is why every reply was
+        // missing from the phone while the Mac showed the whole exchange.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":29,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"assistant/message","seq":29,"time":1791089307181,
+            "data":{"turn":2,"step":1,"message":{"role":"assistant","content":[
+              {"type":"reasoning","text":""},
+              {"type":"text","text":"I will start by exploring the workspace."},
+              {"type":"tool-call","id":"call_1","name":"bash","arguments":"{}"}
+            ],"source":{"kind":"model","provider":"deepseek-account","model":"deepseek-flash"}},
+            "surfaceOp":"append"}}}
+        ]}
+        """)
+        let items = result.conversationItems()
+        #expect(items.count == 1)
+        guard case .message(_, let role, let text, _) = items[0] else {
+            Issue.record("expected the reply, got \(items)")
+            return
+        }
+        #expect(role == .assistant)
+        #expect(text == "I will start by exploring the workspace.")
+    }
+
+    @Test("a tool-call-only reply produces no bubble")
+    func assistantMessageWithoutText() throws {
+        // A step that only calls tools has no text to show, and an empty bubble
+        // per tool call would be worse than nothing.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":30,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"assistant/message","seq":30,"time":1,
+            "data":{"message":{"role":"assistant","content":[
+              {"type":"tool-call","id":"c","name":"bash","arguments":"{}"}
+            ]}}}}
+        ]}
+        """)
+        #expect(result.conversationItems().isEmpty)
+    }
+
+    @Test("a system message is read from the same deeper placement")
+    func systemMessageRealShape() throws {
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":7,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"system/message","seq":7,"time":1,
+            "data":{"turn":1,"step":1,"message":{"role":"system","content":[
+              {"type":"text","text":"You are an AI agent powered by DeepSeek Harness."}
+            ]}}}}
+        ]}
+        """)
+        guard case .message(_, let role, let text, _) = result.conversationItems().first else {
+            Issue.record("expected a system message")
+            return
+        }
+        #expect(role == .system)
+        #expect(text.hasPrefix("You are an AI agent"))
+    }
+
+    @Test("a whole exchange renders in order")
+    func fullExchange() throws {
+        // The end-to-end shape of what the user reported: several prompts and
+        // the replies to them, in the order a log holds them.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":32,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"user/message","seq":8,"time":1,
+            "data":{"content":[{"type":"text","text":"你好"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"assistant/message","seq":9,"time":2,
+            "data":{"message":{"role":"assistant","content":[{"type":"text","text":"你好！有什么可以帮你的？"}]}}}},
+          {"type":"event","event":{"type":"user/message","seq":10,"time":3,
+            "data":{"content":[{"type":"text","text":"你是谁"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"assistant/message","seq":11,"time":4,
+            "data":{"message":{"role":"assistant","content":[{"type":"text","text":"我是一个编码 agent。"}]}}}}
+        ]}
+        """)
+        let items = result.conversationItems()
+        #expect(items.count == 4)
+        let rendered = items.compactMap { item -> String? in
+            if case .message(_, let role, let text, _) = item {
+                return "\(role):\(text)"
+            }
+            return nil
+        }
+        #expect(rendered == [
+            "user:你好",
+            "assistant:你好！有什么可以帮你的？",
+            "user:你是谁",
+            "assistant:我是一个编码 agent。",
+        ])
+    }
+
+    @Test("a real exchange renders in full")
+    func realExchange() throws {
+        // The prompts and replies below are copied verbatim out of a session log
+        // on this machine, trimmed only of tool-call arguments. The key placement
+        // is theirs, not mine: a user message keeps its parts at `data.content`,
+        // and a message the model produced keeps them at `data.message.content`.
+        //
+        // That placement is what was wrong. Every reply was missing from the
+        // phone while the Mac showed the whole exchange, and no test caught it
+        // because every fixture had been written to match the parser rather than
+        // the host.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":660,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"user/message","seq":336,"time":1791089283671,"data":{"content":[{"type":"text","text":"请开始修复。注意仍然保持目前良好的GUI与内核解耦状态"}],"source":{"kind":"user"},"role":"user"}}},
+          {"type":"event","event":{"type":"assistant/message","seq":338,"time":1791089283672,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"reasoning","text":""},{"type":"text","text":"I'll fix the four issues while preserving the C-ABI-only decoupling."}],"source":{"kind":"model","provider":"deepseek-account","model":"deepseek-flash"}}}}},
+          {"type":"event","event":{"type":"user/message","seq":340,"time":1791089283673,"data":{"content":[{"type":"text","text":"允许你写入ISC-Core了"}],"source":{"kind":"user"},"role":"user"}}},
+          {"type":"event","event":{"type":"assistant/message","seq":342,"time":1791089283674,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"reasoning","text":""},{"type":"text","text":"Write access to ISC-Core is now available."}],"source":{"kind":"model","provider":"deepseek-account","model":"deepseek-flash"}}}}}
+        ]}
+        """)
+        let rendered = result.conversationItems().compactMap { item -> String? in
+            if case .message(_, let role, let text, _) = item { return "\(role):\(text)" }
+            return nil
+        }
+        #expect(rendered == [
+            "user:请开始修复。注意仍然保持目前良好的GUI与内核解耦状态",
+            "assistant:I'll fix the four issues while preserving the C-ABI-only decoupling.",
+            "user:允许你写入ISC-Core了",
+            "assistant:Write access to ISC-Core is now available.",
+        ])
+    }
+
+    @Test("a record written without the gateway wrapper is read the same way")
+    func unwrappedRecord() throws {
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":30,"hasMore":false,"records":[
+          {"type":"assistant/message","seq":29,"time":1791089307181,
+           "data":{"message":{"role":"assistant","content":[{"type":"text","text":"unwrapped reply"}]}}}
+        ]}
+        """)
+        guard case .message(_, let role, let text, _) = result.conversationItems().first else {
+            Issue.record("expected a message from an unwrapped record")
+            return
+        }
+        #expect(role == .assistant)
+        #expect(text == "unwrapped reply")
+    }
 }

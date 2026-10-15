@@ -56,17 +56,6 @@ struct ComposerView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.bar)
-        // A keyboard that can only be dismissed by leaving the screen traps you
-        // on it. The field keeps focus after a send -- which is right, because a
-        // conversation is usually several messages -- so there has to be a way
-        // out that is not a navigation gesture.
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") { focused = false }
-                    .accessibilityIdentifier("composer.dismissKeyboard")
-            }
-        }
     }
 
     private var canSend: Bool {
