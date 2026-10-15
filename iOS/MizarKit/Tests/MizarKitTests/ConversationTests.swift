@@ -148,18 +148,73 @@ struct ConversationTests {
         #expect(text == "hello world")
     }
 
-    @Test("a message with no source at all is hidden rather than guessed at")
-    func missingSourceIsHidden() throws {
-        // Absent means "not from the operator", which is the safe reading: a
-        // missed real message costs a line of dialogue, and a shown injection
-        // costs the screen.
+    @Test("a message with no source is shown, not guessed away")
+    func missingSourceIsShown() throws {
+        // The first version required `source.kind == "user"` and that hid
+        // anything typed in the Mac's own DSH window -- half the history
+        // somebody opens this app to read. Absent is shown; only the two known
+        // injections are hidden.
         let result = try page("""
         {"sessionId":"s1","asOfSeq":1,"hasMore":false,"records":[
           {"type":"event","event":{"type":"user/message","seq":1,"time":1,
-            "data":{"content":[{"type":"text","text":"no source field"}]}}}
+            "data":{"content":[{"type":"text","text":"typed on the Mac"}]}}}
         ]}
         """)
-        #expect(result.conversationItems().isEmpty)
+        #expect(result.conversationItems().count == 1)
+    }
+
+    @Test("a message sent from the Mac is shown")
+    func desktopMessageIsShown() throws {
+        // Whatever the desktop's source kind is called, it is not one of the two
+        // injections, so it survives.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":2,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"user/message","seq":1,"time":1,
+            "data":{"source":{"kind":"desktop"},"content":[{"type":"text","text":"from the Mac"}]}}},
+          {"type":"event","event":{"type":"user/message","seq":2,"time":2,
+            "data":{"source":{"kind":"user"},"content":[{"type":"text","text":"from the phone"}]}}}
+        ]}
+        """)
+        #expect(result.conversationItems().count == 2)
+    }
+
+    @Test("the model's reply is shown")
+    func assistantMessageIsShown() throws {
+        // `assistant/message` is the committed reply and was the one event type
+        // the parser did not know. A model that answered perfectly produced
+        // nothing on the phone while the Mac showed the whole exchange.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":3,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"user/message","seq":1,"time":1,
+            "data":{"content":[{"type":"text","text":"what is 2+2"}]}}},
+          {"type":"event","event":{"type":"assistant/message","seq":2,"time":2,
+            "data":{"content":[{"type":"text","text":"4"}]}}}
+        ]}
+        """)
+        let items = result.conversationItems()
+        #expect(items.count == 2)
+        guard case .message(_, let role, let text, _) = items[1] else {
+            Issue.record("expected the reply, got \(items[1])")
+            return
+        }
+        #expect(role == .assistant)
+        #expect(text == "4")
+    }
+
+    @Test("a reply with no readable content falls back to its attempt chunks")
+    func assistantMessageFallsBackToAttempt() throws {
+        // Whichever of the two carries the text, the reply has to appear.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":2,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"assistant/message","seq":2,"time":2,
+            "data":{"stream":[{"chunk":{"type":"text","text":"from chunks"}}]}}}
+        ]}
+        """)
+        guard case .message(_, _, let text, _) = result.conversationItems().first else {
+            Issue.record("expected a message")
+            return
+        }
+        #expect(text == "from chunks")
     }
 
     @Test("the same prompt arriving twice is shown once")

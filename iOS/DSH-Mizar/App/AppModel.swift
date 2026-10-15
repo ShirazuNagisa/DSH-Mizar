@@ -446,7 +446,11 @@ final class AppModel {
         do {
             let payload = JSONValue.object([
                 "sessionId": .string(sessionId),
-                "maxMessages": .number(40),
+                // Enough to cover a working session's history. It counts
+                // messages, not records, and a single prompt emits about nine
+                // records -- so the response is large and the alternative is an
+                // app that only ever shows the last few exchanges.
+                "maxMessages": .number(200),
             ])
             let result = try await connection.call(
                 "session.messages",

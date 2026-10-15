@@ -148,13 +148,30 @@ extension SessionRecord {
             // conversation completely, which is exactly what it did: the screen
             // looked like it had lost its history, and it had -- under text
             // nobody wrote.
-            guard Self.sourceKind(in: event) == "user" else { return [] }
+            //
+            // Blocklist, not allowlist. The first version kept only
+            // `source.kind == "user"` and that turned out to hide anything typed
+            // on the Mac's own DSH window, which is half the history somebody
+            // opens this app to read. Hiding the two known injections and
+            // showing everything else is the right way round: an unrecognised
+            // injection is noise, a hidden message is data loss.
+            guard !Self.isInjectedContext(event) else { return [] }
             guard let text = Self.messageText(in: event) else { return [] }
             return [.message(id: id, role: .user, text: text, at: at)]
 
         case "system/message":
             guard let text = Self.messageText(in: event) else { return [] }
             return [.message(id: id, role: .system, text: text, at: at)]
+
+        case "assistant/message":
+            // The committed reply. `assistant/attempt` is the streaming attempt
+            // that produced it, and this was the one event type the parser did
+            // not know -- so a model that answered perfectly produced nothing on
+            // the phone while the Mac showed the whole exchange.
+            guard let text = Self.messageText(in: event) else {
+                return Self.attemptItems(event: event, id: id, at: at)
+            }
+            return [.message(id: id, role: .assistant, text: text, at: at)]
 
         case "assistant/attempt":
             return Self.attemptItems(event: event, id: id, at: at)
@@ -167,15 +184,26 @@ extension SessionRecord {
         }
     }
 
-    /// Who a message event came from.
+    /// Whether a `user/message` is context DSH assembled rather than words a
+    /// person wrote.
     ///
-    /// `user` is the operator. Everything else DSH sends through the same event
-    /// is context it assembled itself.
+    /// Measured on a live session with an eleven-character prompt:
+    ///
+    ///   source.kind = "user"             11 characters   <- the prompt
+    ///   source.kind = "runtime-context" 483 characters
+    ///   source.kind = "skill-catalog"  5921 characters
+    ///
+    /// 6393 characters of injected context for 11 characters of conversation,
+    /// all arriving as `user/message`. Those two kinds are listed here; anything
+    /// else is shown, because a source this build has not seen is far more
+    /// likely to be a message from the Mac's own window than a new injection.
     ///
     /// - Parameter event: the event payload.
-    /// - Returns: the source kind, or `nil` when the event carries none.
-    private static func sourceKind(in event: JSONValue?) -> String? {
-        event?["data"]?["source"]?["kind"]?.stringValue
+    /// - Returns: whether to hide it.
+    private static func isInjectedContext(_ event: JSONValue?) -> Bool {
+        let kind = event?["data"]?["source"]?["kind"]?.stringValue
+        guard let kind else { return false }
+        return kind == "runtime-context" || kind == "skill-catalog"
     }
 
     /// Pull text out of a message event's typed content parts.
