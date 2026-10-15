@@ -23,8 +23,14 @@ import Security
 public struct PairedHost: Codable, Sendable, Equatable {
     /// Stable host identity, as reported at pairing.
     public let hostId: String
-    /// The host's display name.
+    /// The host's display name, as the host reports it.
     public let hostName: String
+    /// What the operator called this machine on this phone.
+    ///
+    /// Phone-local and never sent. Someone with three Macs does not want to
+    /// distinguish them by `Shirazus-Mac-mini.local` and two UUIDs, and a name
+    /// they typed is theirs to change without touching the host.
+    public let label: String?
     /// `host:port` the device dials directly, or `nil` when it has none.
     public let authority: String?
     /// Base URL of a reverse tunnel, when the host is behind one.
@@ -44,6 +50,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
         deviceToken: String,
         pairedAt: Date = Date(),
         baseURL: String? = nil,
+        label: String? = nil,
     ) {
         self.hostId = hostId
         self.hostName = hostName
@@ -52,6 +59,31 @@ public struct PairedHost: Codable, Sendable, Equatable {
         self.deviceToken = deviceToken
         self.pairedAt = pairedAt
         self.baseURL = baseURL
+        self.label = label
+    }
+
+    /// What to show for this machine: the operator's name for it, else the
+    /// host's own.
+    public var displayName: String {
+        if let label, !label.trimmingCharacters(in: .whitespaces).isEmpty { return label }
+        return hostName
+    }
+
+    /// A copy with a new operator-chosen name, keeping the credential.
+    ///
+    /// - Parameter label: the name to show, or `nil` to go back to the host's.
+    /// - Returns: the updated record.
+    public func renamed(to label: String?) -> PairedHost {
+        PairedHost(
+            hostId: hostId,
+            hostName: hostName,
+            authority: authority,
+            deviceId: deviceId,
+            deviceToken: deviceToken,
+            pairedAt: pairedAt,
+            baseURL: baseURL,
+            label: label,
+        )
     }
 
     /// Where this host can be reached, in the order worth trying.
@@ -114,40 +146,75 @@ public struct PairedHost: Codable, Sendable, Equatable {
     }
 }
 
-/// Storage for the paired-host credential.
+/// Storage for the paired-host credentials.
+///
+/// A list, not a single pairing. One phone managing one Mac was the first
+/// version's assumption and it is the wrong one for the product: somebody with a
+/// laptop and a desktop should not have to unpair one to reach the other.
 public protocol CredentialStore: Sendable {
-    /// Read the stored pairing.
-    /// - Returns: the pairing, or `nil` when this device is not paired.
-    func load() async throws -> PairedHost?
+    /// Every machine this phone is paired with, oldest pairing first.
+    /// - Returns: the pairings; empty when this device is not paired at all.
+    func loadAll() async throws -> [PairedHost]
 
-    /// Replace the stored pairing.
+    /// Insert or replace one pairing, matched by host id.
     /// - Parameter host: the pairing to store.
     func save(_ host: PairedHost) async throws
 
-    /// Remove the stored pairing.
+    /// Forget one pairing.
+    /// - Parameter hostId: the machine to forget.
+    func remove(hostId: String) async throws
+
+    /// Forget every pairing.
     func clear() async throws
 }
 
-/// A store that keeps the pairing in memory only.
+extension CredentialStore {
+    /// The most recently paired machine, which is the one to open on launch.
+    /// - Returns: the pairing, or `nil` when there is none.
+    public func load() async throws -> PairedHost? {
+        try await loadAll().max { $0.pairedAt < $1.pairedAt }
+    }
+}
+
+/// A store that keeps the pairings in memory only.
 ///
 /// For tests, and for previews. Explicitly not a fallback for a failed Keychain
 /// write: silently degrading to memory would mean a pairing that appears to work
 /// and vanishes on the next launch.
 public actor InMemoryCredentialStore: CredentialStore {
-    private var host: PairedHost?
+    private var hosts: [PairedHost]
 
     public init(host: PairedHost? = nil) {
-        self.host = host
+        self.hosts = host.map { [$0] } ?? []
     }
 
-    public func load() async throws -> PairedHost? { host }
+    public init(hosts: [PairedHost]) {
+        self.hosts = hosts
+    }
 
-    public func save(_ host: PairedHost) async throws { self.host = host }
+    public func loadAll() async throws -> [PairedHost] { hosts }
 
-    public func clear() async throws { host = nil }
+    public func save(_ host: PairedHost) async throws {
+        if let index = hosts.firstIndex(where: { $0.hostId == host.hostId }) {
+            hosts[index] = host
+        } else {
+            hosts.append(host)
+        }
+    }
+
+    public func remove(hostId: String) async throws {
+        hosts.removeAll { $0.hostId == hostId }
+    }
+
+    public func clear() async throws { hosts = [] }
 }
 
 /// The Keychain-backed store.
+///
+/// One item holds the whole list. That keeps the migration from the single-host
+/// shape to a single decode, and an atomic write, at the cost of rewriting every
+/// pairing when one changes -- which happens when somebody pairs a machine or
+/// renames one, and never otherwise.
 public struct KeychainCredentialStore: CredentialStore {
     /// The Keychain account name.
     private let account: String
@@ -170,7 +237,7 @@ public struct KeychainCredentialStore: CredentialStore {
     }
     #endif
 
-    public func load() async throws -> PairedHost? {
+    public func loadAll() async throws -> [PairedHost] {
         #if canImport(Security)
         var query = baseQuery
         query[kSecReturnData as String] = true
@@ -178,26 +245,78 @@ public struct KeychainCredentialStore: CredentialStore {
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
+        if status == errSecItemNotFound { return [] }
         guard status == errSecSuccess, let data = item as? Data else {
             throw MizarError(
                 code: "KEYCHAIN_READ_FAILED",
                 message: "could not read the pairing from the keychain (status \(status))",
             )
         }
-        return try JSONDecoder().decode(PairedHost.self, from: data)
+        return Self.decode(data)
         #else
-        return nil
+        return []
         #endif
     }
 
-    public func save(_ host: PairedHost) async throws {
-        #if canImport(Security)
-        let data = try JSONEncoder().encode(host)
+    /// Decode the stored blob, accepting the single-pairing shape it used to be.
+    ///
+    /// The first version stored one `PairedHost` object. Anyone upgrading has one
+    /// of those, and refusing to read it would silently unpair them and make them
+    /// scan again -- so the old shape is read as a list of one, and rewritten in
+    /// the new shape the next time anything is saved.
+    ///
+    /// - Parameter data: the stored bytes.
+    /// - Returns: the pairings.
+    private static func decode(_ data: Data) -> [PairedHost] {
+        let decoder = JSONDecoder()
+        if let list = try? decoder.decode([PairedHost].self, from: data) { return list }
+        if let one = try? decoder.decode(PairedHost.self, from: data) { return [one] }
+        return []
+    }
 
-        // Update first, then add: SecItemAdd fails with errSecDuplicateItem when
-        // an item already exists, and deleting-then-adding would open a window
-        // where the credential does not exist.
+    public func save(_ host: PairedHost) async throws {
+        var hosts = try await loadAll()
+        if let index = hosts.firstIndex(where: { $0.hostId == host.hostId }) {
+            hosts[index] = host
+        } else {
+            hosts.append(host)
+        }
+        try await write(hosts)
+    }
+
+    public func remove(hostId: String) async throws {
+        let remaining = try await loadAll().filter { $0.hostId != hostId }
+        if remaining.isEmpty {
+            try await clear()
+            return
+        }
+        try await write(remaining)
+    }
+
+    public func clear() async throws {
+        #if canImport(Security)
+        let status = SecItemDelete(baseQuery as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw MizarError(
+                code: "KEYCHAIN_DELETE_FAILED",
+                message: "could not remove the pairing from the keychain (status \(status))",
+            )
+        }
+        #endif
+    }
+
+    /// Store the whole list, replacing whatever was there.
+    ///
+    /// Update first, then add: `SecItemAdd` fails with `errSecDuplicateItem` when
+    /// an item already exists, and deleting-then-adding would open a window where
+    /// the credential does not exist -- which on a phone that reconnects in the
+    /// background is a window something will fall through.
+    ///
+    /// - Parameter hosts: the pairings to store.
+    private func write(_ hosts: [PairedHost]) async throws {
+        #if canImport(Security)
+        let data = try JSONEncoder().encode(hosts)
+
         let updateStatus = SecItemUpdate(
             baseQuery as CFDictionary,
             [kSecValueData as String: data] as CFDictionary,
@@ -218,23 +337,11 @@ public struct KeychainCredentialStore: CredentialStore {
             )
         }
         #else
-        _ = host
+        _ = hosts
         throw MizarError(
             code: "KEYCHAIN_UNAVAILABLE",
             message: "no keychain on this platform",
         )
-        #endif
-    }
-
-    public func clear() async throws {
-        #if canImport(Security)
-        let status = SecItemDelete(baseQuery as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw MizarError(
-                code: "KEYCHAIN_DELETE_FAILED",
-                message: "could not remove the pairing from the keychain (status \(status))",
-            )
-        }
         #endif
     }
 }

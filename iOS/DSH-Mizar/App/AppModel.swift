@@ -29,6 +29,18 @@ final class AppModel {
     private(set) var phase: Phase = .launching
     /// The host this device is paired with, once known.
     private(set) var host: PairedHost?
+    /// Every machine this phone is paired with, oldest pairing first.
+    ///
+    /// A list rather than one, because "one phone, one Mac" was an assumption
+    /// the first version made and it is the wrong one: somebody with a laptop
+    /// and a desktop should not have to unpair one to reach the other.
+    private(set) var hosts: [PairedHost] = []
+    /// The machine whose pairing just completed and has not been named yet.
+    ///
+    /// Naming is offered once, right after pairing, when the operator knows
+    /// which machine they just scanned. Asking later means asking about a row
+    /// they can no longer identify.
+    var pendingNameHostId: String?
     /// The host's own identity report, once connected.
     private(set) var welcome: WelcomeFrame?
     /// Which route the live connection is using, for the UI to show.
@@ -118,7 +130,8 @@ final class AppModel {
             return
         }
         do {
-            guard let stored = try await credentials.load() else {
+            hosts = try await credentials.loadAll().sorted { $0.pairedAt < $1.pairedAt }
+            guard let stored = hosts.last else {
                 phase = .unpaired
                 return
             }
@@ -127,6 +140,62 @@ final class AppModel {
         } catch {
             phase = .failed(Self.describe(error, authority: host?.authority))
         }
+    }
+
+    /// Open a different machine from the list.
+    /// - Parameter hostId: the machine to open.
+    func open(hostId: String) async {
+        guard let next = hosts.first(where: { $0.hostId == hostId }) else { return }
+        disconnectCurrent()
+        host = next
+        do {
+            try await connect(using: next)
+        } catch {
+            phase = .failed(Self.describe(error, authority: next.authority ?? next.baseURL))
+        }
+    }
+
+    /// Give a machine the name the operator chose for it, on this phone only.
+    ///
+    /// - Parameters:
+    ///   - label: the name, or `nil` to fall back to the host's own.
+    ///   - hostId: the machine to rename.
+    func rename(hostId: String, to label: String?) async {
+        guard let index = hosts.firstIndex(where: { $0.hostId == hostId }) else { return }
+        let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let renamed = hosts[index].renamed(to: (trimmed?.isEmpty ?? true) ? nil : trimmed)
+        hosts[index] = renamed
+        if host?.hostId == hostId { host = renamed }
+        try? await credentials.save(renamed)
+        pendingNameHostId = nil
+    }
+
+    /// Forget one machine, leaving the others paired.
+    /// - Parameter hostId: the machine to forget.
+    func forget(hostId: String) async {
+        try? await credentials.remove(hostId: hostId)
+        hosts.removeAll { $0.hostId == hostId }
+        guard host?.hostId == hostId else { return }
+        disconnectCurrent()
+        if let next = hosts.last {
+            host = next
+            try? await connect(using: next)
+        } else {
+            host = nil
+            phase = .unpaired
+        }
+    }
+
+    /// Tear the live connection down without touching what is stored.
+    private func disconnectCurrent() {
+        interactionPoll?.cancel()
+        eventListener?.cancel()
+        Task { await connection?.disconnect() }
+        connection = nil
+        welcome = nil
+        sessions = []
+        selectedSessionId = nil
+        phase = .launching
     }
 
     /// A `mizar://pair` URI from the launch arguments, when one was passed.
@@ -339,7 +408,10 @@ final class AppModel {
         return try? await connection.call("session.permission.set", payload: payload, as: SetPermissionResult.self)
     }
 
-    /// Forget the pairing and return to the pairing screen.
+    /// Forget every pairing and return to the pairing screen.
+    ///
+    /// Distinct from forgetting one machine: this is "start over", which is what
+    /// a reinstall or a shared phone needs.
     func unpair() async {
         interactionPoll?.cancel()
         eventListener?.cancel()
@@ -349,6 +421,7 @@ final class AppModel {
         sessions = []
         selectedSessionId = nil
         host = nil
+        hosts = []
         try? await credentials.clear()
         phase = .unpaired
     }
@@ -423,7 +496,12 @@ final class AppModel {
                 baseURL: target.baseURL,
             )
             try await credentials.save(paired)
+            hosts = try await credentials.loadAll().sorted { $0.pairedAt < $1.pairedAt }
             host = paired
+            // Offered once, now, while the operator still knows which machine
+            // they just scanned. The connection is opened first so the name is
+            // asked for over a working screen rather than a spinner.
+            pendingNameHostId = paired.hostId
             try await connect(using: paired)
         } catch {
             phase = .failed(

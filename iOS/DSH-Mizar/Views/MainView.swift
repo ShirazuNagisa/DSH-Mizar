@@ -17,20 +17,30 @@ struct MainView: View {
     @Environment(AppModel.self) private var model
     @State private var showingNewSession = false
 
+    /// Offered once, right after a pairing completes.
+    private var namingPrompt: Binding<Bool> {
+        Binding(
+            get: { model.pendingNameHostId != nil },
+            set: { if !$0 { model.pendingNameHostId = nil } },
+        )
+    }
+
     var body: some View {
         @Bindable var model = model
 
         NavigationSplitView {
-            SessionListView()
-                .navigationTitle(model.welcome?.hostName ?? "Sessions")
+            WorkspaceListView(showingNewSession: $showingNewSession)
+                .navigationTitle(model.host?.displayName ?? model.welcome?.hostName ?? "Sessions")
                 .toolbar {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button {
-                            showingNewSession = true
+                    ToolbarItemGroup(placement: .topBarLeading) {
+                        NavigationLink {
+                            HostListView()
                         } label: {
-                            Label("New session", systemImage: "plus")
+                            Label("Macs", systemImage: "desktopcomputer")
                         }
-                        .accessibilityIdentifier("sessions.new")
+                        .accessibilityIdentifier("sessions.hosts")
+                    }
+                    ToolbarItemGroup(placement: .topBarTrailing) {
                         Button {
                             Task { await model.refreshSessions() }
                         } label: {
@@ -41,6 +51,15 @@ struct MainView: View {
                 }
                 .sheet(isPresented: $showingNewSession) {
                     NewSessionView()
+                }
+                .sheet(isPresented: namingPrompt) {
+                    if let host = model.pendingNameHostId.flatMap({ id in
+                        model.hosts.first { $0.hostId == id }
+                    }) {
+                        RenameSheet(host: host) { name in
+                            Task { await model.rename(hostId: host.hostId, to: name) }
+                        }
+                    }
                 }
         } detail: {
             if let sessionId = model.selectedSessionId {
@@ -56,16 +75,85 @@ struct MainView: View {
     }
 }
 
-/// The list itself.
-struct SessionListView: View {
+/// Workspaces, each expanding into the conversations inside it.
+///
+/// The shape mirrors the Mac's own sidebar -- new session at the top, then one
+/// row per workspace -- because that is what the operator is already looking at
+/// when they reach for their phone, and a phone that arranges the same sessions
+/// differently is a second thing to learn.
+///
+/// Subagents are left out. They are real sessions, but they are the agent's
+/// bookkeeping rather than the operator's work, and a list where half the rows
+/// are delegated children is a list nobody can scan.
+struct WorkspaceListView: View {
     @Environment(AppModel.self) private var model
+    @Binding var showingNewSession: Bool
+    @State private var collapsed: Set<String> = []
+
+    /// Sessions the operator started, grouped by working directory.
+    private var workspaces: [(path: String, sessions: [SessionRow])] {
+        var byPath: [String: [SessionRow]] = [:]
+        for session in model.sessions where session.parentSessionId == nil {
+            byPath[session.cwd ?? "", default: []].append(session)
+        }
+        return byPath
+            .map { (path: $0.key, sessions: $0.value.sorted { $0.updatedAt > $1.updatedAt }) }
+            .sorted { lhs, rhs in
+                // Sessions with no working directory last: they are the ones an
+                // operator can least identify, so they should not lead.
+                if lhs.path.isEmpty != rhs.path.isEmpty { return !lhs.path.isEmpty }
+                return lhs.path < rhs.path
+            }
+    }
 
     var body: some View {
         @Bindable var model = model
 
-        List(model.sessions, selection: $model.selectedSessionId) { session in
-            SessionRowView(session: session)
-                .tag(session.sessionId)
+        List(selection: $model.selectedSessionId) {
+            Section {
+                Button {
+                    showingNewSession = true
+                } label: {
+                    Label("New session", systemImage: "square.and.pencil")
+                }
+                .accessibilityIdentifier("sessions.new")
+            }
+
+            ForEach(workspaces, id: \.path) { workspace in
+                Section {
+                    if !collapsed.contains(workspace.path) {
+                        ForEach(workspace.sessions) { session in
+                            SessionRowView(session: session)
+                                .tag(session.sessionId)
+                        }
+                    }
+                } header: {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            if collapsed.contains(workspace.path) {
+                                collapsed.remove(workspace.path)
+                            } else {
+                                collapsed.insert(workspace.path)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: collapsed.contains(workspace.path) ? "chevron.right" : "chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(workspaceTitle(workspace.path))
+                                .lineLimit(1)
+                            Spacer()
+                            Text("\(workspace.sessions.count)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .textCase(nil)
+                    .accessibilityIdentifier("workspace.\(workspace.path)")
+                }
+            }
         }
         .overlay {
             if model.sessions.isEmpty {
@@ -77,6 +165,15 @@ struct SessionListView: View {
             }
         }
         .refreshable { await model.refreshSessions() }
+    }
+
+    /// The last path component, with the parent shown when two would collide.
+    private func workspaceTitle(_ path: String) -> String {
+        if path.isEmpty { return "No workspace" }
+        let name = (path as NSString).lastPathComponent
+        let clashes = workspaces.filter { ($0.path as NSString).lastPathComponent == name }
+        guard clashes.count > 1 else { return name }
+        return (path as NSString).abbreviatingWithTildeInPath
     }
 }
 

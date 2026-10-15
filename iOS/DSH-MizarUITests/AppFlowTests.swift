@@ -54,7 +54,20 @@ final class AppFlowTests: XCTestCase {
         if let language { arguments += ["-AppleLanguages", "(\(language))"] }
         app.launchArguments = arguments
         app.launch()
+        dismissNamingIfPresented(app)
         return app
+    }
+
+    /// Skip the naming prompt.
+    ///
+    /// Pairing offers a name once, which is a product feature and not what these
+    /// tests are about; a test that leaves it up is a test that measures the
+    /// sheet.
+    ///
+    /// - Parameter app: the launched app.
+    private func dismissNamingIfPresented(_ app: XCUIApplication) {
+        let skip = app.buttons["rename.skip"]
+        if skip.waitForExistence(timeout: 5) { skip.tap() }
     }
 
     /// Wait for an element to exist.
@@ -85,9 +98,11 @@ final class AppFlowTests: XCTestCase {
         // A launch without a pairing URI either finds one stored from an earlier
         // launch and connects, or has none and shows the pairing screen. Both are
         // correct; what must not happen is neither.
-        let pairing = app.staticTexts["Connect to DSH"]
+        // A never-paired phone now says what to do rather than showing an empty
+        // list, and offers the scanner directly.
+        let unpaired = app.buttons["unpaired.scan"]
         let sessions = app.buttons["sessions.new"]
-        let appeared = pairing.waitForExistence(timeout: Self.patience)
+        let appeared = unpaired.waitForExistence(timeout: Self.patience)
             || sessions.waitForExistence(timeout: Self.patience)
         XCTAssertTrue(appeared, "the app reached neither the pairing screen nor the session list")
     }

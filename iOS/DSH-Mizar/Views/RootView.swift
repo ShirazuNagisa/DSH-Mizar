@@ -16,7 +16,9 @@ struct RootView: View {
             case .launching:
                 ProgressView("Connecting…")
             case .unpaired:
-                PairingView()
+                // Nothing paired at all: the only useful thing on screen is the
+                // way to fix that.
+                UnpairedView()
             case .connecting where model.host == nil:
                 ProgressView("Connecting…")
             case .ready, .connecting:
@@ -28,6 +30,9 @@ struct RootView: View {
                     Text(message)
                 } actions: {
                     Button("Pair again") {
+                        Task { await model.unpair() }
+                    }
+                    Button("Choose another Mac") {
                         Task { await model.unpair() }
                     }
                 }
