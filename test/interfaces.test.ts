@@ -3,7 +3,7 @@
  *
  * This module decides what the Mizar listener is reachable on, so a bug here is
  * an exposure bug rather than a cosmetic one. The cases below pin the two
- * behaviours that matter most: range-based tailnet matching (never interface
+ * behaviours that matter most: address selection and its fallbacks, which are
  * names), and the rule that a mode which finds nothing falls back to loopback
  * instead of widening.
  *
@@ -12,7 +12,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   authorityOf,
-  isTailnetAddress,
   LOOPBACK,
   selectBindAddresses,
   type InterfaceSnapshot,
@@ -31,77 +30,7 @@ function snapshotOf(
   return snapshot
 }
 
-describe('isTailnetAddress', () => {
-  it('accepts the CGNAT block boundaries', () => {
-    expect(isTailnetAddress('100.64.0.1')).toBe(true)
-    expect(isTailnetAddress('100.127.255.254')).toBe(true)
-    expect(isTailnetAddress('100.100.100.100')).toBe(true)
-  })
-
-  it('rejects addresses just outside the CGNAT block', () => {
-    expect(isTailnetAddress('100.63.255.255')).toBe(false)
-    expect(isTailnetAddress('100.128.0.1')).toBe(false)
-    expect(isTailnetAddress('100.0.0.1')).toBe(false)
-  })
-
-  it('rejects ordinary private and public addresses', () => {
-    expect(isTailnetAddress('192.168.1.10')).toBe(false)
-    expect(isTailnetAddress('10.0.0.5')).toBe(false)
-    expect(isTailnetAddress('8.8.8.8')).toBe(false)
-    expect(isTailnetAddress('127.0.0.1')).toBe(false)
-  })
-
-  it('accepts the tailnet IPv6 prefix regardless of case', () => {
-    expect(isTailnetAddress('fd7a:115c:a1e0::1')).toBe(true)
-    expect(isTailnetAddress('FD7A:115C:A1E0:0000::42')).toBe(true)
-    expect(isTailnetAddress('fd7a:115c:a1e1::1')).toBe(false)
-  })
-
-  it('ignores an IPv6 zone index', () => {
-    expect(isTailnetAddress('fd7a:115c:a1e0::1%utun3')).toBe(true)
-  })
-})
-
 describe('selectBindAddresses', () => {
-  it('binds tailnet addresses and ignores unrelated tunnels', () => {
-    const snapshot = snapshotOf([
-      ['lo0', '127.0.0.1', 'IPv4', true],
-      ['en0', '192.168.1.24', 'IPv4'],
-      // Nine unrelated utun interfaces is the real shape of the dev machine;
-      // name-based matching would bind the wrong thing here.
-      ['utun0', '10.8.0.2', 'IPv4'],
-      ['utun1', '172.16.5.9', 'IPv4'],
-      ['utun2', 'fe80::1%utun2', 'IPv6'],
-      ['utun3', 'fd7a:115c:a1e0::1', 'IPv6'],
-      ['en0', '100.101.102.103', 'IPv4'],
-    ])
-
-    const plan = selectBindAddresses(snapshot, 'tailscale')
-    expect(plan.fellBack).toBe(false)
-    expect(plan.mode).toBe('tailscale')
-    expect([...plan.addresses].sort()).toEqual(['100.101.102.103', 'fd7a:115c:a1e0::1'])
-  })
-
-  it('falls back to loopback when no tailnet address exists', () => {
-    const snapshot = snapshotOf([
-      ['lo0', '127.0.0.1', 'IPv4', true],
-      ['en0', '192.168.1.24', 'IPv4'],
-      ['utun0', '10.8.0.2', 'IPv4'],
-    ])
-
-    const plan = selectBindAddresses(snapshot, 'tailscale')
-    expect(plan.fellBack).toBe(true)
-    expect(plan.mode).toBe('loopback')
-    // The important assertion: the LAN address must NOT be picked up.
-    expect(plan.addresses).toEqual([LOOPBACK])
-    expect(plan.reason).toContain('Tailscale')
-  })
-
-  it('never widens from tailscale to a LAN address', () => {
-    const snapshot = snapshotOf([['en0', '192.168.1.24', 'IPv4']])
-    const plan = selectBindAddresses(snapshot, 'tailscale')
-    expect(plan.addresses).not.toContain('192.168.1.24')
-  })
 
   it('binds every non-internal IPv4 address in lan mode', () => {
     const snapshot = snapshotOf([
@@ -145,14 +74,6 @@ describe('selectBindAddresses', () => {
     expect(plan.addresses).toEqual([LOOPBACK])
   })
 
-  it('skips internal addresses even when they look tailnet-shaped', () => {
-    const plan = selectBindAddresses(
-      snapshotOf([['lo0', '100.64.0.1', 'IPv4', true]]),
-      'tailscale',
-    )
-    expect(plan.fellBack).toBe(true)
-    expect(plan.addresses).toEqual([LOOPBACK])
-  })
 })
 
 describe('authorityOf', () => {

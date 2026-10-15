@@ -1,7 +1,7 @@
 # Deploying the DSH-Mizar relay
 
 The relay is the third answer to "how does the phone reach the Mac", after the two in
-[tailscale-setup.md](tailscale-setup.md): a small Node service you run on a server with a public
+This document: a small Node service you run on a server with a public
 address, which lets a Mac that **cannot accept inbound connections at all** still be reachable.
 
 This document is the operator's guide. It is written to be followed top to bottom on a fresh
@@ -572,7 +572,7 @@ path inside TLS.
 2. Watch the DSH log for:
 
    ```text
-   relay enabled: binding loopback instead of tailscale
+   relay enabled: binding loopback instead of lan
    relay: connected to wss://mizar.example.com/tunnel
    relay: serving room GJ31NAZY4PRH (protocol 1, this build speaks 1)
    relay: phones should pair against https://mizar.example.com/r/GJ31NAZY4PRH

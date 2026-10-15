@@ -11,14 +11,14 @@
 <dict>
 	<!--
 	  The Mizar transport is a cleartext WebSocket to an address the operator
-	  supplies at pairing time: a tailnet address or a LAN address. ATS decides
+	  supplies at pairing time: a LAN address or a relay URL. ATS decides
 	  at build time which hosts it trusts, and the host here is not knowable in
 	  advance, so there is no exception that could name it.
 
 	  The honest fix is TLS on the listener, which is already a planned item; it
 	  removes the need for this key entirely. Until then, the traffic's
 	  confidentiality comes from the network underneath — WireGuard in the
-	  tailnet case, the local segment in the LAN case.
+	  relay case, the local segment in the LAN case.
 	-->
 	<key>NSAppTransportSecurity</key>
 	<dict>

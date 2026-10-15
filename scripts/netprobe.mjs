@@ -24,7 +24,7 @@
  * It also measures whether the external port is predictable, because that is the
  * one trick that rescues the address-dependent case.
  *
- * Only UDP and public STUN servers are used. Nothing here talks to Tailscale, and
+ * Only UDP and public STUN servers are used, and
  * no traffic is sent anywhere except a binding request.
  *
  * Usage: node scripts/netprobe.mjs

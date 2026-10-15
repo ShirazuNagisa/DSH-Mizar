@@ -40,11 +40,11 @@ const body = `
   <div class="mizar-card">
     <h2>Status</h2>
     <div class="mizar-row"><span class="mizar-label">Listening on</span><span class="mizar-mono">100.64.0.1:19390</span></div>
-    <div class="mizar-row"><span class="mizar-label">Mode</span><span>tailscale</span></div>
+    <div class="mizar-row"><span class="mizar-label">Mode</span><span>loopback</span></div>
     <div class="mizar-row"><span class="mizar-label">Devices</span><span>2</span></div>
     <span class="mizar-badge">paired</span>
   </div>
-  <div class="mizar-warn">No Tailscale interface found — is Tailscale running? Binding to loopback only, so the phone cannot reach this Mac.</div>
+  <div class="mizar-warn">No LAN address is bound and no relay is connected, so the phone cannot reach this Mac.</div>
   <div class="mizar-card">
     <h2>Pair a device</h2>
     <div class="mizar-qr">

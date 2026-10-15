@@ -17,9 +17,9 @@ import type { BindPlan } from '../src/net/interfaces.js'
 
 const PLAN: BindPlan = {
   addresses: ['100.64.0.1'],
-  mode: 'tailscale',
+  mode: 'lan',
   fellBack: false,
-  reason: 'tailnet address detected',
+  reason: 'LAN address detected',
 }
 
 const T0 = 1_700_000_000_000
@@ -133,12 +133,19 @@ describe('buildPanelStatus', () => {
   it('surfaces the bind fallback so the operator knows why nothing connects', () => {
     const status = buildPanelStatus(
       statusInput({
-        plan: { addresses: ['127.0.0.1'], mode: 'loopback', fellBack: true, reason: 'no Tailscale interface found' },
+        plan: {
+          addresses: ['127.0.0.1'],
+          mode: 'loopback',
+          fellBack: true,
+          reason: 'no LAN address found — binding loopback only',
+        },
         authorities: ['127.0.0.1:19390'],
       }),
     )
+    // The reason is what the operator reads to find out why nothing connects,
+    // so it has to survive to the panel rather than being flattened to a code.
     expect(status.bind.fellBack).toBe(true)
-    expect(status.bind.reason).toContain('Tailscale')
+    expect(status.bind.reason).toContain('loopback')
     expect(status.listening).toBe(true)
   })
 

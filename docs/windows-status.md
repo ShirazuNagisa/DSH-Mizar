@@ -12,7 +12,7 @@
 | 信号处理（`SIGTERM` / `process.on`） | ✅ 没有 |
 | `process.getuid` / `getgid` | ✅ 没有 |
 | `/proc/` 或任何 Linux 专属路径 | ✅ 没有 |
-| 硬编码的 `/tmp` 或 `/usr/` | ✅ 没有（仅 Tailscale CLI 候选路径里有，且按平台分支） |
+| 硬编码的 `/tmp` 或 `/usr/` | ✅ 没有 |
 | 路径拼接 | ✅ 全部用 `node:path` 的 `join()` |
 | 计时器 | ✅ 全部用 `unref?.()` 可选链，不会阻止进程退出 |
 | 子进程 | ✅ `execFile` 带 `windowsHide: true`，不会弹出控制台窗口 |
@@ -65,11 +65,6 @@ bash —— 但它们只在 macOS 上有意义（iOS 构建），所以不构成
 
 ## 已在单元测试中覆盖的 Windows 分支
 
-`test/tailscale.test.ts` 里的 `describe('Windows')` 有 7 个用例，通过注入
-`platform` 参数执行 Windows 代码路径（本机无法真正运行）：
-
-- 找到 `C:\Program Files\Tailscale\tailscale.exe`
-- 找不到时报告缺失而不是猜路径
 - 隧道断开 → 走客户端 CLI
 - 守护进程无响应 → 启动客户端（**不是 `open`**）
 - **断言永不调用 `/usr/bin/open`** —— macOS 专属二进制
@@ -88,7 +83,7 @@ bash —— 但它们只在 macOS 上有意义（iOS 构建），所以不构成
 | Web 面板在 Windows 浏览器里 | ❌ 从未运行 |
 | iOS App 连 Windows 主机 | ❌ 从未运行 |
 | 安装到 DSH desktop profile（Windows） | ❌ 从未运行 |
-| Tailscale 在 Windows 上的自动拉起 | ❌ 从未运行 |
+
 
 **代码检查不能替代运行。** 上面这一整列都是零。
 
@@ -98,8 +93,7 @@ bash —— 但它们只在 macOS 上有意义（iOS 构建），所以不构成
 2. **装 DSH**，确认 `dsh` 命令可用
 3. **把插件装进 profile**：目前 `scripts/dev.sh bootstrap` 是 bash 的，
    Windows 上需要手动做，或者用 Git Bash 试试
-4. **装 Tailscale for Windows**，登录
-5. **启动**，看日志里有没有 `[mizar] listening on`
+4. **启动**，看日志里有没有 `[mizar] listening on`
 6. **从手机连**，跑一遍配对 → 会话列表 → 审批
 
 如果需要，我可以把 `dev.sh` 的核心逻辑抽成**跨平台的 Node 脚本**

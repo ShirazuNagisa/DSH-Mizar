@@ -193,7 +193,7 @@ Xcode 的 **Organizer** 会打开：
 它要连到一台跑着 DSH 的 Mac，而那台 Mac 上要装 `dsh-mizar` 插件。测试人员必须同时有：
 
 1. 一台 Mac，装了 DSH 和本插件
-2. Mac 和手机在同一个 Tailscale 网络（或同一个局域网）
+2. Mac 和手机在同一个局域网，或 Mac 已经连上中继（见 [中继部署](relay-deployment.md)）
 3. 从 Mac 的 DSH Web 面板扫码配对
 
 所以 **TestFlight 的适用范围是"你自己"或"你帮忙配好 Mac 的人"**。作为公开上架它没有

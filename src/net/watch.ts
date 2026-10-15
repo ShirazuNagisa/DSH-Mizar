@@ -2,10 +2,10 @@
  * Bind-plan watching.
  *
  * The listener's address is not a startup-time constant, and treating it as one
- * is a real failure mode: DSH and Tailscale both start at login, and nothing
+ * is a real failure mode: DSH and the network both come up at login, and
  * orders them. If DSH wins that race, a one-shot bind decision lands on loopback
  * and stays there for the life of the process — the phone simply cannot connect,
- * with no indication why. The same applies when Tailscale is connected later, or
+ * with no indication why. The same applies when the network comes up later, or
  * when its address changes.
  *
  * So the plan is *waited for* and then *watched*:
