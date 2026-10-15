@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   RelayClient,
   phoneBaseURL,
+  saneCloseCode,
   tunnelURL,
   type RelaySocket,
   type RelayClientState,
@@ -371,5 +372,53 @@ describe('RelayClient', () => {
     created[0]?.closed()
     await vi.waitFor(() => expect(created.length).toBeGreaterThan(1))
     reconnecting.stop()
+  })
+})
+
+describe('saneCloseCode', () => {
+  it('passes through the codes that may be sent', () => {
+    for (const code of [1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 3000, 4001, 4999]) {
+      expect(saneCloseCode(code)).toBe(code)
+    }
+  })
+
+  it('replaces the codes that describe the absence of a code', () => {
+    // A close handler is given 1005 and 1006; a close frame must never carry
+    // them. `ws` throws a TypeError, which crashed the whole plugin rather than
+    // one stream -- seen in the first end-to-end run through a real relay.
+    expect(saneCloseCode(1005)).toBe(1000)
+    expect(saneCloseCode(1006)).toBe(1000)
+    expect(saneCloseCode(1015)).toBe(1000)
+  })
+
+  it('replaces anything unknown', () => {
+    expect(saneCloseCode(undefined)).toBe(1000)
+    expect(saneCloseCode(1004)).toBe(1000)
+    expect(saneCloseCode(2999)).toBe(1000)
+    expect(saneCloseCode(5000)).toBe(1000)
+  })
+})
+
+describe('a close code arriving from the relay', () => {
+  it('does not crash the client when the phone closed abnormally', async () => {
+    // The regression: a phone socket that dropped without a code reports 1006
+    // to the relay, which forwards it, and replaying it into `close()` threw.
+    const listener = await startListener()
+    const socket = new ScriptedSocket()
+    const client = new RelayClient({
+      url: 'https://relay.example.com',
+      token: 'a-token',
+      localPort: listener.port,
+      log: () => undefined,
+      socketFactory: () => socket,
+    })
+    client.start()
+    socket.deliver({ t: 'ws-open', id: 'r3', path: '/mizar/v1/ws', headers: {} })
+    await vi.waitFor(() => expect(socket.frames().some((f) => f['t'] === 'ws-open-ok')).toBe(true))
+
+    expect(() => socket.deliver({ t: 'ws-close', id: 'r3', code: 1006, reason: 'abnormal' }))
+      .not.toThrow()
+    client.stop()
+    await listener.close()
   })
 })

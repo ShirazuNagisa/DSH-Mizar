@@ -80,6 +80,33 @@ export interface RelaySocket {
   on(event: 'open', listener: () => void): unknown
 }
 
+/**
+ * Make a close code safe to send.
+ *
+ * A close frame carries a code, and a few codes describe *the absence* of one:
+ * 1005 is "no status received" and 1006 is "connection closed abnormally". They
+ * are reported to a `close` handler but are reserved -- RFC 6455 says they must
+ * never appear *in* a close frame, and `ws` throws a TypeError if you try. Since
+ * a bridged socket forwards the code it was given, the far end has to be able to
+ * receive one of these, and without this it takes the process down.
+ *
+ * Anything reserved or unknown becomes 1000: the peer learns the stream closed
+ * and loses only the detail of why, which is better than losing the connection.
+ *
+ * @param code - the code a socket reported, if any.
+ * @returns a code that is legal to send.
+ */
+export function saneCloseCode(code: number | undefined): number {
+  if (code === undefined) return 1000
+  if (code === 1000) return 1000
+  // Everything RFC 6455 defines as sendable. 1004, 1005, 1006 and 1015 are
+  // deliberately absent: they are reserved.
+  if (code >= 1001 && code <= 1003) return code
+  if (code >= 1007 && code <= 1011) return code
+  if (code >= 3000 && code <= 4999) return code
+  return 1000
+}
+
 /** Headers that describe one hop and must not be replayed onto the next. */
 const HOP_BY_HOP = new Set([
   'connection',
@@ -303,7 +330,11 @@ export class RelayClient {
       case 'ws-close': {
         const stream = this.#streams.get(frame.id)
         this.#streams.delete(frame.id)
-        stream?.close(frame.code ?? 1000, frame.reason ?? 'closed by the phone')
+        // The relay forwards whatever code the phone's socket reported, and a
+        // `close` handler sees reserved ones -- 1005 and 1006 describe a close
+        // that carried no code and must never be sent. `ws` throws a TypeError
+        // on them, which took the whole plugin down rather than one stream.
+        stream?.close(saneCloseCode(frame.code), frame.reason ?? 'closed by the phone')
         return
       }
       default:
@@ -379,7 +410,7 @@ export class RelayClient {
     })
     socket.on('close', (code: number, reason: Buffer) => {
       if (!this.#streams.delete(id)) return
-      this.#send({ t: 'ws-close', id, code, reason: reason.toString('utf8') })
+      this.#send({ t: 'ws-close', id, code: saneCloseCode(code), reason: reason.toString('utf8') })
     })
     socket.on('error', (error: Error) => {
       if (!this.#streams.delete(id)) return
