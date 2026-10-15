@@ -1,5 +1,18 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { parseHostFrame, splitRoomPath } from '../src/protocol.js'
+
+/**
+ * The golden frames both sides decode.
+ *
+ * Declared on both sides rather than imported, because the plugin is installed
+ * from a git checkout that contains no relay/ directory at all -- the package's
+ * `files` list is `["lib", "cordis.patch.yml"]`. Two decoders reading one
+ * artifact is what holds the contract; a shared import would only hold a build.
+ */
+const FIXTURE = JSON.parse(
+  readFileSync(new URL('../../protocol/relay/fixture.json', import.meta.url), 'utf8'),
+) as { relayToHost: unknown[]; hostToRelay: unknown[] }
 
 describe('splitRoomPath', () => {
   it('splits a room path into its room and the path behind it', () => {
@@ -57,6 +70,17 @@ describe('parseHostFrame', () => {
     for (const frame of frames) {
       expect(parseHostFrame(JSON.stringify(frame))).toEqual(frame)
     }
+  })
+
+  it('decodes every golden frame the relay may receive', () => {
+    for (const frame of FIXTURE.hostToRelay) {
+      expect(parseHostFrame(JSON.stringify(frame))).toEqual(frame)
+    }
+  })
+
+  it('covers every frame type the plugin may send', () => {
+    const types = new Set(FIXTURE.hostToRelay.map((frame) => (frame as { t: string }).t))
+    expect([...types].sort()).toEqual(['error', 'pong', 'res', 'ws-close', 'ws-msg', 'ws-open-ok'])
   })
 
   it('refuses anything that is not a tagged object', () => {

@@ -36,6 +36,25 @@ export interface PanelPairingView {
   readonly uri: string
 }
 
+/**
+ * The reverse tunnel, when one is configured.
+ *
+ * `connected` and `pairBaseURL` are separate on purpose: a relay can be enabled
+ * and unreachable, which is the state an operator most needs the panel to
+ * distinguish from "no relay configured" -- in the first case phones that used
+ * to work have stopped, and in the second they never would have.
+ */
+export interface PanelRelayView {
+  readonly enabled: boolean
+  readonly connected: boolean
+  /** The room the relay assigned, once it has. */
+  readonly room: string | null
+  /** The base URL a phone should be paired against, once known. */
+  readonly pairBaseURL: string | null
+  /** The last failure, or `null`. */
+  readonly lastError: string | null
+}
+
 /** How the listener is bound. */
 export interface PanelBindView {
   readonly mode: string
@@ -60,6 +79,8 @@ export interface PanelStatus {
   readonly devices: readonly PanelDeviceView[]
   /** How many authenticated clients are connected right now. */
   readonly clients: number
+  /** The reverse tunnel, or `null` when none is configured. */
+  readonly relay: PanelRelayView | null
 }
 
 /** What the status builder needs. */
@@ -72,6 +93,8 @@ export interface PanelStatusInput {
   readonly pairing: PairingSlot | null
   readonly devices: readonly DeviceRecord[]
   readonly clients: number
+  /** The reverse tunnel's state, or `null` when none is configured. */
+  readonly relay: Omit<PanelRelayView, 'enabled'> | null
   /** Current time, for deciding whether a code is still live. */
   readonly now: number
   /**
@@ -137,15 +160,22 @@ export function buildPanelStatus(input: PanelStatusInput): PanelStatus {
     // no code is honest, reporting a blank one is not.
     if (code !== '') {
       const display = displayCode(code)
-      pairing = {
+      // A loopback authority is left out of the QR rather than offered: a phone
+      // cannot reach 127.0.0.1 on the Mac, and putting it in would make every
+      // scan spend its direct-connection timeout before falling back to the
+      // relay that actually works.
+      const direct = input.authorities.find((authority) => !isLoopbackAuthority(authority)) ?? ''
+      const uri = buildPairingUri(
+        direct,
         display,
-        expiresAt: live.expiresAt,
-        uri: buildPairingUri(
-          input.authorities[0] ?? '',
-          display,
-          input.hostName,
-          input.protocolVersion,
-        ),
+        input.hostName,
+        input.protocolVersion,
+        input.relay?.pairBaseURL ?? null,
+      )
+      // `null` means there is no address at all -- neither direct nor relayed.
+      // Rendering a QR that cannot work is worse than rendering none.
+      if (uri !== null) {
+        pairing = { display, expiresAt: live.expiresAt, uri }
       }
     }
   }
@@ -164,5 +194,28 @@ export function buildPanelStatus(input: PanelStatusInput): PanelStatus {
     pairing,
     devices: orderDevices(input.devices),
     clients: input.clients,
+    relay:
+      input.relay === null
+        ? null
+        : {
+            enabled: true,
+            connected: input.relay.connected,
+            room: input.relay.room,
+            pairBaseURL: input.relay.pairBaseURL,
+            lastError: input.relay.lastError,
+          },
   }
+}
+
+/**
+ * Whether an authority points at this machine's own loopback.
+ *
+ * @param authority - `host:port`.
+ * @returns whether a phone could not possibly reach it.
+ */
+function isLoopbackAuthority(authority: string): boolean {
+  const host = authority.startsWith('[')
+    ? authority.slice(1, authority.indexOf(']'))
+    : authority.split(':')[0] ?? ''
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1'
 }

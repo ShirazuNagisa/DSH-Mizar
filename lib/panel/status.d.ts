@@ -31,6 +31,24 @@ export interface PanelPairingView {
     /** What the QR code encodes. */
     readonly uri: string;
 }
+/**
+ * The reverse tunnel, when one is configured.
+ *
+ * `connected` and `pairBaseURL` are separate on purpose: a relay can be enabled
+ * and unreachable, which is the state an operator most needs the panel to
+ * distinguish from "no relay configured" -- in the first case phones that used
+ * to work have stopped, and in the second they never would have.
+ */
+export interface PanelRelayView {
+    readonly enabled: boolean;
+    readonly connected: boolean;
+    /** The room the relay assigned, once it has. */
+    readonly room: string | null;
+    /** The base URL a phone should be paired against, once known. */
+    readonly pairBaseURL: string | null;
+    /** The last failure, or `null`. */
+    readonly lastError: string | null;
+}
 /** How the listener is bound. */
 export interface PanelBindView {
     readonly mode: string;
@@ -54,6 +72,8 @@ export interface PanelStatus {
     readonly devices: readonly PanelDeviceView[];
     /** How many authenticated clients are connected right now. */
     readonly clients: number;
+    /** The reverse tunnel, or `null` when none is configured. */
+    readonly relay: PanelRelayView | null;
 }
 /** What the status builder needs. */
 export interface PanelStatusInput {
@@ -65,6 +85,8 @@ export interface PanelStatusInput {
     readonly pairing: PairingSlot | null;
     readonly devices: readonly DeviceRecord[];
     readonly clients: number;
+    /** The reverse tunnel's state, or `null` when none is configured. */
+    readonly relay: Omit<PanelRelayView, 'enabled'> | null;
     /** Current time, for deciding whether a code is still live. */
     readonly now: number;
     /**
