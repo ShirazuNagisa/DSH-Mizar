@@ -16,20 +16,34 @@ import Foundation
 
 /// A decoded pairing URI.
 public struct PairingTarget: Sendable, Equatable {
-    /// `host:port` the app should dial.
-    public let authority: String
+    /// `host:port` the app should dial directly, or `nil` when the host is only
+    /// reachable through a relay.
+    public let authority: String?
     /// The pairing code, in display form.
     public let code: String
     /// The host's display name, when it was included.
     public let hostName: String?
     /// The protocol version the host speaks, when it was included.
     public let protocolVersion: Int?
+    /// Base URL of a reverse tunnel, when the host is behind one.
+    ///
+    /// A base URL rather than an authority because the room is part of the path:
+    /// `https://relay.example.com/r/ABCD1234`. Both the pairing request and the
+    /// WebSocket are built from it.
+    public let baseURL: String?
 
-    public init(authority: String, code: String, hostName: String? = nil, protocolVersion: Int? = nil) {
+    public init(
+        authority: String?,
+        code: String,
+        hostName: String? = nil,
+        protocolVersion: Int? = nil,
+        baseURL: String? = nil,
+    ) {
         self.authority = authority
         self.code = code
         self.hostName = hostName
         self.protocolVersion = protocolVersion
+        self.baseURL = baseURL
     }
 }
 
@@ -54,14 +68,21 @@ public enum PairingURI {
         code: String,
         hostName: String,
         protocolVersion: Int,
-    ) -> String {
+        baseURL: String? = nil,
+    ) -> String? {
+        // A URI with no address at all would scan successfully and then fail
+        // with nothing useful to say about why. Refusing to build one beats
+        // rendering a code that cannot work.
+        guard !authority.isEmpty || !(baseURL ?? "").isEmpty else { return nil }
+
         var components = URLComponents()
-        components.queryItems = [
-            URLQueryItem(name: "h", value: authority),
-            URLQueryItem(name: "c", value: code),
-            URLQueryItem(name: "n", value: hostName),
-            URLQueryItem(name: "v", value: String(protocolVersion)),
-        ]
+        var items: [URLQueryItem] = []
+        if !authority.isEmpty { items.append(URLQueryItem(name: "h", value: authority)) }
+        if let baseURL, !baseURL.isEmpty { items.append(URLQueryItem(name: "u", value: baseURL)) }
+        items.append(URLQueryItem(name: "c", value: code))
+        items.append(URLQueryItem(name: "n", value: hostName))
+        items.append(URLQueryItem(name: "v", value: String(protocolVersion)))
+        components.queryItems = items
         return "\(prefix)?\(components.percentEncodedQuery ?? "")"
     }
 
@@ -87,16 +108,70 @@ public enum PairingURI {
                 .trimmingCharacters(in: .whitespaces)
         }
 
-        guard let authority = value("h"), !authority.isEmpty,
-              let code = value("c"), !code.isEmpty
-        else { return nil }
+        let authority = value("h") ?? ""
+        let baseURL = value("u") ?? ""
+        guard let code = value("c"), !code.isEmpty else { return nil }
+        // The code is the one thing that must always be present; an address may
+        // arrive through either parameter, but one of them has to arrive.
+        guard !authority.isEmpty || !baseURL.isEmpty else { return nil }
+        if !baseURL.isEmpty, !isUsableBaseURL(baseURL) { return nil }
 
         return PairingTarget(
-            authority: authority,
+            authority: authority.isEmpty ? nil : authority,
             code: code,
             hostName: value("n"),
             protocolVersion: value("v").flatMap(Int.init),
+            baseURL: baseURL.isEmpty ? nil : baseURL,
         )
+    }
+
+    /// Whether a base URL is one this client can dial.
+    ///
+    /// A scanned code is untrusted input from a camera, and this URL decides
+    /// where a device token gets sent. Restricting the scheme to what the
+    /// protocol actually speaks keeps a crafted QR from pointing the app
+    /// somewhere it would never otherwise go.
+    ///
+    /// - Parameter value: the candidate.
+    /// - Returns: whether it is usable.
+    public static func isUsableBaseURL(_ value: String) -> Bool {
+        guard let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host(), !host.isEmpty
+        else { return false }
+        return true
+    }
+
+    /// The WebSocket URL for a relay base URL.
+    ///
+    /// - Parameter baseURL: the relay base, e.g. `https://relay.example.com/r/ROOM`.
+    /// - Returns: the URL, or `nil` when it is unusable.
+    public static func relayWebSocketURL(baseURL: String) -> URL? {
+        guard var components = URLComponents(string: baseURL) else { return nil }
+        switch components.scheme?.lowercased() {
+        case "https": components.scheme = "wss"
+        case "http": components.scheme = "ws"
+        default: return nil
+        }
+        components.path = components.path.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+            + mizarWebSocketPath
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
+
+    /// The pairing HTTP URL for a relay base URL.
+    ///
+    /// - Parameters:
+    ///   - baseURL: the relay base.
+    ///   - path: the path to append, beginning with a slash.
+    /// - Returns: the URL, or `nil`.
+    public static func relayHTTPURL(baseURL: String, path: String) -> URL? {
+        guard let url = URL(string: baseURL + path), let host = url.host(), !host.isEmpty else {
+            return nil
+        }
+        return url
     }
 
     /// Build a URL for one authority.

@@ -31,6 +31,12 @@ final class AppModel {
     private(set) var host: PairedHost?
     /// The host's own identity report, once connected.
     private(set) var welcome: WelcomeFrame?
+    /// Which route the live connection is using, for the UI to show.
+    ///
+    /// Worth surfacing because the two behave differently under load: a relayed
+    /// connection carries a round trip through another machine, and an operator
+    /// wondering why everything feels slow deserves to see why.
+    private(set) var activeEndpoint: PairedHost.Endpoint?
     /// The sessions the host lists, newest activity first.
     private(set) var sessions: [SessionRow] = []
     /// The session the conversation screen is showing.
@@ -401,21 +407,94 @@ final class AppModel {
     }
 
     /// Open the socket and load the first screen's data.
+    ///
+    /// Every route the pairing knows about is tried in order, direct first,
+    /// because the two fail for entirely different reasons and only one of them
+    /// is usually available. A Mac on the same Wi-Fi answers on its LAN address;
+    /// a Mac on a network that blocks inbound traffic answers only through the
+    /// relay. One QR code carries both, and this is what makes that useful.
+    ///
+    /// A failed attempt costs its own timeout, so the direct attempt is given a
+    /// short one. Waiting the full default before falling back would make every
+    /// connection on a hostile network feel broken.
+    ///
     /// - Parameter host: the pairing to connect with.
     private func connect(using host: PairedHost) async throws {
         phase = .connecting
-        let connection = MizarConnection(
-            configuration: .init(
-                authority: host.authority,
+        let endpoints = host.endpoints
+        guard !endpoints.isEmpty else {
+            let error = MizarError(
+                code: "NO_ENDPOINT",
+                message: "this pairing has no address to dial",
+            )
+            phase = .failed(error.message)
+            throw error
+        }
+
+        var lastError: (any Error)?
+        for (index, endpoint) in endpoints.enumerated() {
+            do {
+                try await open(host: host, endpoint: endpoint)
+                return
+            } catch {
+                lastError = error
+                // Nothing left to fall back to, so this is the answer.
+                guard index < endpoints.count - 1 else { break }
+                // Back to connecting rather than failed: the next route has
+                // not been tried yet, and showing a failure while an attempt is
+                // in flight is a lie the operator would act on.
+                phase = .connecting
+            }
+        }
+
+        let failure = lastError ?? MizarError(code: "UNREACHABLE", message: "the host did not answer")
+        phase = .failed(Self.describe(failure, authority: host.authority ?? host.baseURL))
+        throw failure
+    }
+
+    /// Open one connection over one route, and load the first screen's data.
+    ///
+    /// - Parameters:
+    ///   - host: the pairing to connect with.
+    ///   - endpoint: which route to take.
+    private func open(host: PairedHost, endpoint: PairedHost.Endpoint) async throws {
+        // Only the direct attempt gets a short leash. A relay that is reachable
+        // but slow should be waited for rather than abandoned for a route that
+        // has already been ruled out.
+        let timeout: TimeInterval
+        switch endpoint {
+        case .direct: timeout = 6
+        case .relay: timeout = 20
+        }
+
+        let configuration: MizarConnection.Configuration
+        switch endpoint {
+        case .direct(let authority):
+            configuration = .init(
+                authority: authority,
                 token: host.deviceToken,
                 appVersion: Self.appVersion,
                 deviceModel: Self.deviceModel,
-            ),
+            )
+        case .relay(let baseURL):
+            configuration = .init(
+                authority: nil,
+                token: host.deviceToken,
+                appVersion: Self.appVersion,
+                deviceModel: Self.deviceModel,
+                baseURL: baseURL,
+            )
+        }
+
+        let connection = MizarConnection(
+            configuration: configuration,
+            makeTransport: { URLSessionWebSocketTransport(timeout: timeout) },
         )
         self.connection = connection
 
         let welcome = try await connection.connect()
         self.welcome = welcome
+        self.activeEndpoint = endpoint
         phase = .ready
         await refreshSessions()
         startInteractionPoll()

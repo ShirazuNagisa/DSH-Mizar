@@ -22,7 +22,8 @@ struct PairingURITests {
             hostName: "shirazu-mac",
             protocolVersion: 1,
         )
-        let target = try #require(PairingURI.parse(uri))
+        let text = try #require(uri)
+        let target = try #require(PairingURI.parse(text))
         #expect(target.authority == "100.64.0.1:19390")
         #expect(target.code == "AB2C-D3EF")
         #expect(target.hostName == "shirazu-mac")
@@ -37,7 +38,8 @@ struct PairingURITests {
             hostName: "mac",
             protocolVersion: 1,
         )
-        let target = try #require(PairingURI.parse(uri))
+        let text = try #require(uri)
+        let target = try #require(PairingURI.parse(text))
         #expect(target.authority == "[fd7a:115c:a1e0::1]:19390")
     }
 
@@ -49,7 +51,8 @@ struct PairingURITests {
             hostName: "Shirazu's MacBook Pro",
             protocolVersion: 1,
         )
-        let target = try #require(PairingURI.parse(uri))
+        let text = try #require(uri)
+        let target = try #require(PairingURI.parse(text))
         #expect(target.hostName == "Shirazu's MacBook Pro")
     }
 
@@ -61,7 +64,8 @@ struct PairingURITests {
             hostName: "mac",
             protocolVersion: 1,
         )
-        let target = try #require(PairingURI.parse("  \(uri)\n"))
+        let text = try #require(uri)
+        let target = try #require(PairingURI.parse("  \(text)\n"))
         #expect(target.authority == "10.0.0.1:19390")
     }
 
@@ -104,5 +108,104 @@ struct PairingURITests {
     func refusesBadAuthority() {
         #expect(PairingURI.webSocketURL(authority: "") == nil)
         #expect(PairingURI.webSocketURL(authority: "has spaces") == nil)
+    }
+
+    // MARK: - Relay
+
+    @Test("carries a relay base URL alongside a direct authority")
+    func relayWithDirect() throws {
+        let uri = PairingURI.build(
+            authority: "100.64.0.1:19390",
+            code: "AB2C-D3EF",
+            hostName: "shirazu-mac",
+            protocolVersion: 1,
+            baseURL: "https://relay.example.com/r/WBKW0NZVT5QZ",
+        )
+        let text = try #require(uri)
+        let target = try #require(PairingURI.parse(text))
+        #expect(target.authority == "100.64.0.1:19390")
+        #expect(target.baseURL == "https://relay.example.com/r/WBKW0NZVT5QZ")
+    }
+
+    @Test("carries a relay with no direct authority at all")
+    func relayOnly() throws {
+        let uri = PairingURI.build(
+            authority: "",
+            code: "AB2C-D3EF",
+            hostName: "shirazu-mac",
+            protocolVersion: 1,
+            baseURL: "https://relay.example.com/r/ROOM",
+        )
+        let text = try #require(uri)
+        let target = try #require(PairingURI.parse(text))
+        #expect(target.authority == nil)
+        #expect(target.baseURL == "https://relay.example.com/r/ROOM")
+    }
+
+    @Test("refuses to build a URI with no address to dial")
+    func refusesEmpty() {
+        // A QR that scans and then fails, with nothing useful to say about why,
+        // is worse than no QR at all.
+        #expect(PairingURI.build(authority: "", code: "C", hostName: "n", protocolVersion: 1) == nil)
+    }
+
+    @Test("builds the old shape when there is no relay")
+    func backwardCompatible() throws {
+        let uri = try #require(
+            PairingURI.build(authority: "10.0.0.1:1", code: "C", hostName: "n", protocolVersion: 1),
+        )
+        #expect(!uri.contains("u="))
+        #expect(PairingURI.parse(uri)?.baseURL == nil)
+    }
+
+    @Test("parses a URI written before the relay existed")
+    func parsesOld() {
+        let target = PairingURI.parse("mizar://pair?h=10.0.0.1:19390&c=AB2C-D3EF&n=mac&v=1")
+        #expect(target?.authority == "10.0.0.1:19390")
+        #expect(target?.baseURL == nil)
+    }
+
+    @Test("refuses a relay scheme the client cannot dial")
+    func refusesBadScheme() {
+        // A scanned code is untrusted input from a camera, and this URL decides
+        // where a device token gets sent.
+        #expect(PairingURI.parse("mizar://pair?u=file:///etc/passwd&c=C&v=1") == nil)
+        #expect(PairingURI.parse("mizar://pair?u=javascript:alert(1)&c=C&v=1") == nil)
+        #expect(PairingURI.parse("mizar://pair?u=rdp://host/x&c=C&v=1") == nil)
+    }
+
+    @Test("refuses a URI with a code but no address")
+    func refusesNoAddress() {
+        #expect(PairingURI.parse("mizar://pair?c=AB2C-D3EF&n=mac&v=1") == nil)
+    }
+
+    @Test("accepts a plain http relay for a LAN or a test")
+    func acceptsPlainHTTP() {
+        #expect(PairingURI.parse("mizar://pair?u=http://127.0.0.1:8787/r/R&c=C&v=1")?.baseURL
+            == "http://127.0.0.1:8787/r/R")
+    }
+
+    @Test("turns a relay base URL into its WebSocket URL")
+    func relayWebSocket() {
+        #expect(
+            PairingURI.relayWebSocketURL(baseURL: "https://relay.example.com/r/ROOM")?.absoluteString
+                == "wss://relay.example.com/r/ROOM/mizar/v1/ws",
+        )
+    }
+
+    @Test("keeps the room in the relay WebSocket path")
+    func relayWebSocketKeepsRoom() {
+        // The room is what routes the request to the right Mac; losing it would
+        // produce a URL that connects to the relay and reaches nobody.
+        let url = PairingURI.relayWebSocketURL(baseURL: "https://relay.example.com/r/WBKW0NZVT5QZ")
+        #expect(url?.path.contains("/r/WBKW0NZVT5QZ/") == true)
+    }
+
+    @Test("builds the relay HTTP URL for pairing")
+    func relayHTTP() {
+        #expect(
+            PairingURI.relayHTTPURL(baseURL: "https://relay.example.com/r/ROOM", path: "/mizar/v1/pair")?
+                .absoluteString == "https://relay.example.com/r/ROOM/mizar/v1/pair",
+        )
     }
 }

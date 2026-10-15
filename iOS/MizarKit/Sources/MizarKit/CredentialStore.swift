@@ -25,8 +25,10 @@ public struct PairedHost: Codable, Sendable, Equatable {
     public let hostId: String
     /// The host's display name.
     public let hostName: String
-    /// `host:port` the device dials.
-    public let authority: String
+    /// `host:port` the device dials directly, or `nil` when it has none.
+    public let authority: String?
+    /// Base URL of a reverse tunnel, when the host is behind one.
+    public let baseURL: String?
     /// The device id the token belongs to.
     public let deviceId: String
     /// The secret itself.
@@ -37,10 +39,11 @@ public struct PairedHost: Codable, Sendable, Equatable {
     public init(
         hostId: String,
         hostName: String,
-        authority: String,
+        authority: String?,
         deviceId: String,
         deviceToken: String,
         pairedAt: Date = Date(),
+        baseURL: String? = nil,
     ) {
         self.hostId = hostId
         self.hostName = hostName
@@ -48,6 +51,30 @@ public struct PairedHost: Codable, Sendable, Equatable {
         self.deviceId = deviceId
         self.deviceToken = deviceToken
         self.pairedAt = pairedAt
+        self.baseURL = baseURL
+    }
+
+    /// Where this host can be reached, in the order worth trying.
+    ///
+    /// The direct address comes first when there is one: it is the same network
+    /// or the same tailnet, so it is faster and involves nobody else. The relay
+    /// is the fallback, and for a host whose network blocks inbound traffic it
+    /// is the only one that works.
+    public var endpoints: [Endpoint] {
+        var out: [Endpoint] = []
+        if let authority, !authority.isEmpty { out.append(.direct(authority: authority)) }
+        if let baseURL, !baseURL.isEmpty, PairingURI.isUsableBaseURL(baseURL) {
+            out.append(.relay(baseURL: baseURL))
+        }
+        return out
+    }
+
+    /// One way to reach a host.
+    public enum Endpoint: Sendable, Equatable {
+        /// Straight to `host:port`.
+        case direct(authority: String)
+        /// Through a reverse tunnel.
+        case relay(baseURL: String)
     }
 
     /// A copy pointing at a different authority, keeping the credential.
@@ -66,6 +93,23 @@ public struct PairedHost: Codable, Sendable, Equatable {
             deviceId: deviceId,
             deviceToken: deviceToken,
             pairedAt: pairedAt,
+            baseURL: baseURL,
+        )
+    }
+
+    /// A copy pointing at a different relay, keeping the credential.
+    ///
+    /// - Parameter baseURL: the new relay base URL.
+    /// - Returns: the updated record.
+    public func moved(toRelay baseURL: String?) -> PairedHost {
+        PairedHost(
+            hostId: hostId,
+            hostName: hostName,
+            authority: authority,
+            deviceId: deviceId,
+            deviceToken: deviceToken,
+            pairedAt: pairedAt,
+            baseURL: baseURL,
         )
     }
 }

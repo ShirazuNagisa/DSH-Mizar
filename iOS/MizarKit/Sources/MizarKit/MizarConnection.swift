@@ -27,8 +27,10 @@ import Foundation
 public actor MizarConnection {
     /// How to reach the host.
     public struct Configuration: Sendable {
-        /// `host:port`.
-        public var authority: String
+        /// `host:port`, or `nil` when the host is only reachable through a relay.
+        public var authority: String?
+        /// Base URL of a reverse tunnel, when the host is behind one.
+        public var baseURL: String?
         /// The device token from pairing.
         public var token: String
         /// Whether to use `wss`.
@@ -41,12 +43,13 @@ public actor MizarConnection {
         public var requestTimeout: Duration
 
         public init(
-            authority: String,
+            authority: String?,
             token: String,
             secure: Bool = false,
             appVersion: String? = nil,
             deviceModel: String? = nil,
             requestTimeout: Duration = .seconds(60),
+            baseURL: String? = nil,
         ) {
             self.authority = authority
             self.token = token
@@ -54,6 +57,19 @@ public actor MizarConnection {
             self.appVersion = appVersion
             self.deviceModel = deviceModel
             self.requestTimeout = requestTimeout
+            self.baseURL = baseURL
+        }
+
+        /// Which of the two routes this configuration names.
+        ///
+        /// A direct authority wins when there is one: it is the same network or
+        /// the same tailnet, so it is faster and involves nobody else.
+        public var endpoint: PairedHost.Endpoint? {
+            if let authority, !authority.isEmpty { return .direct(authority: authority) }
+            if let baseURL, !baseURL.isEmpty, PairingURI.isUsableBaseURL(baseURL) {
+                return .relay(baseURL: baseURL)
+            }
+            return nil
         }
     }
 
@@ -135,10 +151,27 @@ public actor MizarConnection {
         if let welcome = state.welcome { return welcome }
         state = .connecting
 
-        guard let url = PairingURI.webSocketURL(authority: configuration.authority, secure: configuration.secure) else {
-            let error = MizarError(code: "BAD_AUTHORITY", message: "cannot dial \(configuration.authority)")
+        guard let endpoint = configuration.endpoint else {
+            let error = MizarError(code: "BAD_AUTHORITY", message: "no address to dial")
             state = .failed(error.message)
             throw error
+        }
+        let url: URL
+        switch endpoint {
+        case .direct(let authority):
+            guard let direct = PairingURI.webSocketURL(authority: authority, secure: configuration.secure) else {
+                let error = MizarError(code: "BAD_AUTHORITY", message: "cannot dial \(authority)")
+                state = .failed(error.message)
+                throw error
+            }
+            url = direct
+        case .relay(let baseURL):
+            guard let relayed = PairingURI.relayWebSocketURL(baseURL: baseURL) else {
+                let error = MizarError(code: "BAD_AUTHORITY", message: "cannot dial \(baseURL)")
+                state = .failed(error.message)
+                throw error
+            }
+            url = relayed
         }
 
         let socket = makeTransport()

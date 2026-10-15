@@ -62,7 +62,7 @@ public struct PairingClient: Sendable {
     /// - Parameter authority: `host:port`.
     /// - Returns: the host's identity.
     public func hello(authority: String) async throws -> HelloResponse {
-        let url = try requireURL(authority: authority, path: "\(mizarHTTPPrefix)/hello")
+        let url = try requireURL(authority: authority, baseURL: nil, path: "\(mizarHTTPPrefix)/hello")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "accept")
@@ -87,12 +87,13 @@ public struct PairingClient: Sendable {
     ///   - deviceModel: the hardware model.
     /// - Returns: the pairing, ready to store.
     public func pair(
-        authority: String,
+        authority: String?,
         code: String,
         deviceName: String,
         deviceModel: String,
+        baseURL: String? = nil,
     ) async throws -> PairedHost {
-        let url = try requireURL(authority: authority, path: "\(mizarHTTPPrefix)/pair")
+        let url = try requireURL(authority: authority, baseURL: baseURL, path: "\(mizarHTTPPrefix)/pair")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -118,6 +119,9 @@ public struct PairingClient: Sendable {
             authority: authority,
             deviceId: body.deviceId,
             deviceToken: body.deviceToken,
+            // Recorded so later reconnects can use the same route the pairing
+            // went through, rather than rediscovering it every time.
+            baseURL: baseURL,
         )
     }
 
@@ -128,14 +132,26 @@ public struct PairingClient: Sendable {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
     }
 
-    private func requireURL(authority: String, path: String) throws -> URL {
-        guard let url = PairingURI.httpURL(authority: authority, path: path) else {
-            throw MizarError(
-                code: "BAD_AUTHORITY",
-                message: "\"\(authority)\" is not an address this app can dial",
-            )
+    /// Build the URL for one step of pairing, over whichever route is named.
+    ///
+    /// - Parameters:
+    ///   - authority: `host:port`, or `nil` to go through the relay.
+    ///   - baseURL: the relay base URL, when going through one.
+    ///   - path: the path to append.
+    /// - Returns: the URL.
+    /// - Throws: when neither route produces something dialable.
+    private func requireURL(authority: String?, baseURL: String?, path: String) throws -> URL {
+        if let authority, !authority.isEmpty,
+           let url = PairingURI.httpURL(authority: authority, path: path) {
+            return url
         }
-        return url
+        if let baseURL, !baseURL.isEmpty, let url = PairingURI.relayHTTPURL(baseURL: baseURL, path: path) {
+            return url
+        }
+        throw MizarError(
+            code: "BAD_AUTHORITY",
+            message: "\"\(authority ?? baseURL ?? "")\" is not an address this app can dial",
+        )
     }
 
     private func decode<T: Decodable>(_ data: Data, as type: T.Type) throws -> T {

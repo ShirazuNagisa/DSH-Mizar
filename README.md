@@ -10,14 +10,16 @@
 > | Web 面板 | ✅ 绑定地址、配对二维码、设备名册 |
 > | MizarKit（协议层） | ✅ 帧、连接与重连、配对、Keychain、消息记录解析 |
 > | iOS / iPad App（SwiftUI） | ✅ 工作区选择、会话列表、对话正文、用量与缓存命中率、模型/思考强度/权限切换、审批与提问（宿主主动推送）、输入与打断、中英双语跟随系统 |
-> | 发布 | ✅ 已归档、签名、导出 TestFlight 包（v0.1.0） |
+> | 反向隧道中继（`relay/`） | ✅ 房间隔离、请求重放、WebSocket 桥接、端点探测；**已在本地测试，尚未部署到真实服务器** |
+| 发布 | ✅ 已归档、签名、导出 TestFlight 包（v0.1.0） |
 > | Windows | ⚠️ **代码检查通过，但从未运行过** —— 见 [Windows 状态](docs/windows-status.md) |
 >
-> **测试：323（TypeScript）+ 76（Swift）+ 11（iOS UI）+ 107（真实链路冒烟断言）。**
+> **测试：366（插件）+ 59（中继）+ 96（Swift）+ 11（iOS UI）+ 110（真实链路冒烟断言）。**
+> iOS UI 中有 1 个已知失败，见文末「已知问题」。
 >
 > 关键设计结论：[0001 进程内网关](docs/decision-0001-in-process-gateway.md)、
 > [0002 审批仲裁](docs/decision-0002-approval-arbitration.md)。
-> 发布步骤：[TestFlight](docs/testflight.md)。
+> 发布步骤：[TestFlight](docs/testflight.md)、[中继服务器部署](docs/relay-deployment.md)。
 
 ---
 
@@ -347,3 +349,40 @@ CommonJS 模块体。没有 ESM 路径，而 DSH 自己的客户端构建链**�
 *构建所用 SDK* 决定的，与部署目标无关；Info.plist 的 `UIDesignRequiresCompatibility`
 可以显式退回旧观感（本项目不设）。仅在 26 才引入的 API（如 `glassEffect`）需要用
 `if #available(iOS 26, *)` 守卫。
+
+
+---
+
+## 中继服务器（不依赖 Tailscale）
+
+校园网这类网络**封禁入站**，所以手机永远连不上 Mac 的监听地址——这是实测结论，不是猜测。
+中继的思路是反过来：**Mac 主动出站**连到你的服务器，之后就通过那条连接可达。
+
+```
+Mac 插件 ──出站 wss──▶ 你的服务器 ◀──https/wss── 手机
+   /tunnel                │            /r/<room>/mizar/v1/...
+                          └─ 请求重放给 127.0.0.1:19390（现有监听器，零改动）
+```
+
+**Mizar 协议一个字都没改**：隧道只是换了基地址，配对、帧、方法表全部照旧。
+
+配对二维码现在可以同时带直连地址（`h`）和中继地址（`u`）：
+**App 先试直连，失败再走中继**，所以一张二维码同时覆盖「同一个 Wi-Fi」和「任何网络」。
+
+- 部署步骤：[docs/relay-deployment.md](docs/relay-deployment.md)（含宝塔面板配置）
+- 服务器源码：[`relay/`](relay/)
+
+**中继能看到经过它的明文流量**——它终止 TLS。你自己运维时这是可接受的，也正因如此
+**端到端加密列为后续独立阶段**。
+
+---
+
+## 已知问题
+
+- **`testASentMessageAppearsInTheConversation` 持续失败。** 消息确实送达宿主（mock 记录到
+  `prompt received`，冒烟测试也证明幂等），但断言拿不到它出现在输入框上方。**这不是中继引入的
+  回归**——中继只改了传输层，没有碰对话或输入框。早先两版测试即使在移除修复后也能通过，
+  因为它们匹配到了 TextField 清空后残留的幽灵文本。
+- **Windows 从未运行过。** 代码检查通过，但没有 Windows 机器验证。
+- **打洞尚未实现。** 中继的 UDP 探测口已经建好（用来测量双方公网端点），但真正在 UDP 上跑
+  Mizar 帧需要一套可靠传输 + 加密，**门控在实测结果上**——先确认这条网络能不能打通再写。
