@@ -16,6 +16,7 @@ import MizarKit
 struct MainView: View {
     @Environment(AppModel.self) private var model
     @State private var showingNewSession = false
+    @State private var showingSync = false
 
     /// Offered once, right after a pairing completes.
     private var namingPrompt: Binding<Bool> {
@@ -59,10 +60,20 @@ struct MainView: View {
                     }
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         Button {
-                            Task { await model.refreshSessions() }
+                            showingSync = true
+                            Task { await model.syncAllConversations() }
                         } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
+                            // Turns while it works. A refresh over a phone link
+                            // can take a while, and a button that looks idle
+                            // while nothing happens reads as a button that did
+                            // nothing.
+                            if model.isSyncing {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Label("Refresh", systemImage: "arrow.clockwise")
+                            }
                         }
+                        .disabled(model.isSyncing)
                         .accessibilityIdentifier("sessions.refresh")
                     }
                 }
@@ -89,6 +100,50 @@ struct MainView: View {
                 )
             }
         }
+    }
+}
+
+/// What a sync is doing.
+///
+/// Shown while a sync runs and kept up for a moment after, so a sync that
+/// finishes quickly does not flash a dialog nobody can read.
+struct SyncProgressSheet: View {
+    let progress: AppModel.SyncProgress?
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                if let progress {
+                    ProgressView(value: progress.fraction)
+                        .progressViewStyle(.linear)
+                    Text("Syncing \(progress.completed) of \(progress.total)")
+                        .font(.headline)
+                    Text(progress.current.isEmpty ? "…" : progress.current)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Label("Up to date", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Every conversation on this Mac is stored on this phone.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding(28)
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .accessibilityIdentifier("sync.done")
+                }
+            }
+        }
+        .presentationDetents([.height(220)])
     }
 }
 
@@ -364,17 +419,24 @@ struct SessionDetailView: View {
     private func reload() async {
         loading = true
         loadingConversation = true
+        // The phone's own copy first. It is instant, it is there when the
+        // network is not, and the fetch below replaces it when it lands.
+        if let cached = await model.cachedConversation(for: sessionId), !cached.items.isEmpty {
+            items = cached.items
+            loadingConversation = false
+        }
         // Run together: the two reads are independent, and a conversation that
         // waits for a stats call would make the screen feel slower than it is.
         async let statsResult = model.stats(for: sessionId)
-        async let conversationResult = model.conversation(for: sessionId)
         stats = await statsResult
+        // Synced rather than merely read: the result is folded into the cache,
+        // so what is on screen and what is on disk are the same thing.
+        let conversationResult = await model.syncConversation(for: sessionId)
         // Only replace what is on screen when there is something to replace it
-        // with. A read that failed returns nothing, and assigning that wiped the
-        // whole conversation -- which is what "pull to refresh loses my history"
-        // was. Keeping the old items means a failed refresh costs freshness, not
-        // the history.
-        let fresh = await conversationResult
+        // with. A read that failed returns the cache rather than nothing, but a
+        // cache can be empty on a first visit -- and assigning that over a
+        // populated screen is what "pull to refresh loses my history" was.
+        let fresh = conversationResult
         if !fresh.isEmpty || items.isEmpty { items = fresh }
         loading = false
         loadingConversation = false

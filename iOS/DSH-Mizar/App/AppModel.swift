@@ -63,6 +63,28 @@ final class AppModel {
 
     /// Whether a reconnect is in flight, so the UI can say so.
     private(set) var reconnecting = false
+
+    /// What a sync is doing, or `nil` when none is.
+    ///
+    /// A refresh used to be a spinner with no end and no idea how far along it
+    /// was, over a link that can be a phone on cellular. Saying which session of
+    /// how many is the difference between waiting and wondering.
+    private(set) var syncProgress: SyncProgress?
+
+    /// How a sync is going.
+    struct SyncProgress: Sendable, Equatable {
+        /// What is being fetched.
+        var current: String
+        /// How many sessions are done.
+        var completed: Int
+        /// How many there are to do.
+        var total: Int
+
+        var fraction: Double { total == 0 ? 0 : Double(completed) / Double(total) }
+    }
+
+    /// Whether a sync is running.
+    var isSyncing: Bool { syncProgress != nil }
     /// The session the conversation screen is showing.
     var selectedSessionId: String? {
         didSet {
@@ -124,10 +146,16 @@ final class AppModel {
     private static let interactionPollSeconds: Duration = .seconds(45)
 
     private let credentials: any CredentialStore
+    /// Conversations kept on the phone, so history survives a lost network.
+    let conversations: any ConversationCache
     private var connection: MizarConnection?
 
-    init(credentials: any CredentialStore = KeychainCredentialStore()) {
+    init(
+        credentials: any CredentialStore = KeychainCredentialStore(),
+        conversations: any ConversationCache = FileConversationCache(),
+    ) {
         self.credentials = credentials
+        self.conversations = conversations
     }
 
     /// Load any stored pairing and, if there is one, connect.
@@ -472,16 +500,28 @@ final class AppModel {
     ///   - type: the result type.
     /// - Returns: the decoded result.
     /// - Throws: when the call fails twice.
-    private func call<T: Decodable & Sendable>(_ method: String, as type: T.Type) async throws -> T {
+    /// Run one call, reconnecting once if the socket has gone away.
+    ///
+    /// - Parameters:
+    ///   - method: the method name.
+    ///   - payload: the arguments, when the method takes any.
+    ///   - type: the result type.
+    /// - Returns: the decoded result.
+    /// - Throws: when the call fails twice.
+    private func call<T: Decodable & Sendable>(
+        _ method: String,
+        payload: JSONValue? = nil,
+        as type: T.Type,
+    ) async throws -> T {
         guard let connection else {
             throw MizarError(code: "NO_CONNECTION", message: "not connected to the Mac")
         }
         do {
-            return try await connection.call(method, payload: nil, as: type)
+            return try await connection.call(method, payload: payload, as: type)
         } catch {
             guard await reconnect() else { throw error }
             guard let fresh = self.connection else { throw error }
-            return try await fresh.call(method, payload: nil, as: type)
+            return try await fresh.call(method, payload: payload, as: type)
         }
     }
 
@@ -520,6 +560,74 @@ final class AppModel {
             }
         }
         return false
+    }
+
+    /// Read a session's conversation from the phone's own storage.
+    ///
+    /// - Parameter sessionId: the session.
+    /// - Returns: the cached conversation, or `nil` when none is stored.
+    func cachedConversation(for sessionId: String) async -> CachedConversation? {
+        await conversations.load(sessionId: sessionId)
+    }
+
+    /// Sync every session's history to this phone.
+    ///
+    /// Run on first pairing and from the refresh button. Paging rather than
+    /// asking for everything at once: a page that does not arrive costs the
+    /// freshness of one screen, which is the lesson the two-megabyte page
+    /// taught.
+    func syncAllConversations() async {
+        guard connection != nil else { return }
+        await refreshSessions()
+        guard !sessions.isEmpty else { return }
+
+        let runnable = sessions.filter { $0.parentSessionId == nil }
+        syncProgress = SyncProgress(current: "", completed: 0, total: runnable.count)
+
+        for (index, session) in runnable.enumerated() {
+            syncProgress?.current = session.cwd.map { ($0 as NSString).lastPathComponent } ?? session.sessionId
+            await syncConversation(for: session.sessionId)
+            syncProgress?.completed = index + 1
+        }
+        syncProgress = nil
+    }
+
+    /// Fetch one session's page and fold it into the cache.
+    ///
+    /// - Parameter sessionId: the session to sync.
+    /// - Returns: the items now known, oldest first.
+    @discardableResult
+    func syncConversation(for sessionId: String) async -> [ConversationItem] {
+        do {
+            let result = try await call(
+                "session.messages",
+                payload: .object([
+                    "sessionId": .string(sessionId),
+                    // The host trims the page to what the transport can carry;
+                    // asking for more only costs a bigger request.
+                    "maxMessages": .number(200),
+                ]),
+                as: SessionMessagesResult.self,
+            )
+            let fresh = result.conversationItems()
+            let merged = mergeConversations(
+                cached: await conversations.load(sessionId: sessionId)?.items ?? [],
+                fresh: fresh,
+            )
+            await conversations.save(
+                CachedConversation(
+                    sessionId: sessionId,
+                    items: merged,
+                    throughSeq: result.asOfSeq,
+                    hasMore: result.hasMore,
+                ),
+            )
+            lastError = nil
+            return merged
+        } catch {
+            lastError = Self.describe(error, authority: host?.authority ?? host?.baseURL)
+            return await conversations.load(sessionId: sessionId)?.items ?? []
+        }
     }
 
     /// Read a session's recent log, as items a view can draw.
@@ -598,6 +706,11 @@ final class AppModel {
             // asked for over a working screen rather than a spinner.
             pendingNameHostId = paired.hostId
             try await connect(using: paired)
+            // First pairing pulls the history down, so the phone has something
+            // to show the next time the network is not there. Deliberately after
+            // the screen is up: the operator should see the app working, not a
+            // progress dialog, and the sync reports itself in the toolbar.
+            Task { await syncAllConversations() }
         } catch {
             phase = .failed(
                 Self.describe(error, authority: target.authority ?? target.baseURL),

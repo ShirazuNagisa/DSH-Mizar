@@ -381,3 +381,72 @@ struct ConversationTests {
         #expect(text == "unwrapped reply")
     }
 }
+
+@Suite("Conversation cache")
+struct ConversationCacheTests {
+    private func item(_ id: String, _ text: String, at: Double) -> ConversationItem {
+        .message(id: id, role: .user, text: text, at: Date(timeIntervalSince1970: at))
+    }
+
+    @Test("round-trips through a file, keeping order and roles")
+    func roundTrip() async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mizar-cache-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let cache = FileConversationCache(directory: directory)
+        let conversation = CachedConversation(
+            sessionId: "session-1",
+            items: [
+                .message(id: "a", role: .user, text: "你好", at: Date(timeIntervalSince1970: 1)),
+                .message(id: "b", role: .assistant, text: "reply", at: Date(timeIntervalSince1970: 2)),
+                .failure(id: "c", message: "the turn ended", at: Date(timeIntervalSince1970: 3)),
+            ],
+            throughSeq: 42,
+            hasMore: true,
+        )
+        await cache.save(conversation)
+
+        let loaded = try #require(await cache.load(sessionId: "session-1"))
+        #expect(loaded.items == conversation.items)
+        #expect(loaded.throughSeq == 42)
+        #expect(loaded.hasMore)
+    }
+
+    @Test("merges by id rather than appending")
+    func mergeById() {
+        // The page and the cache overlap on every refresh, and concatenating
+        // them duplicates everything they share.
+        let cached = [item("a", "one", at: 1), item("b", "two", at: 2)]
+        let fresh = [item("b", "two", at: 2), item("c", "three", at: 3)]
+        let merged = mergeConversations(cached: cached, fresh: fresh)
+        #expect(merged.count == 3)
+        #expect(merged.map(\.id) == ["a", "b", "c"])
+    }
+
+    @Test("fresh wins when the same id changed")
+    func freshWins() {
+        let cached = [item("a", "old text", at: 1)]
+        let fresh = [item("a", "new text", at: 1)]
+        let merged = mergeConversations(cached: cached, fresh: fresh)
+        guard case .message(_, _, let text, _) = merged.first else {
+            Issue.record("expected a message")
+            return
+        }
+        #expect(text == "new text")
+    }
+
+    @Test("a session id that could escape the directory does not")
+    func safeFileNames() async {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mizar-cache-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = FileConversationCache(directory: directory)
+        // Session ids come over the wire; a path built from unvalidated input is
+        // how a cache becomes a directory traversal.
+        await cache.save(CachedConversation(sessionId: "../../etc/passwd", items: [], throughSeq: nil))
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        #expect(files.count == 1)
+        #expect(!files[0].contains("/"))
+    }
+}
