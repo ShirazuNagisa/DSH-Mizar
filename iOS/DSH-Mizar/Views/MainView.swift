@@ -398,6 +398,17 @@ struct SessionDetailView: View {
                             items: items,
                             turns: turns,
                             loading: loadingConversation,
+                            onLoadOlder: {
+                                let arrived = await model.loadOlder(sessionId: sessionId)
+                                // Re-read what is on screen; the page was folded
+                                // into the cache, and the cache is what the
+                                // screen draws from after a successful fetch.
+                                if arrived > 0, let cached = await model.cachedConversation(for: sessionId) {
+                                    items = cached.items
+                                    turns = cached.turns ?? []
+                                }
+                                return arrived
+                            },
                         )
                     case .usage:
                         if loading {

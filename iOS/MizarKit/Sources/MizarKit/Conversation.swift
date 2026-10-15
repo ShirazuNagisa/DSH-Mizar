@@ -192,7 +192,7 @@ extension SessionRecord {
             // opens this app to read. Hiding the two known injections and
             // showing everything else is the right way round: an unrecognised
             // injection is noise, a hidden message is data loss.
-            guard !Self.isInjectedContext(event) else { return [] }
+            guard Self.isUserAuthored(event) else { return [] }
             guard let text = Self.messageText(in: event) else { return [] }
             return [.message(id: id, role: .user, text: text, at: at)]
 
@@ -242,11 +242,42 @@ extension SessionRecord {
     ///
     /// - Parameter event: the event payload.
     /// - Returns: whether to hide it.
-    private static func isInjectedContext(_ event: JSONValue?) -> Bool {
+    /// Whether a `user/message` was written by the operator.
+    ///
+    /// An allowlist, and the census that justifies it. Every `user/message` in a
+    /// real session log, by `source.kind`:
+    ///
+    ///     13  user                the operator, typing
+    ///      7  tool-jobs           a background job finished
+    ///      6  runtime-context     injected context
+    ///      4  subagent-settled    a subagent stopped
+    ///      3  skill-catalog       injected skill list
+    ///      3  goal                a goal round
+    ///      2  user-approval       a notice *about* a user action
+    ///      2  agent-message       another agent talking
+    ///      2  compact-checkpoint  the conversation was compacted
+    ///      1  model-selection     the model was changed
+    ///      1  plan-mode           the mode was changed
+    ///
+    /// Nine of those eleven arrived as ordinary user messages, and a blocklist
+    /// that named two of them let the other seven through -- which is the pile
+    /// of things the operator never typed.
+    ///
+    /// A blocklist was chosen first, on the reasoning that an unrecognised
+    /// injection is noise while a hidden message is data loss. The census says
+    /// otherwise: an unrecognised kind is not a message, and the only kind that
+    /// is one is `user`. A message typed in the Mac's own DSH window carries it
+    /// too, so nothing a person wrote is lost by asking for it by name.
+    ///
+    /// A missing `kind` is not treated as `user`. Guessing in that direction is
+    /// how the pile got here.
+    ///
+    /// - Parameter event: the event payload.
+    /// - Returns: whether the operator wrote it.
+    private static func isUserAuthored(_ event: JSONValue?) -> Bool {
         let kind = event?["data"]?["source"]?["kind"]?.stringValue
             ?? event?["data"]?["message"]?["source"]?["kind"]?.stringValue
-        guard let kind else { return false }
-        return kind == "runtime-context" || kind == "skill-catalog"
+        return kind == "user"
     }
 
     /// Pull text out of a message event's typed content parts.
@@ -477,6 +508,14 @@ extension SessionMessagesResult {
                 endedReason: reason[turn],
             )
         }
+    }
+
+    /// The oldest log position among these records, or `nil` when there are none.
+    ///
+    /// `session.messages` pages by `beforeSeq`, so this is what a caller asks
+    /// for next when it wants what came before the page it holds.
+    public var oldestSeq: Int? {
+        records.compactMap { $0.payload["seq"]?.intValue }.min()
     }
 
     /// When an item happened.

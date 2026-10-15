@@ -22,12 +22,46 @@ struct ConversationView: View {
     /// numbers, in which case the flat list is drawn instead.
     var turns: [ConversationTurn] = []
     let loading: Bool
+    /// Called when the top of the conversation comes into view, to fetch what
+    /// came before.
+    var onLoadOlder: (() async -> Int)?
+
+    @State private var loadingOlder = false
+    @State private var exhausted = false
 
     var body: some View {
         // Lazy, not eager. A conversation can hold hundreds of items and every
         // one of them was being laid out whether or not it was on screen, which
         // is what the dropped frames were.
         LazyVStack(alignment: .leading, spacing: 10) {
+            // The top of the list is where older messages arrive. A spinner that
+            // appears as it scrolls into view is what asks for them -- there is
+            // no "reached the top" callback in SwiftUI, and the alternative is a
+            // button the operator has to find.
+            if !exhausted, let onLoadOlder, !items.isEmpty {
+                HStack {
+                    Spacer()
+                    if loadingOlder {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Color.clear.frame(height: 1)
+                    }
+                    Spacer()
+                }
+                .accessibilityIdentifier("conversation.loadOlder")
+                .onAppear {
+                    guard !loadingOlder else { return }
+                    loadingOlder = true
+                    Task {
+                        let arrived = await onLoadOlder()
+                        // Nothing new means the beginning. Without this the
+                        // spinner reappears on every scroll and asks forever.
+                        if arrived == 0 { exhausted = true }
+                        loadingOlder = false
+                    }
+                }
+            }
+
             if loading && items.isEmpty {
                 ProgressView().frame(maxWidth: .infinity)
             } else if items.isEmpty {

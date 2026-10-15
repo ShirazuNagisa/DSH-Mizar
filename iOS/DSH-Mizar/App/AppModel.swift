@@ -590,6 +590,62 @@ final class AppModel {
         return false
     }
 
+    /// Fetch the page before the oldest one held, and fold it in.
+    ///
+    /// What scrolling to the top of a conversation asks for. The host pages by
+    /// `beforeSeq`, so the position to ask for is the oldest log entry the phone
+    /// already has -- and when it has none, there is nothing to page from.
+    ///
+    /// - Parameter sessionId: the session to extend.
+    /// - Returns: how many new items arrived, for a caller that wants to stop.
+    @discardableResult
+    func loadOlder(sessionId: String) async -> Int {
+        guard connection != nil else { return 0 }
+        guard let cached = await conversations.load(sessionId: sessionId),
+              let before = cached.oldestSeq
+        else { return 0 }
+        // Nothing older to ask for. Without this the scroll-to-top would fire a
+        // request on every appearance for a page that cannot change.
+        guard cached.hasMore else { return 0 }
+
+        do {
+            let result = try await call(
+                "session.messages",
+                payload: .object([
+                    "sessionId": .string(sessionId),
+                    "maxMessages": .number(200),
+                    "beforeSeq": .number(Double(before)),
+                ]),
+                as: SessionMessagesResult.self,
+            )
+            let fresh = result.conversationItems()
+            let reached = result.oldestSeq
+            // The host answers with the tail before `beforeSeq`, so the same
+            // page coming back means there is nothing further; stopping is what
+            // keeps a scroll at the top from looping.
+            if reached == nil || reached == before || fresh.isEmpty { return 0 }
+
+            let items = mergeConversations(cached: cached.items, fresh: fresh)
+            let turns = mergeTurns(cached: cached.turns ?? [], fresh: result.conversationTurns())
+            await conversations.save(
+                CachedConversation(
+                    sessionId: sessionId,
+                    items: items,
+                    throughSeq: cached.throughSeq,
+                    hasMore: result.hasMore,
+                    turns: turns,
+                    oldestSeq: [before, reached].compactMap { $0 }.min(),
+                ),
+            )
+            lastError = nil
+            return items.count - cached.items.count
+        } catch {
+            let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
+            if !message.isEmpty { lastError = message }
+            return 0
+        }
+    }
+
     /// Read a session's conversation from the phone's own storage.
     ///
     /// - Parameter sessionId: the session.
@@ -645,6 +701,8 @@ final class AppModel {
             // where the turn boundaries are -- they are in the records, and the
             // merged item list has already lost which step belonged to what.
             let mergedTurns = mergeTurns(cached: cached?.turns ?? [], fresh: freshTurns)
+            let previous = cached?.oldestSeq
+            let older = result.oldestSeq
             await conversations.save(
                 CachedConversation(
                     sessionId: sessionId,
@@ -652,6 +710,10 @@ final class AppModel {
                     throughSeq: result.asOfSeq,
                     hasMore: result.hasMore,
                     turns: mergedTurns,
+                    // The older of the two: this page may not reach as far back as
+                    // what is already stored, and paging from the wrong end would
+                    // re-fetch what is already here.
+                    oldestSeq: [previous, older].compactMap { $0 }.min(),
                 ),
             )
             lastError = nil

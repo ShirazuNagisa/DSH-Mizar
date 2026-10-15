@@ -148,34 +148,71 @@ struct ConversationTests {
         #expect(text == "hello world")
     }
 
-    @Test("a message with no source is shown, not guessed away")
-    func missingSourceIsShown() throws {
-        // The first version required `source.kind == "user"` and that hid
-        // anything typed in the Mac's own DSH window -- half the history
-        // somebody opens this app to read. Absent is shown; only the two known
-        // injections are hidden.
+    @Test("the agent's own notices are not the operator speaking")
+    func noticesAreNotPrompts() throws {
+        // The census, from a real session log. Every `user/message` by
+        // `source.kind`, and only the first is a person:
+        //
+        //     13  user                the operator, typing
+        //      7  tool-jobs           a background job finished
+        //      6  runtime-context     injected context
+        //      4  subagent-settled    a subagent stopped
+        //      3  skill-catalog       injected skill list
+        //      3  goal                a goal round
+        //      2  user-approval       a notice *about* a user action
+        //      2  agent-message       another agent talking
+        //      2  compact-checkpoint  the conversation was compacted
+        //      1  model-selection     the model was changed
+        //      1  plan-mode           the mode was changed
+        //
+        // Nine of those eleven arrived as ordinary user messages. A blocklist
+        // naming two of them let the rest through, which is the pile of things
+        // the operator never typed.
+        let kinds = [
+            "tool-jobs", "runtime-context", "subagent-settled", "skill-catalog",
+            "goal", "user-approval", "agent-message", "compact-checkpoint",
+            "model-selection", "plan-mode",
+        ]
+        let records = kinds.enumerated().map { index, kind in
+            """
+            {"type":"event","event":{"type":"user/message","seq":\(index + 1),"time":\(index + 1),
+              "data":{"source":{"kind":"\(kind)"},"content":[{"type":"text","text":"not mine"}]}}}
+            """
+        }.joined(separator: ",")
         let result = try page("""
-        {"sessionId":"s1","asOfSeq":1,"hasMore":false,"records":[
+        {"sessionId":"s1","asOfSeq":20,"hasMore":false,"records":[\(records)]}
+        """)
+        #expect(result.conversationItems().isEmpty)
+    }
+
+    @Test("a message typed on the Mac is shown, because it carries the same kind")
+    func desktopMessageIsShown() throws {
+        // There is no `desktop` kind in the log. A message typed in the Mac's
+        // own DSH window carries `user` like any other, which is why asking for
+        // that kind by name loses nothing a person wrote -- the earlier change
+        // to a blocklist was made to recover messages that were never being
+        // hidden by the allowlist in the first place.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":2,"hasMore":false,"records":[
           {"type":"event","event":{"type":"user/message","seq":1,"time":1,
-            "data":{"content":[{"type":"text","text":"typed on the Mac"}]}}}
+            "data":{"source":{"kind":"user"},"content":[{"type":"text","text":"from the Mac"}]}}}
         ]}
         """)
         #expect(result.conversationItems().count == 1)
     }
 
-    @Test("a message sent from the Mac is shown")
-    func desktopMessageIsShown() throws {
-        // Whatever the desktop's source kind is called, it is not one of the two
-        // injections, so it survives.
+    @Test("a message with no source is not treated as the operator's")
+    func missingSourceIsHidden() throws {
+        // Every `user/message` in the census carries a kind, so an absent one is
+        // an anomaly rather than a person. Guessing in that direction is how the
+        // pile got here.
         let result = try page("""
-        {"sessionId":"s1","asOfSeq":2,"hasMore":false,"records":[
+        {"sessionId":"s1","asOfSeq":1,"hasMore":false,"records":[
           {"type":"event","event":{"type":"user/message","seq":1,"time":1,
-            "data":{"source":{"kind":"desktop"},"content":[{"type":"text","text":"from the Mac"}]}}},
-          {"type":"event","event":{"type":"user/message","seq":2,"time":2,
-            "data":{"source":{"kind":"user"},"content":[{"type":"text","text":"from the phone"}]}}}
+            "data":{"content":[{"type":"text","text":"no source at all"}]}}}
         ]}
         """)
-        #expect(result.conversationItems().count == 2)
+        #expect(result.conversationItems().isEmpty)
     }
 
     @Test("the model's reply is shown")
@@ -186,7 +223,7 @@ struct ConversationTests {
         let result = try page("""
         {"sessionId":"s1","asOfSeq":3,"hasMore":false,"records":[
           {"type":"event","event":{"type":"user/message","seq":1,"time":1,
-            "data":{"content":[{"type":"text","text":"what is 2+2"}]}}},
+            "data":{"source":{"kind":"user"},"content":[{"type":"text","text":"what is 2+2"}]}}},
           {"type":"event","event":{"type":"assistant/message","seq":2,"time":2,
             "data":{"content":[{"type":"text","text":"4"}]}}}
         ]}

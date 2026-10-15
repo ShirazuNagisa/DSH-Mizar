@@ -39,6 +39,13 @@ public struct CachedConversation: Codable, Sendable, Equatable {
     /// cache that fails to read is a conversation that looks lost, which is the
     /// thing this file exists to prevent.
     public let turns: [ConversationTurn]?
+    /// The oldest log position this cache holds.
+    ///
+    /// Paging backwards needs it: `session.messages` takes a `beforeSeq`, and
+    /// the newest position the page was taken at says nothing about where its
+    /// first record sits. Without it there is no way to ask for what came
+    /// before, which is why scrolling up did nothing.
+    public let oldestSeq: Int?
 
     public init(
         sessionId: String,
@@ -47,8 +54,10 @@ public struct CachedConversation: Codable, Sendable, Equatable {
         syncedAt: Date = Date(),
         hasMore: Bool = false,
         turns: [ConversationTurn]? = nil,
+        oldestSeq: Int? = nil,
     ) {
         self.turns = turns
+        self.oldestSeq = oldestSeq
         self.sessionId = sessionId
         self.items = items
         self.throughSeq = throughSeq
