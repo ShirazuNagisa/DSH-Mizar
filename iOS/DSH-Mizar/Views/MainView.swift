@@ -30,6 +30,23 @@ struct MainView: View {
 
         NavigationSplitView {
             WorkspaceListView(showingNewSession: $showingNewSession)
+                .safeAreaInset(edge: .top) {
+                    // A refresh that failed says so and stays out of the way. It
+                    // used to take over the whole screen, which read as the
+                    // connection dying rather than one request not arriving.
+                    if let error = model.lastError {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                            Text(error).font(.caption).lineLimit(2)
+                            Spacer()
+                            Button("Retry") { Task { await model.refreshSessions() } }
+                                .font(.caption)
+                        }
+                        .padding(10)
+                        .background(.yellow.opacity(0.15))
+                        .accessibilityIdentifier("sessions.error")
+                    }
+                }
                 .navigationTitle(model.host?.displayName ?? model.welcome?.hostName ?? "Sessions")
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarLeading) {

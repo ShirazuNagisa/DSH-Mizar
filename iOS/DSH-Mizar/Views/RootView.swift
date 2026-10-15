@@ -25,15 +25,28 @@ struct RootView: View {
                 MainView()
             case .failed(let message):
                 ContentUnavailableView {
-                    Label("Cannot reach the host", systemImage: "exclamationmark.triangle")
+                    Label("Cannot reach the Mac", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(message)
                 } actions: {
-                    Button("Pair again") {
-                        Task { await model.unpair() }
+                    // Neither button forgets the pairing, and that is the fix for
+                    // a bug that cost people their setup: this screen used to
+                    // offer "Pair again", which called `unpair()` and wiped the
+                    // stored credential. One dropped request -- a phone changing
+                    // networks is enough -- landed here, and the obvious button
+                    // made it permanent.
+                    Button("Try again") {
+                        Task { await model.reconnect() }
                     }
-                    Button("Choose another Mac") {
-                        Task { await model.unpair() }
+                    .buttonStyle(.borderedProminent)
+                    if !model.hosts.isEmpty {
+                        NavigationLink("Choose another Mac") {
+                            HostListView()
+                        }
+                    } else {
+                        NavigationLink("Scan a code") {
+                            PairingView()
+                        }
                     }
                 }
             }

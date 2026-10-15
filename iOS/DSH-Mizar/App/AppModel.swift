@@ -51,6 +51,18 @@ final class AppModel {
     private(set) var activeEndpoint: PairedHost.Endpoint?
     /// The sessions the host lists, newest activity first.
     private(set) var sessions: [SessionRow] = []
+
+    /// The last thing that went wrong without being fatal.
+    ///
+    /// Separate from `phase`, and that separation is the fix for a real bug: a
+    /// failed refresh used to set the whole app to `.failed`, so one dropped
+    /// request looked exactly like the connection dying. Worse, the screen it
+    /// landed on offered "Pair again", which forgot the pairing -- which is why
+    /// a transient error could cost the operator their setup entirely.
+    private(set) var lastError: String?
+
+    /// Whether a reconnect is in flight, so the UI can say so.
+    private(set) var reconnecting = false
     /// The session the conversation screen is showing.
     var selectedSessionId: String? {
         didSet {
@@ -428,13 +440,86 @@ final class AppModel {
 
     /// Refresh the session list.
     func refreshSessions() async {
-        guard let connection else { return }
+        await refreshSessions(reconnectingIfNeeded: true)
+    }
+
+    /// Refresh the session list, reconnecting first when the socket is gone.
+    ///
+    /// - Parameter reconnectingIfNeeded: whether a failure should be retried
+    ///   over a fresh connection.
+    private func refreshSessions(reconnectingIfNeeded: Bool) async {
+        guard connection != nil else { return }
         do {
-            let result = try await connection.call("session.list", as: SessionListResult.self)
+            let result = try await call("session.list", as: SessionListResult.self)
             sessions = result.items
+            lastError = nil
         } catch {
-            phase = .failed(Self.describe(error))
+            if reconnectingIfNeeded, await reconnect() {
+                await refreshSessions(reconnectingIfNeeded: false)
+                return
+            }
+            // Reported, not fatal. The pairing is still good and most of the
+            // screen is still usable; throwing the operator out to a failure
+            // screen over one dropped request is a worse answer than saying so.
+            lastError = Self.describe(error)
         }
+    }
+
+    /// Run one call, reconnecting once if the socket has gone away.
+    ///
+    /// - Parameters:
+    ///   - method: the method name.
+    ///   - type: the result type.
+    /// - Returns: the decoded result.
+    /// - Throws: when the call fails twice.
+    private func call<T: Decodable & Sendable>(_ method: String, as type: T.Type) async throws -> T {
+        guard let connection else {
+            throw MizarError(code: "NO_CONNECTION", message: "not connected to the Mac")
+        }
+        do {
+            return try await connection.call(method, payload: nil, as: type)
+        } catch {
+            guard await reconnect() else { throw error }
+            guard let fresh = self.connection else { throw error }
+            return try await fresh.call(method, payload: nil, as: type)
+        }
+    }
+
+    /// Open a fresh connection to the current machine.
+    ///
+    /// The app had no way back from a dropped socket: `URLSessionWebSocketTask`
+    /// does not reconnect, and every screen simply failed until the app was
+    /// restarted. A phone changes networks constantly -- walking out of Wi-Fi
+    /// range is enough -- so this is the common case, not an edge one.
+    ///
+    /// - Returns: whether a connection is now open.
+    @discardableResult
+    func reconnect() async -> Bool {
+        guard let host, !reconnecting else { return connection != nil }
+        reconnecting = true
+        defer { reconnecting = false }
+
+        eventListener?.cancel()
+        interactionPoll?.cancel()
+        await connection?.disconnect()
+        connection = nil
+
+        for attempt in 0..<3 {
+            if attempt > 0 {
+                try? await Task.sleep(for: .milliseconds(400 * attempt))
+            }
+            guard let next = makeConnection(for: host) else { continue }
+            do {
+                _ = try await next.connect()
+                connection = next
+                lastError = nil
+                startInteractionPoll()
+                return true
+            } catch {
+                lastError = Self.describe(error, authority: host.authority ?? host.baseURL)
+            }
+        }
+        return false
     }
 
     /// Read a session's recent log, as items a view can draw.
@@ -457,8 +542,14 @@ final class AppModel {
                 payload: payload,
                 as: SessionMessagesResult.self,
             )
+            lastError = nil
             return result.conversationItems()
         } catch {
+            // Said out loud. This used to return an empty array, which drew the
+            // same "no messages" screen as a session that genuinely has none --
+            // so a broken read looked like an empty conversation, and there was
+            // nothing on screen to say which it was.
+            lastError = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             return []
         }
     }
@@ -565,7 +656,16 @@ final class AppModel {
     /// - Parameters:
     ///   - host: the pairing to connect with.
     ///   - endpoint: which route to take.
-    private func open(host: PairedHost, endpoint: PairedHost.Endpoint) async throws {
+    /// Build a connection for one route, not yet opened.
+    ///
+    /// - Parameters:
+    ///   - host: the pairing to connect with.
+    ///   - endpoint: which route to take.
+    /// - Returns: the connection.
+    private func makeConnection(
+        host: PairedHost,
+        endpoint: PairedHost.Endpoint,
+    ) -> MizarConnection {
         // Only the direct attempt gets a short leash. A relay that is reachable
         // but slow should be waited for rather than abandoned for a route that
         // has already been ruled out.
@@ -594,10 +694,35 @@ final class AppModel {
             )
         }
 
-        let connection = MizarConnection(
+        return MizarConnection(
             configuration: configuration,
             makeTransport: { URLSessionWebSocketTransport(timeout: timeout) },
         )
+    }
+
+    /// The route a reconnect should try first: whichever one worked.
+    ///
+    /// Falling back to the first candidate each time would make a relay-only
+    /// phone pay the direct timeout on every reconnect, and a phone that walks
+    /// out of Wi-Fi range reconnects often.
+    ///
+    /// - Parameter host: the pairing to connect with.
+    /// - Returns: the connection, or `nil` when there is no route to try.
+    private func makeConnection(for host: PairedHost) -> MizarConnection? {
+        if let activeEndpoint {
+            return makeConnection(host: host, endpoint: activeEndpoint)
+        }
+        guard let first = host.endpoints.first else { return nil }
+        return makeConnection(host: host, endpoint: first)
+    }
+
+    /// Open one connection over one route, and load the first screen's data.
+    ///
+    /// - Parameters:
+    ///   - host: the pairing to connect with.
+    ///   - endpoint: which route to take.
+    private func open(host: PairedHost, endpoint: PairedHost.Endpoint) async throws {
+        let connection = makeConnection(host: host, endpoint: endpoint)
         self.connection = connection
 
         let welcome = try await connection.connect()
