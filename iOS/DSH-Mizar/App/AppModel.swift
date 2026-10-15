@@ -64,6 +64,33 @@ final class AppModel {
     /// Whether a reconnect is in flight, so the UI can say so.
     private(set) var reconnecting = false
 
+    /// DSH's own title for a session, by id.
+    ///
+    /// Not in `session.list` -- the host assigns a title once a model has read
+    /// the conversation, and it arrives with `session.stats`. Without it every
+    /// row in a workspace showed the same string, because the workspace *is* the
+    /// working directory: five sessions all reading "DSH-Mizar" tells you
+    /// nothing about which is which.
+    private(set) var titles: [String: String] = [:]
+
+    /// Fetch titles for sessions that do not have one yet.
+    ///
+    /// Concurrently, and only for the sessions actually on screen, because this
+    /// is one request per session and a workspace can hold dozens.
+    ///
+    /// - Parameter sessionIds: the sessions to look up.
+    func loadTitles(for sessionIds: [String]) async {
+        let missing = sessionIds.filter { titles[$0] == nil }
+        guard !missing.isEmpty, connection != nil else { return }
+        // One at a time. A task group across the actor trips Swift 6's
+        // region-based isolation checker, and the caller only ever asks for the
+        // rows it is about to draw -- ten of them.
+        for sessionId in missing {
+            guard let frame = await stats(for: sessionId) else { continue }
+            if let title = frame.title, !title.isEmpty { titles[sessionId] = title }
+        }
+    }
+
     /// What a sync is doing, or `nil` when none is.
     ///
     /// A refresh used to be a spinner with no end and no idea how far along it
@@ -669,16 +696,22 @@ final class AppModel {
     /// - Parameter sessionId: the session to read.
     /// - Returns: the frame, or `nil` when it could not be read.
     func stats(for sessionId: String) async -> SessionStatsFrame? {
-        guard let connection else { return nil }
+        guard connection != nil else { return nil }
         do {
             let payload = JSONValue.object(["sessionId": .string(sessionId)])
-            let result = try await connection.call(
+            let result = try await call(
                 "session.stats",
                 payload: payload,
                 as: SessionStatsResult.self,
             )
             return result.stats
         } catch {
+            // Reported rather than swallowed. This returned `nil` for every
+            // failure, so a decode problem and a session with no usage looked
+            // the same on screen -- which is how "the usage screen never loads"
+            // stayed unexplained through several rounds.
+            let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
+            if !message.isEmpty { lastError = message }
             return nil
         }
     }

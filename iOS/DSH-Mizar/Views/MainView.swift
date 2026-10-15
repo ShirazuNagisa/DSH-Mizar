@@ -169,7 +169,19 @@ struct SyncProgressSheet: View {
 struct WorkspaceListView: View {
     @Environment(AppModel.self) private var model
     @Binding var showingNewSession: Bool
-    @State private var collapsed: Set<String> = []
+    /// Workspaces the operator opened, by path.
+    ///
+    /// Tracked as what is *open* rather than what is closed, so the default --
+    /// an empty set -- is everything folded. It was the other way round, and a
+    /// list of five workspaces each holding a dozen identically-titled rows is
+    /// not a list anybody can read.
+    @State private var expanded: Set<String> = []
+
+    /// How many sessions each workspace shows before offering more.
+    @State private var limits: [String: Int] = [:]
+
+    /// How many to add when asked for more.
+    private static let pageSize = 10
 
     /// Sessions the operator started, grouped by working directory.
     private var workspaces: [(path: String, sessions: [SessionRow])] {
@@ -202,24 +214,41 @@ struct WorkspaceListView: View {
 
             ForEach(workspaces, id: \.path) { workspace in
                 Section {
-                    if !collapsed.contains(workspace.path) {
-                        ForEach(workspace.sessions) { session in
-                            SessionRowView(session: session)
+                    if expanded.contains(workspace.path) {
+                        let shown = workspace.sessions.prefix(limits[workspace.path] ?? Self.pageSize)
+                        ForEach(shown) { session in
+                            SessionRowView(session: session, title: model.titles[session.sessionId])
                                 .tag(session.sessionId)
+                        }
+                        if workspace.sessions.count > shown.count {
+                            Button {
+                                limits[workspace.path] = shown.count + Self.pageSize
+                            } label: {
+                                Text("Show \(min(Self.pageSize, workspace.sessions.count - shown.count)) more")
+                                    .font(.caption)
+                            }
+                            .accessibilityIdentifier("workspace.more.\(workspace.path)")
                         }
                     }
                 } header: {
                     Button {
                         withAnimation(.snappy(duration: 0.2)) {
-                            if collapsed.contains(workspace.path) {
-                                collapsed.remove(workspace.path)
+                            if expanded.contains(workspace.path) {
+                                expanded.remove(workspace.path)
                             } else {
-                                collapsed.insert(workspace.path)
+                                expanded.insert(workspace.path)
+                                // Titles are one request each, so they are
+                                // fetched when a workspace is opened and only
+                                // for the rows it is about to show.
+                                let shown = workspace.sessions
+                                    .prefix(limits[workspace.path] ?? Self.pageSize)
+                                    .map(\.sessionId)
+                                Task { await model.loadTitles(for: Array(shown)) }
                             }
                         }
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: collapsed.contains(workspace.path) ? "chevron.right" : "chevron.down")
+                            Image(systemName: expanded.contains(workspace.path) ? "chevron.down" : "chevron.right")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             Text(workspaceTitle(workspace.path))
@@ -265,6 +294,8 @@ struct WorkspaceListView: View {
 /// which is what an operator actually uses to tell two sessions apart.
 struct SessionRowView: View {
     let session: SessionRow
+    /// DSH's title for the session, when the host has assigned one.
+    var title: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -272,7 +303,7 @@ struct SessionRowView: View {
                 if session.running {
                     ProgressView().controlSize(.small)
                 }
-                Text(title)
+                Text(displayTitle)
                     .lineLimit(1)
                     .font(.body)
                 if session.isSubagent {
@@ -290,9 +321,21 @@ struct SessionRowView: View {
         .padding(.vertical, 2)
     }
 
-    private var title: String {
+    /// What to call this session.
+    ///
+    /// The host's title first, because it describes the conversation. Falling
+    /// back to the working directory is what the row used to do always, and
+    /// since a workspace *is* a working directory every row in one read the same
+    /// -- five sessions all called "DSH-Mizar", with nothing to tell them apart.
+    ///
+    /// A shortened session id is the last resort: it is not a name, but it is
+    /// still a way to distinguish one row from the next, which the directory was
+    /// not.
+    private var displayTitle: String {
+        if let title, !title.isEmpty { return title }
         if let cwd = session.cwd {
-            return (cwd as NSString).lastPathComponent
+            let name = (cwd as NSString).lastPathComponent
+            return "\(name) · \(session.sessionId.prefix(8))"
         }
         return session.sessionId
     }
