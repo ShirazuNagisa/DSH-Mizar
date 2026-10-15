@@ -53,6 +53,16 @@ struct ModelPickerView: View {
             }
             .navigationTitle("Model")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                // Seed from what this session was last told to use. Without it
+                // the picker opened with nothing marked, so there was no way to
+                // tell which model was in force -- the row builder has always
+                // drawn a checkmark, it just never had anything to draw it on.
+                guard chosenModel == nil, let choice = model.modelChoice[sessionId] else { return }
+                chosenProvider = choice.provider
+                chosenModel = choice.model
+                chosenEffort = choice.effort
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

@@ -188,6 +188,9 @@ struct SessionDetailView: View {
                 }
                 .padding()
             }
+            // Dragging the conversation puts the keyboard away, which is what
+            // every messaging app does and what a thumb already expects.
+            .scrollDismissesKeyboard(.interactively)
             .refreshable { await reload() }
 
             ComposerView(sessionId: sessionId) { sent in

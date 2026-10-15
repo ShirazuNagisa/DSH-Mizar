@@ -63,7 +63,7 @@ export declare function sessionStats(ctx: Context, sessionId: string): Promise<S
  * @param maxMessages - how many messages to ask for.
  * @returns the page, or `null` records when the session is unknown.
  */
-export declare function sessionMessages(ctx: Context, sessionId: string, maxMessages?: number): Promise<SessionMessagesResult>;
+export declare function sessionMessages(ctx: Context, sessionId: string, maxMessages?: number, beforeSeq?: number): Promise<SessionMessagesResult>;
 /** One page of a session's log. */
 export interface SessionMessagesResult {
     readonly sessionId: string;

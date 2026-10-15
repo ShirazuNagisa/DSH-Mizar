@@ -53,6 +53,20 @@ final class AppModel {
     /// so this is normally current within a round trip. The timer below is the
     /// safety net for a notification lost to a dropped socket, not the mechanism.
     private(set) var pending: PendingInteractions?
+    /// What each session was last told to use, so the picker can show it.
+    ///
+    /// Not persisted: it is a display of what this app asked for, and after a
+    /// relaunch the plugin's own config is the truth. Showing a stale tick would
+    /// be worse than showing none.
+    private(set) var modelChoice: [String: ModelChoice] = [:]
+
+    /// A provider, model and reasoning effort as chosen on this device.
+    struct ModelChoice: Sendable, Equatable {
+        let provider: String
+        let model: String
+        let effort: String?
+    }
+
     /// The models this host offers.
     private(set) var modelCatalog: ModelCatalog?
     /// The permission presets this host offers.
@@ -291,6 +305,12 @@ final class AppModel {
     ///   - effort: the reasoning level, or `nil` for the provider default.
     ///   - sessionId: the session to change.
     func setModel(provider: String, model: String, effort: String?, sessionId: String) async {
+        // Remembered before the call, not after. The host has no "what is this
+        // session using" read on the phone's side of the protocol, so this is
+        // what lets the picker show a checkmark when it is reopened -- without
+        // it the picker started blank every time, and there was no way to tell
+        // what was selected.
+        modelChoice[sessionId] = ModelChoice(provider: provider, model: model, effort: effort)
         guard let connection else { return }
         var fields: [String: JSONValue] = [
             "sessionId": .string(sessionId),

@@ -10,11 +10,20 @@
 //  lands here -- this file is where an open schema meets a closed UI, and its
 //  whole job is to make an unrecognised record *visible* rather than dropped.
 //
-//  What each record means was read off a real session:
+//  What each record means was read off a real session. One prompt produces
+//  eighteen records, and only two of them are the conversation:
 //
 //    user/message        data.content[] of typed parts, data.role
-//    assistant/attempt   data.stream[] of chunks, plus turn and step
-//    everything else     turn/start, step/start, permission/preset, ...
+//    system/message      the same shape
+//    assistant/attempt   data.stream[] of chunks
+//    everything else     permission/preset, sandbox/mode, approval/policy,
+//                        agent/inbox/spliced, turn/start, step/start, ...
+//
+//  The eighteen were dumped from a live session rather than guessed, and the
+//  ratio is why the other sixteen are dropped rather than rendered. This is a
+//  conversation view, and a screen where two lines of dialogue sit in a list of
+//  sixteen bookkeeping rows is a screen nobody can read. DSH's own desktop
+//  transcript makes the same call.
 //
 //  Text extraction from assistant chunks is the one part not confirmed against a
 //  live response -- this host has no provider credential, so every attempt ends
@@ -96,9 +105,23 @@ extension SessionMessagesResult {
     /// conversation that shows only messages cannot be told apart from one that
     /// is stuck.
     ///
+    /// Consecutive duplicates are collapsed. A single prompt arrives as *two*
+    /// `user/message` events -- one carrying the RPC source and one from the
+    /// inbox splice -- with identical text, and rendering both puts the same
+    /// bubble on screen twice.
+    ///
     /// - Returns: the items, oldest first.
     public func conversationItems() -> [ConversationItem] {
-        records.compactMap { $0.conversationItems() }.flatMap { $0 }
+        var out: [ConversationItem] = []
+        for item in records.compactMap({ $0.conversationItems() }).flatMap({ $0 }) {
+            if case .message(_, let role, let text, _) = item,
+               case .message(_, let priorRole, let priorText, _) = out.last,
+               role == priorRole, text == priorText {
+                continue
+            }
+            out.append(item)
+        }
+        return out
     }
 }
 
@@ -112,6 +135,20 @@ extension SessionRecord {
 
         switch name {
         case "user/message":
+            // Only what the operator actually typed. DSH sends its own context
+            // through this same event, and `data.source.kind` is what tells them
+            // apart. Measured on a live session with an eleven-character prompt:
+            //
+            //   source.kind = "user"             11 characters   <- the prompt
+            //   source.kind = "runtime-context" 483 characters
+            //   source.kind = "skill-catalog"  5921 characters
+            //
+            // 6393 characters of injected context for 11 characters of
+            // conversation. Rendering them as user bubbles buries the
+            // conversation completely, which is exactly what it did: the screen
+            // looked like it had lost its history, and it had -- under text
+            // nobody wrote.
+            guard Self.sourceKind(in: event) == "user" else { return [] }
             guard let text = Self.messageText(in: event) else { return [] }
             return [.message(id: id, role: .user, text: text, at: at)]
 
@@ -123,8 +160,22 @@ extension SessionRecord {
             return Self.attemptItems(event: event, id: id, at: at)
 
         default:
-            return [.activity(id: id, label: Self.label(for: name), at: at)]
+            // Dropped on purpose, not by omission. See the note at the top of
+            // this file: sixteen of every eighteen records are bookkeeping, and
+            // a conversation that lists them is not a conversation.
+            return []
         }
+    }
+
+    /// Who a message event came from.
+    ///
+    /// `user` is the operator. Everything else DSH sends through the same event
+    /// is context it assembled itself.
+    ///
+    /// - Parameter event: the event payload.
+    /// - Returns: the source kind, or `nil` when the event carries none.
+    private static func sourceKind(in event: JSONValue?) -> String? {
+        event?["data"]?["source"]?["kind"]?.stringValue
     }
 
     /// Pull text out of a message event's typed content parts.
