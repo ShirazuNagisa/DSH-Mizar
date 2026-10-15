@@ -24,15 +24,6 @@ import {
   type BindPlan,
 } from './net/interfaces.js'
 import type { BindMode } from './config.js'
-import {
-  applyStartupPlan,
-  describeTailscaleState,
-  enableStartOnLogin,
-  findTailscaleCli,
-  planStartup,
-  readStartOnLogin,
-  readTailscaleState,
-} from './net/tailscale.js'
 import { awaitRequestedPlan, bindKey, isRequested, needsRebind } from './net/watch.js'
 import { PROTOCOL_VERSION } from './protocol/frames.js'
 import { MizarListener } from './server/listener.js'
@@ -56,7 +47,7 @@ export const inject = ['typert', 'typertGateway', 'sessionProjections', 'session
 /**
  * Watch the bind plan and rebind when the host's addresses change.
  *
- * Covers the case the startup wait cannot: Tailscale connected long after DSH
+ * Covers the case the startup wait cannot: the network changed long after DSH
  * started, reconnected after a reboot, or moved to a different address. Without
  * this the listener would sit on loopback forever and the phone would simply
  * never reach it.
@@ -94,78 +85,6 @@ function startBindWatcher(
   }, Math.max(1000, config.bind.pollMs))
   timer.unref?.()
   signal.addEventListener('abort', () => clearInterval(timer))
-}
-
-/**
- * Report why no tailnet address was found, and start Tailscale if we can.
- *
- * "No Tailscale interface found" covers several situations with different
- * remedies, and only some of them are a plugin's business. Naming which one it
- * is matters more than the boolean return.
- *
- * @param config - plugin configuration.
- * @returns whether something was started, so the caller knows to wait again.
- */
-async function ensureTailscaleRunning(config: MizarConfig): Promise<boolean> {
-  const cli = findTailscaleCli()
-  if (cli === null) {
-    report(describeTailscaleState({ kind: 'absent' }))
-    return false
-  }
-
-  const state = await readTailscaleState(cli)
-  report(describeTailscaleState(state))
-
-  // Launch at Login is the mechanism that makes every *later* start invisible,
-  // so it is worth arranging once rather than launching the app forever. It is
-  // also what turns "the plugin sorted it out this time" into "the operator
-  // never thinks about Tailscale again".
-  if (config.bind.ensureStartOnLogin) await ensureStartOnLogin()
-
-  if (!config.bind.autoConnect) return false
-
-  const plan = planStartup(state)
-  if (plan.action === 'sign-in') {
-    report('sign in to Tailscale once and the listener will pick the address up on its own')
-    return false
-  }
-  if (plan.action === 'none' || plan.action === 'install') return false
-
-  report(
-    plan.action === 'cli-up'
-      ? 'bringing Tailscale up through its CLI (no user interface)'
-      : 'starting Tailscale in the background',
-  )
-  const result = await applyStartupPlan(state)
-  report(result.detail)
-  if (!result.started && plan.action === 'cli-up') {
-    report('start it yourself and the listener will follow — it rebinds automatically')
-  }
-  return result.started
-}
-
-/**
- * Make sure Tailscale will start at login, silently.
- *
- * Reported either way, including when it is already on: an operator who has just
- * been told "this only happens once" should be able to confirm it stuck.
- */
-async function ensureStartOnLogin(): Promise<void> {
-  const enabled = await readStartOnLogin()
-  if (enabled === true) {
-    report('Tailscale starts at login — later starts will be silent')
-    return
-  }
-
-  const result = await enableStartOnLogin()
-  if (result.ok) {
-    report(`${result.detail} — this is a one-time change to Tailscale's settings`)
-  } else {
-    report(
-      `could not turn on "Launch Tailscale at Login" (${result.detail}); ` +
-        'turn it on in the Tailscale menu and later starts will be silent',
-    )
-  }
 }
 
 /** Operator-facing diagnostics, on plain stdout. */
@@ -208,28 +127,14 @@ async function startListener(
     selectBindAddresses(snapshotInterfaces(), bindMode, config.bind.addresses)
 
   // Wait for the requested mode to take effect before accepting a fallback. DSH
-  // and Tailscale both start at login with nothing ordering them, and a one-shot
-  // decision that lands on loopback stays there for the life of the process.
+  // and the network both come up at login with nothing ordering them, and a
+  // one-shot decision that lands on loopback stays there for the process.
   const waitSeconds = Math.round(config.bind.waitForMs / 1000)
   let plan = await awaitRequestedPlan(readPlan, {
     waitMs: config.bind.waitForMs,
     pollMs: 1000,
     signal,
   })
-
-  // If the tailnet is simply not up, starting it and waiting again is the whole
-  // difference between "works" and "the phone can never connect". Attempted at
-  // most once per startup on purpose: a host that relaunched Tailscale every
-  // time it went away would be fighting an operator who quit it deliberately.
-  if (config.bind.autoConnect && !isRequested(plan) && bindMode === 'tailscale') {
-    if (await ensureTailscaleRunning(config)) {
-      plan = await awaitRequestedPlan(readPlan, {
-        waitMs: config.bind.waitForMs,
-        pollMs: 1000,
-        signal,
-      })
-    }
-  }
 
   if (!isRequested(plan)) {
     report(`no ${bindMode} address after ${waitSeconds}s — ${plan.reason}`)

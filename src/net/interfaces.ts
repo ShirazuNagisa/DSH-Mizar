@@ -6,12 +6,11 @@
  * to the network. Mizar opens its own listener instead, and this module decides
  * what that listener binds to.
  *
- * The default is `tailscale`, and it is matched by **address range rather than
- * interface name**. That distinction is load-bearing: the machine this was
- * developed on carries nine `utun*` interfaces from unrelated VPN software, so
- * any name-based heuristic would either miss a real tailnet or bind a stranger's
- * tunnel. Only the CGNAT block `100.64.0.0/10` and the tailnet IPv6 prefix
- * `fd7a:115c:a1e0::/48` identify Tailscale.
+ * Reach for a relay rather than a VPN when a phone has to get in from outside:
+ * `dsh plugin` reaches this machine over an outbound connection it dials itself,
+ * which needs no inbound port and no address the network has to hand out. The
+ * modes here are for the local cases -- the same Wi-Fi, or a single explicit
+ * address.
  *
  * Every function here is pure and takes an interface snapshot, so the decisions
  * are testable without depending on the machine the tests run on.
@@ -57,26 +56,6 @@ function normalize(address: string): string {
 }
 
 /**
- * Test whether an address belongs to a Tailscale tailnet.
- *
- * Covers IPv4 CGNAT `100.64.0.0/10` (second octet 64–127) and the Tailscale
- * IPv6 prefix `fd7a:115c:a1e0::/48`.
- *
- * @param address - the address to test.
- * @returns whether the address is a tailnet address.
- */
-export function isTailnetAddress(address: string): boolean {
-  const value = normalize(address)
-  if (value.startsWith('fd7a:115c:a1e0:')) return true
-  const parts = value.split('.')
-  if (parts.length !== 4) return false
-  const [first, second] = parts
-  if (first !== '100') return false
-  const octet = Number(second)
-  return Number.isInteger(octet) && octet >= 64 && octet <= 127
-}
-
-/**
  * Collect unique, non-internal addresses from a snapshot that satisfy a test.
  * @param snapshot - the interface snapshot.
  * @param accept - predicate over one address.
@@ -111,7 +90,7 @@ export function snapshotInterfaces(): InterfaceSnapshot {
  * Choose the addresses the Mizar listener binds.
  *
  * A requested mode that finds nothing never widens the exposure: it falls back
- * to loopback and says so. That keeps a misconfigured or absent tailnet from
+ * to loopback and says so. That keeps a misconfigured or absent network from
  * quietly publishing the listener on a LAN interface.
  *
  * @param snapshot - the interface snapshot to decide from.
@@ -125,24 +104,6 @@ export function selectBindAddresses(
   explicit: readonly string[] = [],
 ): BindPlan {
   switch (mode) {
-    case 'tailscale': {
-      const addresses = collect(snapshot, (entry) => isTailnetAddress(entry.address))
-      if (addresses.length > 0) {
-        return {
-          addresses,
-          mode,
-          fellBack: false,
-          reason: `tailnet address${addresses.length > 1 ? 'es' : ''} detected`,
-        }
-      }
-      return {
-        addresses: [LOOPBACK],
-        mode: 'loopback',
-        fellBack: true,
-        reason: 'no Tailscale interface found — is Tailscale running? binding loopback only',
-      }
-    }
-
     case 'lan': {
       const addresses = collect(snapshot, (entry) => entry.family === 'IPv4')
       if (addresses.length > 0) {

@@ -21,16 +21,6 @@ export interface BindPlan {
 /** The loopback literal the fallback always lands on. */
 export declare const LOOPBACK = "127.0.0.1";
 /**
- * Test whether an address belongs to a Tailscale tailnet.
- *
- * Covers IPv4 CGNAT `100.64.0.0/10` (second octet 64–127) and the Tailscale
- * IPv6 prefix `fd7a:115c:a1e0::/48`.
- *
- * @param address - the address to test.
- * @returns whether the address is a tailnet address.
- */
-export declare function isTailnetAddress(address: string): boolean;
-/**
  * Read the live interface snapshot from the operating system.
  * @returns the snapshot, safe to pass to {@link selectBindAddresses}.
  */
@@ -39,7 +29,7 @@ export declare function snapshotInterfaces(): InterfaceSnapshot;
  * Choose the addresses the Mizar listener binds.
  *
  * A requested mode that finds nothing never widens the exposure: it falls back
- * to loopback and says so. That keeps a misconfigured or absent tailnet from
+ * to loopback and says so. That keeps a misconfigured or absent network from
  * quietly publishing the listener on a LAN interface.
  *
  * @param snapshot - the interface snapshot to decide from.

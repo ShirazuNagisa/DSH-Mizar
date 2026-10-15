@@ -245,7 +245,7 @@ export function MizarPanel(): ReactElement {
       {status.bind.fellBack && (
         <div className="mizar-warn">
           <strong>Not reachable from your phone yet.</strong> {status.bind.reason} Install and sign in to
-          Tailscale on this machine, then restart DSH.
+          a relay, or bind an address the phone can reach, then restart DSH.
         </div>
       )}
 

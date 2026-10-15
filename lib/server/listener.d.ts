@@ -114,7 +114,7 @@ export declare class MizarListener {
     /**
      * Move the listener to a different set of addresses.
      *
-     * Used when the host's network changes under it — most often a tailnet that
+     * Used when the host's network changes under it, most often a VPN that
      * appeared, or came back, after DSH had already started. Connected clients are
      * dropped rather than migrated: their sockets were accepted on an address that
      * may no longer exist, and a phone reconnecting is cheaper than a socket that

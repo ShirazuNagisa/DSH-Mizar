@@ -18,13 +18,13 @@ function plan(
 ): BindPlan {
   return {
     addresses,
-    mode: options.mode ?? 'tailscale',
+    mode: options.mode ?? 'lan',
     fellBack: options.fellBack ?? false,
     reason: options.reason ?? 'test',
   }
 }
 
-const FALLBACK = plan(['127.0.0.1'], { mode: 'loopback', fellBack: true, reason: 'no tailnet' })
+const FALLBACK = plan(['127.0.0.1'], { mode: 'loopback', fellBack: true, reason: 'no LAN address' })
 
 describe('bindKey', () => {
   it('is order-insensitive, so a reordered plan is not a change', () => {
@@ -38,7 +38,7 @@ describe('bindKey', () => {
 
   it('distinguishes modes with the same addresses', () => {
     expect(bindKey(plan(['127.0.0.1'], { mode: 'loopback' }))).not.toBe(
-      bindKey(plan(['127.0.0.1'], { mode: 'tailscale' })),
+      bindKey(plan(['127.0.0.1'], { mode: 'lan' })),
     )
   })
 })
@@ -122,7 +122,7 @@ describe('needsRebind', () => {
   })
 
   it('reports a change when the address appears', () => {
-    // The case this exists for: Tailscale came up after DSH had started.
+    // The case this exists for: the network came up after DSH had started.
     const current = bindKey(FALLBACK)
     expect(needsRebind(current, plan(['100.64.0.1']))).toBe(true)
   })

@@ -6,7 +6,7 @@
 >
 > | 部分 | 状态 |
 > |---|---|
-> | 宿主插件（TypeScript） | ✅ 监听、配对与吊销、鉴权 WebSocket、会话读写、模型与思考强度、权限预设、用量与上下文、审批与提问（**主动推送**）、自动绑定网卡、Tailscale 静默拉起 |
+> | 宿主插件（TypeScript） | ✅ 监听、配对与吊销、鉴权 WebSocket、会话读写、模型与思考强度、权限预设、用量与上下文、审批与提问（**主动推送**）、自动绑定网卡、反向隧道中继 |
 > | Web 面板 | ✅ 绑定地址、配对二维码、设备名册 |
 > | MizarKit（协议层） | ✅ 帧、连接与重连、配对、Keychain、消息记录解析 |
 > | iOS / iPad App（SwiftUI） | ✅ 工作区选择、会话列表、对话正文、用量与缓存命中率、模型/思考强度/权限切换、审批与提问（宿主主动推送）、输入与打断、中英双语跟随系统 |
@@ -14,7 +14,7 @@
 | 发布 | ✅ 插件 v0.2.0（含中继）；iOS TestFlight 包 **需重新构建**，见 [TestFlight](docs/testflight.md) |
 > | Windows | ⚠️ **代码检查通过，但从未运行过** —— 见 [Windows 状态](docs/windows-status.md) |
 >
-> **测试：370（插件）+ 62（中继）+ 96（Swift）+ 11（iOS UI）+ 111（真实链路冒烟断言）。**
+> **测试：318（插件）+ 62（中继）+ 97（Swift）+ 11（iOS UI）+ 110（真实链路冒烟断言）。**
 > iOS UI 中有 1 个已知失败，见文末「已知问题」。
 >
 > 关键设计结论：[0001 进程内网关](docs/decision-0001-in-process-gateway.md)、
@@ -56,8 +56,8 @@ DSH-Mizar 的做法是反过来：**插件自己开一个独立监听端口**，
 ┌─ iPhone / iPad（Swift 6 / SwiftUI / iOS 18+，Xcode 27 SDK 构建）─┐
 │  MizarKit：协议模型 · WSTransport · Keychain · 配对 · 断线续传     │
 └──────────────────────────┬────────────────────────────────────────┘
-                  Tailscale 私有网络（WireGuard 端到端加密）
-                           │  ws://<magicdns>:19390/mizar/v1/ws
+                    中继（wss，两端都主动出站）或局域网直连
+                             │  wss://<你的域名>/r/<房间号>/mizar/v1/ws
 ┌──────────────────────────▼────────────────────────────────────────┐
 │ dsh-mizar 插件（宿主半，TypeScript，零原生依赖，跨 macOS/Windows）  │
 │  ① 独立监听器 node:http + ws（自选网卡 · 可配端口 · 可选 TLS）      │
@@ -96,7 +96,7 @@ DSH-Mizar/                     ← 插件包根目录（package.json 在这里�
 │  ├─ decision-0001-in-process-gateway.md   # Phase 0.1 结论（必读）
 │  ├─ decision-0002-approval-arbitration.md
 │  ├─ protocol-v1.md                        # Mizar 协议规范
-│  ├─ tailscale-setup.md                    # 网络方案与取舍
+│  ├─ relay-deployment.md                   # 中继服务器部署（宝塔面板）
 │  ├─ testflight.md                         # 如何发布到 TestFlight
 │  ├─ windows-status.md                     # Windows：什么验证过、什么没有
 │  └─ screenshots/                          # 各界面实机截图
@@ -259,7 +259,7 @@ scripts/release.sh upload    # 归档 + 导出 + 上传
 DSH GUI 侧边栏里的 **DSH-Mizar** 面板（`main` 插槽的 `mizar` key）显示四件事：
 
 - **绑定情况** —— 监听地址、绑定模式、当前客户端数。回退到 loopback 时给出醒目的提示并
-  说明原因（"没找到 Tailscale 网卡——Tailscale 在跑吗？"）。
+  说明原因（没绑定到任何手机够得着的地址）。
 - **配对二维码** —— 内容形如 `mizar://pair?h=<host:port>&c=<CODE>&n=<主机名>&v=1`；
   同时显示分组后的可读码与剩余有效期。生成新码会作废旧码。
 - **设备名册** —— 在线设备在前、按新增时间倒序；每条带短标识（`tokenPrefix`）与最后活跃
@@ -325,9 +325,10 @@ CommonJS 模块体。没有 ESM 路径，而 DSH 自己的客户端构建链**�
 ## 安全边界
 
 - 插件**不**修改 DSH 的绑定策略，也不暴露 DSH 自己的 web GUI。
-- 默认绑定模式 `tailscale`：只绑 tailnet 网卡地址（IPv4 `100.64.0.0/10`、IPv6
-  `fd7a:115c:a1e0::/48`）。找不到 tailnet 网卡时回退 `127.0.0.1`，不会静默暴露到局域网。
-- 链路加密由 Tailscale（WireGuard）提供；`tls.mode` 开关保留给将来走局域网直连的场景。
+- 默认绑定模式是 `lan`：绑本机所有非内部 IPv4 地址，**局域网内可直连**。
+  只想要中继、不想在局域网暴露端口的，改成 `loopback`（启用中继时会自动这么做）。
+- 走中继时链路加密由 TLS 提供；**局域网直连没有加密**，`tls.mode` 是留给那种场景的。
+- 中继服务器能看到经过它的明文流量——它是你自己运维的，但这句话要说清楚。
 - 设备令牌可单独吊销；配对码 5 分钟过期、单次使用、带限流。
 - 手机能发 prompt 就等于能在 Mac 上执行任意代码——这是产品能力的本质，不是缺陷。
   配对与吊销是它的边界。
@@ -341,7 +342,7 @@ CommonJS 模块体。没有 ESM 路径，而 DSH 自己的客户端构建链**�
 | macOS | DSH 桌面版（本文按 `0.2.0-rc.2` 验证） |
 | Windows | 同一插件，纯 Node、零原生依赖、代码中无 POSIX 专属调用 —— **但从未运行过**，见 [Windows 状态](docs/windows-status.md) |
 | iOS | Xcode 27 / Swift 6.4 / iOS 27 SDK；部署目标 iOS 18+ |
-| 网络 | 两端安装 Tailscale（或用 `bind.mode` 走局域网/自带 VPN） |
+| 网络 | 局域网直连（同一 Wi-Fi），或一台有公网 IP 的服务器跑中继 |
 | Node | 22+（宿主插件用到全局 `WebSocket`） |
 
 **关于液态玻璃**：用 Xcode 26+（iOS 26+ SDK）构建后，标准 SwiftUI 控件在 iOS 26/27
@@ -353,7 +354,7 @@ CommonJS 模块体。没有 ESM 路径，而 DSH 自己的客户端构建链**�
 
 ---
 
-## 中继服务器（不依赖 Tailscale）
+## 中继服务器
 
 校园网这类网络**封禁入站**，所以手机永远连不上 Mac 的监听地址——这是实测结论，不是猜测。
 中继的思路是反过来：**Mac 主动出站**连到你的服务器，之后就通过那条连接可达。

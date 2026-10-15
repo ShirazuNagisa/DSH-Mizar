@@ -4,7 +4,7 @@
  * This is the piece the bind watcher drives, and it is the only part of the
  * rebind path a unit test can reach without an operating system's help: the
  * watcher's own decision logic is covered in `watch.test.ts`, and the live
- * end-to-end (a tailnet appearing after DSH started) cannot be produced on
+ * end-to-end (a network appearing after DSH started) cannot be produced on
  * demand. What is left, and what matters, is that `rebind` actually moves the
  * socket, closes the old one, and drops the clients that belonged to it.
  *
