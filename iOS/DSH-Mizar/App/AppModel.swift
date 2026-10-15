@@ -105,7 +105,7 @@ final class AppModel {
             host = stored
             try await connect(using: stored)
         } catch {
-            phase = .failed(Self.describe(error))
+            phase = .failed(Self.describe(error, authority: host?.authority))
         }
     }
 
@@ -237,7 +237,7 @@ final class AppModel {
             if result.accepted { lastRequestId = result.requestId }
             return result.accepted
         } catch {
-            phase = .failed(Self.describe(error))
+            phase = .failed(Self.describe(error, authority: host?.authority))
             return false
         }
     }
@@ -266,7 +266,7 @@ final class AppModel {
             selectedSessionId = result.sessionId
             return result.sessionId
         } catch {
-            phase = .failed(Self.describe(error))
+            phase = .failed(Self.describe(error, authority: host?.authority))
             return nil
         }
     }
@@ -396,7 +396,7 @@ final class AppModel {
             host = paired
             try await connect(using: paired)
         } catch {
-            phase = .failed(Self.describe(error))
+            phase = .failed(Self.describe(error, authority: target.authority))
         }
     }
 
@@ -447,8 +447,19 @@ final class AppModel {
     }
 
     /// Render an error for a human.
-    private static func describe(_ error: any Error) -> String {
+    ///
+    /// `String(describing:)` on a `URLError` produces the entire `UserInfo`
+    /// dictionary, which is what this screen used to show: a page of
+    /// `_kCFStreamErrorCodeKey=-2102` that is accurate and useless. A failure to
+    /// reach a tailnet address now says so and names the fix.
+    ///
+    /// - Parameters:
+    ///   - error: the error to describe.
+    ///   - authority: the address that was being reached, when known.
+    /// - Returns: text to put in front of the operator.
+    private static func describe(_ error: any Error, authority: String? = nil) -> String {
         if let mizar = error as? MizarError { return mizar.message }
-        return String(describing: error)
+        guard let authority else { return error.localizedDescription }
+        return ConnectionDiagnosis.of(error, authority: authority).message
     }
 }
