@@ -89,3 +89,63 @@ SSH 端口转发也能用（插件支持 `bind.mode: loopback`），但用户侧
    公网 IP + 路由器端口映射，或者第三台跳板机。
 
 Tailscale 一步覆盖了 1–6，所以它是默认路径；SSH 隧道作为文档化的备选保留。
+
+---
+
+## Tailscale 的开源边界（以及能不能二次开发）
+
+不是"闭源商业软件"，也不是"完全开源"。官方原话是 **"largely open source"**，而分界线值得记清楚。
+
+### 哪些开源、哪些不开源
+
+| 部分 | 状态 |
+|---|---|
+| 客户端守护进程 `tailscaled`（**全平台**） | ✅ 开源，**BSD-3-Clause** |
+| Linux / Android 的 GUI | ✅ 开源 |
+| **Windows / macOS / iOS 的 GUI** | ❌ **闭源** |
+| DERP 中继服务器 | ✅ 开源，可自建 |
+| **协调服务器（控制平面）** | ❌ **闭源**，这是他们的商业服务 |
+
+官方对第 2、3 行的原话：
+
+> where the operating system is closed, the daemon is open source and the **GUI is closed source**
+
+### 二次开发能做到哪一步
+
+| 想做的事 | 能不能 |
+|---|---|
+| 自己编译 Linux / Android 客户端 | ✅ |
+| 自己编译 macOS / Windows 的**守护进程**（无 GUI） | ✅ |
+| **改 iOS / macOS 的 GUI 客户端** | ❌ 源码不公开 |
+| 自建中继（DERP） | ✅ |
+| **自建控制平面** | ❌ 闭源 → 用 Headscale |
+
+**商标**：「Tailscale」是注册商标，fork 不能沿用这个名字。
+
+### 摆脱 Tailscale 的服务：Headscale
+
+[Headscale](https://github.com/juanfont/headscale) 是**独立社区项目**（BSD-3-Clause），
+是 Tailscale 协调服务器的开源实现。Tailscale 官方**明确支持它**——他们的开源页面专门有
+一节 "Encouraging Headscale"，而且**雇佣了它的主要维护者**。
+
+用法：用户装**官方 Tailscale 客户端**，指向你自己跑的 Headscale：
+
+```bash
+tailscale up --login-server https://headscale.example.com
+```
+
+这样**控制平面完全归你**，用户不需要 Tailscale 账号。代价是你要运维一台有公网地址的
+服务器（DERP 也可以自建）。
+
+### 对 DSH-Mizar 意味着什么
+
+**我们现在根本不需要 fork——只驱动官方 CLI 和 App，零许可问题。**
+
+| 目标 | 路径 |
+|---|---|
+| 就现在这样 | 官方 Tailscale，用户需要 Tailscale 账号 |
+| 用户不需要 Tailscale 账号 | 自建 **Headscale**，用户仍要装官方客户端 |
+| **手机端什么都不用装** | 走 **Funnel / Cloudflare Tunnel / 自己的反代**，手机只需要 DSH-Mizar |
+
+最后一行才是"发布给不认识的人用"的正解——因为 **iOS 的 Tailscale GUI 闭源，你没法把
+它打进自己的 App**，所以只要方案依赖手机装 Tailscale，就永远多一步。
