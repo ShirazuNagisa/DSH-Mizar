@@ -11,7 +11,7 @@
 > | MizarKit（协议层） | ✅ 帧、连接与重连、配对、Keychain、消息记录解析 |
 > | iOS / iPad App（SwiftUI） | ✅ 工作区选择、会话列表、对话正文、用量与缓存命中率、模型/思考强度/权限切换、审批与提问（宿主主动推送）、输入与打断、中英双语跟随系统 |
 > | 反向隧道中继（`relay/`） | ✅ 房间隔离、请求重放、WebSocket 桥接、端点探测；**已在本地测试，尚未部署到真实服务器** |
-| 发布 | ✅ 已归档、签名、导出 TestFlight 包（v0.1.0） |
+| 发布 | ✅ 插件 v0.2.0（含中继）；iOS TestFlight 包 **需重新构建**，见 [TestFlight](docs/testflight.md) |
 > | Windows | ⚠️ **代码检查通过，但从未运行过** —— 见 [Windows 状态](docs/windows-status.md) |
 >
 > **测试：370（插件）+ 62（中继）+ 96（Swift）+ 11（iOS UI）+ 111（真实链路冒烟断言）。**
@@ -34,7 +34,7 @@ dsh plugin --profile <profile> add https://github.com/ShirazuNagisa/DSH-Mizar
 
 # 或从 Release 的 tarball
 dsh plugin --profile <profile> add \
-  https://github.com/ShirazuNagisa/DSH-Mizar/releases/download/v0.1.0/dsh-mizar-0.1.0.tgz
+  https://github.com/ShirazuNagisa/DSH-Mizar/releases/download/v0.2.0/dsh-mizar-0.2.0.tgz
 ```
 
 装完重启 DSH，侧边栏会出现 **DSH-Mizar** 面板，里面显示监听地址和配对二维码。
