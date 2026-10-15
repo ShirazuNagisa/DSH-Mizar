@@ -17,13 +17,29 @@ export interface RelayConfig {
   /** Interface to bind. Loopback by default, because nginx sits in front. */
   readonly host: string
   /**
-   * Tokens a Mac may present at the tunnel endpoint.
+   * Tunnel credentials to accept, or empty to accept any.
    *
-   * Each token is the capability for one Mac. The room is derived from it, so a
-   * token is never sent over the phone leg and never appears in the QR code --
-   * a room id leaking is survivable, a tunnel token leaking is not.
+   * Empty is the normal mode, and the one that makes the plugin configurable by
+   * doing nothing: a relay issues no credentials, every plugin invents its own
+   * on first run, and the room is derived from whatever it presents. There is
+   * nothing for an operator to hand out and nothing for a user to type.
+   *
+   * Non-empty restricts the relay to a known set, which is what a self-hoster
+   * running a private relay wants. The check is a string comparison against a
+   * list, so it is not a defence against a determined attacker -- it is a way to
+   * keep one's own relay private.
    */
   readonly tokens: readonly string[]
+  /**
+   * Tunnels allowed from one address.
+   *
+   * The relay is open, so without this a single host can register rooms until
+   * the process runs out of memory. Four is generous for one household and far
+   * below what a script would want.
+   */
+  readonly maxTunnelsPerIp: number
+  /** Rooms served at once. Bounds memory regardless of how connections arrive. */
+  readonly maxRooms: number
   /** Largest request body the relay will carry, in bytes. */
   readonly maxBodyBytes: number
   /** Largest single WebSocket message the relay will carry, in bytes. */
@@ -75,18 +91,12 @@ export function loadConfig(
     .map((token) => token.trim())
     .filter((token) => token !== '')
 
-  if (tokens.length === 0) {
-    throw new Error(
-      'relay: no tunnel token configured. Set "tokens" in relay.config.json or ' +
-        'MIZAR_RELAY_TOKENS. An empty list would accept any tunnel, which is not a ' +
-        'useful default for a service that exposes a machine that can run code.',
-    )
-  }
-
   return {
     port: Number(pick(env['MIZAR_RELAY_PORT'], file.port, 8787)),
     host: pick(env['MIZAR_RELAY_HOST'], file.host, '127.0.0.1'),
     tokens,
+    maxTunnelsPerIp: Number(pick(env['MIZAR_RELAY_MAX_TUNNELS_PER_IP'], file.maxTunnelsPerIp, 4)),
+    maxRooms: Number(pick(env['MIZAR_RELAY_MAX_ROOMS'], file.maxRooms, 10_000)),
     maxBodyBytes: Number(pick(env['MIZAR_RELAY_MAX_BODY'], file.maxBodyBytes, 4 * 1024 * 1024)),
     maxMessageBytes: Number(
       pick(env['MIZAR_RELAY_MAX_MESSAGE'], file.maxMessageBytes, 4 * 1024 * 1024),

@@ -104,6 +104,8 @@ export async function startRelay(
   log: (message: string) => void = console.log,
 ): Promise<Relay> {
   const rooms = new RoomRegistry()
+  /** Live tunnels per source address. Not a security boundary, a resource one. */
+  const tunnelsPerIp = new Map<string, number>()
   const wss = new WebSocketServer({ noServer: true })
   /** Phone sockets waiting for the Mac to accept their upgrade. */
   // The upgrade socket is a Duplex, not a net.Socket: `ws` accepts whatever the
@@ -298,19 +300,49 @@ export async function startRelay(
 
   /** Authenticate and attach a Mac's tunnel. */
   function handleTunnelUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
+    // Self-registration. A relay that issued credentials would need an operator
+    // to hand them out and a user to type them, which is the configuration this
+    // design exists to remove -- so any well-formed credential is accepted and
+    // the room is derived from it.
+    //
+    // That is safe for the reason the room is derived rather than chosen: the
+    // room is 60 bits of a hash of a secret this Mac generated locally, so
+    // knowing one tells you nothing about any other. What the relay must guard
+    // is not who may connect but how many may, which is what the limits below
+    // are for.
     const presented = bearerToken(request)
-    const allowed =
-      presented === null ? undefined : config.tokens.find((token) => secretsEqual(token, presented))
-
-    if (allowed === undefined) {
-      log('relay: tunnel refused — unknown token')
+    if (presented === null || presented.length < 16) {
+      log('relay: tunnel refused — a credential of at least 16 characters is required')
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
       socket.destroy()
       return
     }
 
+    if (config.tokens.length > 0 && !config.tokens.some((token) => secretsEqual(token, presented))) {
+      log('relay: tunnel refused — this relay only accepts its configured credentials')
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    const peer = request.socket.remoteAddress ?? 'unknown'
+    if (tunnelsPerIp.get(peer) !== undefined && (tunnelsPerIp.get(peer) ?? 0) >= config.maxTunnelsPerIp) {
+      log(`relay: tunnel refused — ${peer} already has ${config.maxTunnelsPerIp} tunnels`)
+      socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    const room = deriveRoom(presented)
+    if (rooms.get(room) === undefined && rooms.size >= config.maxRooms) {
+      log(`relay: tunnel refused — already serving ${config.maxRooms} rooms`)
+      socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
     wss.handleUpgrade(request, socket, head, (host: WebSocket) => {
-      const room = deriveRoom(allowed)
+      tunnelsPerIp.set(peer, (tunnelsPerIp.get(peer) ?? 0) + 1)
       const tunnel = new Tunnel(
         {
           send: (text) => host.send(text),
@@ -327,7 +359,14 @@ export async function startRelay(
       displaced?.close(4000, 'replaced by a newer tunnel')
       log(`relay: tunnel for room ${room} connected${displaced ? ' (replaced a stale one)' : ''}`)
 
+      let released = false
       host.on('close', () => {
+        if (!released) {
+          released = true
+          const remaining = (tunnelsPerIp.get(peer) ?? 1) - 1
+          if (remaining <= 0) tunnelsPerIp.delete(peer)
+          else tunnelsPerIp.set(peer, remaining)
+        }
         const wasCurrent = rooms.remove(room, tunnel)
         if (wasCurrent) log(`relay: tunnel for room ${room} disconnected`)
       })
@@ -379,7 +418,11 @@ export async function startRelay(
     })
   })
   log(`relay: listening on ${config.host}:${boundPort}`)
-  log(`relay: serving ${config.tokens.length} room(s)`)
+  log(
+    config.tokens.length === 0
+      ? 'relay: open registration — any plugin may register a room'
+      : `relay: ${config.tokens.length} configured credential(s)`,
+  )
 
   const probe = startProbe(config, log)
 

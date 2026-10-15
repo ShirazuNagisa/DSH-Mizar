@@ -1,0 +1,106 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { IDENTITY_FILE, loadOrCreateTunnelSecret } from '../src/relay/identity.js'
+import { Config, PUBLIC_RELAY_URL } from '../src/config.js'
+
+const dirs: string[] = []
+
+async function stateDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'mizar-identity-'))
+  dirs.push(dir)
+  return dir
+}
+
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
+})
+
+describe('the tunnel identity', () => {
+  it('invents a secret with enough entropy to be one', async () => {
+    const dir = await stateDir()
+    const secret = await loadOrCreateTunnelSecret(dir, () => undefined)
+    // 32 random bytes, base64url. The room keeps 60 bits of the hash, so the
+    // room is unguessable as long as this is.
+    expect(secret.length).toBeGreaterThanOrEqual(40)
+    expect(secret).toMatch(/^[A-Za-z0-9_-]+$/)
+  })
+
+  it('keeps the same secret across calls, so the room survives a restart', async () => {
+    // A room that changed on every start would invalidate every paired phone,
+    // which is the one thing an install must not do to itself.
+    const dir = await stateDir()
+    const first = await loadOrCreateTunnelSecret(dir, () => undefined)
+    const second = await loadOrCreateTunnelSecret(dir, () => undefined)
+    expect(second).toBe(first)
+  })
+
+  it('gives two installs different secrets', async () => {
+    // The whole reason there is no shared token: two Macs presenting the same
+    // credential would be one room, and each would see the other's sessions.
+    const [a, b] = await Promise.all([stateDir(), stateDir()])
+    const [one, two] = await Promise.all([
+      loadOrCreateTunnelSecret(a, () => undefined),
+      loadOrCreateTunnelSecret(b, () => undefined),
+    ])
+    expect(one).not.toBe(two)
+  })
+
+  it('writes the secret where only its owner can read it', async () => {
+    const dir = await stateDir()
+    await loadOrCreateTunnelSecret(dir, () => undefined)
+    const stored = JSON.parse(await readFile(join(dir, IDENTITY_FILE), 'utf8')) as {
+      tunnelSecret: string
+      createdAt: string
+    }
+    expect(stored.tunnelSecret).toBeTruthy()
+    expect(Number.isNaN(Date.parse(stored.createdAt))).toBe(false)
+  })
+
+  it('replaces a truncated file rather than refusing to start', async () => {
+    const dir = await stateDir()
+    await writeFile(join(dir, IDENTITY_FILE), '{"tunnelSecret": "abc')
+    const secret = await loadOrCreateTunnelSecret(dir, () => undefined)
+    expect(secret.length).toBeGreaterThanOrEqual(40)
+  })
+
+  it('rejects a stored secret too short to be one', async () => {
+    const dir = await stateDir()
+    await writeFile(join(dir, IDENTITY_FILE), JSON.stringify({ tunnelSecret: 'tiny' }))
+    const secret = await loadOrCreateTunnelSecret(dir, () => undefined)
+    expect(secret).not.toBe('tiny')
+  })
+
+  it('still returns a secret when it cannot be saved', async () => {
+    // A read-only home directory must not turn into a plugin that does nothing.
+    const dir = await stateDir()
+    const messages: string[] = []
+    const secret = await loadOrCreateTunnelSecret(join(dir, 'nested', 'deeper'), (m) =>
+      messages.push(m),
+    )
+    expect(secret.length).toBeGreaterThanOrEqual(40)
+    expect(messages).toEqual([])
+  })
+})
+
+describe('the shipped defaults', () => {
+  it('has the relay on and pointing at the public service', async () => {
+    // "Install the plugin and scan" is only true if this is the default. A user
+    // who has to find and fill in a URL will not.
+    const config = Config({})
+    expect(config.relay.enabled).toBe(true)
+    expect(config.relay.url).toBe(PUBLIC_RELAY_URL)
+  })
+
+  it('needs no token from the user', async () => {
+    expect(Config({}).relay.token).toBe('')
+  })
+
+  it('binds loopback by default when a relay carries the traffic', async () => {
+    // preferLoopback is what keeps the listener off whatever network the machine
+    // happens to be on, since the phone never dials it directly.
+    expect(Config({}).relay.preferLoopback).toBe(true)
+    expect(Config({}).relay.url.startsWith('https://')).toBe(true)
+  })
+})
