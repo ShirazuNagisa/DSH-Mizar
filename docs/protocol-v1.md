@@ -132,7 +132,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `workspace.list` | `{}` | `{items: [WorkspaceRow]}` —— DSH **当前**拥有的工作区。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话。手机按工作区分组时必须用它来过滤，否则删掉的工作区会一直留着。**读不到时返回空数组**，手机退回按目录分组。 |
 | `session.messages` | `sessionId`, `maxMessages?` | `{sessionId, asOfSeq, records[], hasMore}` |
 | `session.stats` | `sessionId` | `{sessionId, asOfSeq, stats}` |
-| `session.create` | `cwd?` \| `workspaceId?` \| `sessionId?`, `agentPreset?` | `{sessionId, agentPreset}` |
+| `session.create` | `cwd?` \| `workspaceId?` \| `sessionId?`, `agentPreset?` | `{sessionId, agentPreset}` —— 传 `cwd` 时插件会先把它解析成**工作区**（没有就建一个），再把工作区 id 交给 DSH。原因见下。 |
 | `session.rename` | `sessionId`, `title` | `{renamed: true}` |
 | `session.prompt` | `sessionId`, `text`, `requestId?`, `clientTimeZone?`, `mode?` | `{accepted, requestId}` |
 | `session.cancel` | `sessionId` | `{accepted}` |
@@ -145,6 +145,18 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `session.model.set` | `sessionId`, `provider`, `model`, `reasoningEffort?` | `{sessionId, selected}` |
 | `permissions.catalog` | — | `{options[], defaults[], defaultPreset}` |
 | `session.permission.set` | `sessionId`, `preset` | `{commandResult}` |
+
+**`session.create` 只传 `cwd` 的话，Mac 上看不到这个会话。** DSH 里会话归属于工作区，而归属只在 `session/create` 收到 `workspaceId` 时建立一次：
+
+```js
+const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd
+…
+if (workspace !== undefined) await workspace.attachSession(sessionId)
+```
+
+只给 `cwd`，会话就建出来了但**不属于任何工作区**。手机按工作目录分组，照样显示它；Mac 的侧边栏是按工作区组织的，什么都不显示 —— 报障原话是"手机上新建会话、发了消息，电脑端 DSH 看不到"。所以插件在收到 `cwd` 时会先找这个目录的工作区，没有就建一个（Mac 上手动打开文件夹就是这个行为），然后把 `workspaceId` 传下去。
+
+`workspaceId` 和 `cwd` **不能同时传**，DSH 会直接拒绝。`sessionId`（恢复已有会话）时不做任何解析：会话已经有归属了，而拿一个和它不一致的目录去 attach 会让整个调用失败。
 
 ### 交互
 

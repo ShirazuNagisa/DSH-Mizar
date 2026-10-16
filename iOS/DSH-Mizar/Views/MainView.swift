@@ -406,6 +406,8 @@ struct SessionDetailView: View {
     @State private var composerHeight: CGFloat = 130
     /// Whether a load of this screen is already running.
     @State private var reloading = false
+    /// Whether something asked for a load while one was running.
+    @State private var reloadWanted = false
     /// Bumped when one full load of this screen has finished.
     ///
     /// The scroll is anchored on this rather than on the appearance of content,
@@ -688,10 +690,40 @@ struct SessionDetailView: View {
     /// answered correctly, which is why this looked like "cannot connect" while
     /// the connection was in fact fine.
     private func reload() async {
-        guard !reloading else { return }
+        if reloading {
+            // Remembered rather than dropped. The guard has to exist -- two
+            // loads interleaving on one socket is what produced a fresh
+            // WebSocket every few seconds -- but a request that arrived while
+            // one was running used to be discarded, which is a screen that
+            // ignores the operator asking it to refresh.
+            reloadWanted = true
+            return
+        }
         reloading = true
         defer { reloading = false }
 
+        await load()
+        // A read that came back with nothing, on a connection that is up, is
+        // worth asking about once more.
+        //
+        // The first request after a launch lands while the socket is still
+        // settling, and this screen had no second chance: the figures above the
+        // composer and the conversation itself stayed blank until the operator
+        // left the session and came back -- which is the shape of "进去是空的，
+        // 退出来再进就有了". A failure with the connection down is a different
+        // thing and is left alone.
+        if model.phase == .ready, stats == nil || items.isEmpty {
+            try? await Task.sleep(for: .milliseconds(700))
+            await load()
+        }
+        while reloadWanted {
+            reloadWanted = false
+            await load()
+        }
+    }
+
+    /// One pass over everything this screen draws.
+    private func load() async {
         loading = true
         loadingConversation = true
         // The phone's own copy first. It is instant, it is there when the
