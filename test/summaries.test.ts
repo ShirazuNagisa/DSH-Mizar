@@ -533,6 +533,37 @@ describe('the summary page', () => {
     expect(result.records).not.toContain(partial)
   })
 
+  it('carries a running turn whose envelope the window cut away', async () => {
+    // A page is a *window*, and a window can start inside a turn: the
+    // `turn/start` for the turn that is executing, and the prompt that began it,
+    // are in the page before this one, and all that is left here is markers.
+    //
+    // The markers must travel. `turn/end` is the only record that ends a turn,
+    // so a `step/start` with no end is the whole of the evidence that something
+    // is running -- and it is where the phone's step count comes from. Measured
+    // against a live host, the running turn's `turn/start` was at seq 803, its
+    // first marker at 805, the prompt at 806 and its `turn/end` at 809; a page
+    // cut at 805 carries the two markers and the prompt and nothing that names
+    // the turn except the markers themselves.
+    //
+    // Note the order, because it is the host's and not the obvious one: the
+    // operator's `user/message` is written *after* the `turn/start` it caused --
+    // measured on the live wire as well as in the durable log -- and it carries
+    // no `data.turn` of its own. A reader that only looks for a `turn/start`
+    // *after* a prompt finds none here and leaves the running turn without it.
+    const records = [
+      record('step/start', 805, { turn: 101, step: 1 }),
+      prompt(806, 'the prompt that started it'),
+      record('step/start', 807, { turn: 101, step: 2 }),
+      record('tool/call', 808, { turn: 101, step: 2, callId: 'c1', name: 'bash', arguments: '{}' }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 900, records }] })
+    const result = await sessionMessages(ctx, 's1')
+
+    expect(names(result.records)).toEqual(['step/start', 'user/message', 'step/start'])
+  })
+
   it('keeps no assistant message for a turn whose last word had no text', async () => {
     // A step that only called tools: nothing to draw, so nothing to send.
     const records = [
