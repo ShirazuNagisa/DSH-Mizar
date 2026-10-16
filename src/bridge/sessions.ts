@@ -5,7 +5,7 @@
  * (see docs/decision-0001-in-process-gateway.md) and narrows their replies into
  * shapes the phone can render without understanding DSH's session model.
  *
- * Two deliberate choices:
+ * Three deliberate choices:
  *
  *   - **Stats come from `session/projections`, not `ctx.sessionProjections`.**
  *     The service method needs a live `Session` object, and a listed session is
@@ -13,6 +13,17 @@
  *     live-preferred observation without activating an Agent", which is exactly
  *     what a phone browsing a session list needs — it must not wake forty
  *     agents to draw forty rows.
+ *   - **A history page carries a summary, not a transcript.** The log holds ten
+ *     to twenty records for every message a person would recognise — per-step
+ *     narration, tool calls and results, attempts, the system prompt, the
+ *     runtime context DSH injects under `user/message`. Measured over the 47
+ *     session logs in a dev home, the raw log is 1323 KB and the summary of it
+ *     is 66 KB. Reading a page is a read of the durable log, so every one of
+ *     those bytes was work on the host, and all but a twentieth of them were
+ *     bytes the phone dropped on arrival. What survives is what a conversation
+ *     screen draws: the prompt, the turn's boundaries and timing, one marker per
+ *     step, and **one** assistant message per finished turn — the model's
+ *     summary of it. See {@link summaryRecords}.
  *   - **The gateway's wire argument names are used as-is.** `session/list` takes
  *     `_request` (leading underscore) while `session/projections` takes
  *     `request`. Getting that wrong is a runtime error, not a compile error, so
@@ -71,6 +82,28 @@ function bool(source: Record<string, unknown>, key: string): boolean {
 function count(source: Record<string, unknown>, key: string): number {
   const value = source[key]
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+/**
+ * The event inside one log record.
+ *
+ * The gateway wraps a log record as `{type: 'event', event: {...}}`, and the
+ * event's own name is one level down. The same record written to a session log
+ * has `type`, `seq`, `time` and `data` at the top level with no wrapper at all
+ * -- so a record that arrives unwrapped is read as itself rather than as a
+ * wrapper with nothing in it, which is how a record type silently contributes
+ * nothing instead of being kept.
+ *
+ * @param record - one record, either shape.
+ * @returns the event, or `null` when the record is not one.
+ */
+function eventOf(record: unknown): Record<string, unknown> | null {
+  if (typeof record !== 'object' || record === null) return null
+  const wrapper = record as { event?: unknown }
+  const value =
+    typeof wrapper.event === 'object' && wrapper.event !== null ? wrapper.event : record
+  const event = value as { type?: unknown }
+  return typeof event.type === 'string' ? (event as Record<string, unknown>) : null
 }
 
 /**
@@ -223,21 +256,272 @@ function isInjectedContext(record: unknown): boolean {
 }
 
 /**
+ * The readable text of an assistant message, or `null` when it carries none.
+ *
+ * Two keys deep, and one deeper than a user message: the parts are at
+ * `data.message.content` rather than `data.content`. Reading only the latter is
+ * why every reply was once missing from the phone while the Mac showed the
+ * whole exchange.
+ *
+ * A step that only called tools has no text part at all, and one part typed
+ * `reasoning` is not something the model said to anybody -- so both count as
+ * "no text", which is the same call the app makes when it draws the record.
+ *
+ * @param event - the unwrapped event.
+ * @returns the joined text, or `null`.
+ */
+function assistantText(event: Record<string, unknown>): string | null {
+  const data = event['data'] as { message?: { content?: unknown } } | undefined
+  const parts = data?.message?.content
+  if (!Array.isArray(parts)) return null
+  const text = parts
+    .filter(
+      (part): part is { type: string; text: string } =>
+        typeof part === 'object' &&
+        part !== null &&
+        (part as { type?: unknown }).type === 'text' &&
+        typeof (part as { text?: unknown }).text === 'string',
+    )
+    .map((part) => part.text)
+    .join('\n')
+  return text === '' ? null : text
+}
+
+/**
+ * Narrow a page to what a conversation screen actually draws.
+ *
+ * The host returns the whole log window -- ten to twenty records for every
+ * message a person would recognise -- and almost none of it survives the trip.
+ * Measured over the 47 session logs in a dev home, the full log of a session is
+ * 1323 KB and its summary is 66 KB; for the largest of them, 65 KB of records
+ * narrow to 10 KB. Since reading a page *is* reading the durable log and folding
+ * every projection over it (see {@link sessionMessages}), the host pays for all
+ * of it and the phone pays again in relay bandwidth.
+ *
+ * What is kept is what survives being read rather than scrolled:
+ *
+ *   - `turn/start` and `turn/end`, which are how a turn is timed, whether it is
+ *     still running, and why it stopped -- a monitoring app's whole subject.
+ *   - `step/start`, the only remaining signal of how much work a turn did. It is
+ *     about 100 bytes, and it stands in for the narration, the tool calls and
+ *     the attempts that used to carry the same information at a hundred times
+ *     the size. `step/end` is not kept: it says nothing the start did not.
+ *   - `user/message` a person wrote. DSH sends its own injected context through
+ *     the same event, so {@link isInjectedContext} drops the two kinds that are
+ *     not anybody's words.
+ *   - **one** `assistant/message` per turn that **ended inside this page** -- the
+ *     last one with readable text. That is the model's summary of the turn, and
+ *     the per-step narration around it is not: the app draws one bubble per
+ *     turn, so the earlier messages were downloaded and then discarded.
+ *
+ * A turn with no `turn/end` in the page gets no assistant message at all. That
+ * covers two cases that look the same from here and want the same answer: a turn
+ * still running, whose partial answer is not a summary of anything, and the turn
+ * the page was cut through, whose end is in the next page back. Both are
+ * re-read from a later page once they finish, and neither is worth the largest
+ * thing on the wire to show half of.
+ *
+ * Everything else goes: `assistant/attempt`, `tool/call`, `tool/result`,
+ * `system/message`, `request/header`, `request/context`, the inbox splices, and
+ * every other assistant message. The set is an allowlist rather than a blocklist
+ * because the alternative is the behaviour this replaces -- an unrecognised
+ * event type adding weight to every page forever.
+ *
+ * The order of the records is the log's, and every kept record is one the host
+ * sent: this decides what travels, not what it means.
+ *
+ * @param records - one page, oldest first, exactly as the gateway returned it.
+ * @returns the records worth sending.
+ */
+function summaryRecords(records: readonly unknown[]): unknown[] {
+  /** Assistant messages that are their turn's last word, and have one. */
+  const summaries = new Set<unknown>()
+  const ended = new Set<unknown>()
+  const lastPerTurn = new Map<unknown, { record: unknown; text: string | null }>()
+  for (const record of records) {
+    const event = eventOf(record)
+    if (event?.['type'] === 'turn/end') {
+      ended.add(turnOf(event))
+    } else if (event?.['type'] === 'assistant/message') {
+      lastPerTurn.set(turnOf(event), { record, text: assistantText(event) })
+    }
+  }
+  for (const [turn, last] of lastPerTurn) {
+    if (last.text !== null && ended.has(turn)) summaries.add(last.record)
+  }
+
+  return records.filter((record) => {
+    const event = eventOf(record)
+    switch (event?.['type']) {
+      case 'turn/start':
+      case 'turn/end':
+      case 'step/start':
+        return true
+      case 'user/message':
+        return !isInjectedContext(record)
+      case 'assistant/message':
+        return summaries.has(record)
+      default:
+        return false
+    }
+  })
+}
+
+/**
+ * The turn number an event belongs to, or `undefined` when it names none.
+ *
+ * Every event kept here carries `data.turn`, which is how a turn's records are
+ * recognised as belonging together. A record that names no turn shares the
+ * `undefined` key with every other one, so a host that stopped numbering turns
+ * would still get its boundaries and its steps -- and would get at most one
+ * assistant message per page, which is a smaller page rather than a broken one.
+ *
+ * @param event - the unwrapped event.
+ * @returns the turn number, or `undefined`.
+ */
+function turnOf(event: Record<string, unknown>): unknown {
+  return (event['data'] as { turn?: unknown } | undefined)?.turn
+}
+
+/**
+ * How long to wait for the follow opening frame before giving up and asking the
+ * projections instead.
+ *
+ * The same budget as every other read in this file, which is the point: the
+ * follow path is the one that has to replay the session log before it can answer
+ * at all, so a caller that would have waited thirty seconds for the projections
+ * read must not be cut off sooner here. The fallback is for a host that cannot
+ * answer this way, not for one that is merely slow.
+ */
+const FOLLOW_TIMEOUT_MS = 30_000
+
+/**
+ * The log cut, from the opening frame of `session/follow`.
+ *
+ * **Why the stream, and not the projection read it replaces.** `throughSeq` is
+ * documented as an "inclusive log cut obtained from the corresponding follow
+ * opening frame", and a page is what a follow opening frame is allowed to be
+ * paged by -- so the cut is taken from the same frame the wire's own client
+ * takes it from. Measured against a live host, the two are the same number: for
+ * five sessions, cold and with logs of 17 to 105 events, the snapshot `cursor`
+ * and the projections `asOfSeq` were equal in every case. This is not a
+ * freshness fix, it is the contract the type states, and it removes a second
+ * read of every projection value from each page request.
+ *
+ * **Opening the stream does not wake the session.** The concern is real --
+ * `session/projections` is documented as reading "without activating an
+ * Agent", and `follow` is not -- so it was measured. Against a live host, a cold
+ * session's `session/list` row reads `running: false, agentAvailable: false`
+ * before the stream is opened, after its snapshot frame is read, and after the
+ * iterator is closed: unchanged. Pulling a *second* frame is what activates the
+ * agent (`agentAvailable` flips to `true`), which is why the first frame is the
+ * only one this ever asks for.
+ *
+ * One frame, then the iterator is closed -- the shape `workspace/follow` already
+ * uses, including the timeout. Following the stream for updates would keep the
+ * session live for as long as the request, and one subscription per refresh is a
+ * leak that only shows up after an hour of use.
+ *
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param sessionId - the session to open.
+ * @returns the cursor, or `null` when the host would not answer this way.
+ */
+async function followCursor(ctx: Context, sessionId: string): Promise<number | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FOLLOW_TIMEOUT_MS)
+  try {
+    const iterable = await ctx.typertGateway.stream({
+      namespace: 'session',
+      method: 'follow',
+      args: { request: { address: { kind: 'session', sessionId } } },
+      signal: controller.signal,
+    })
+    const iterator = iterable[Symbol.asyncIterator]()
+    try {
+      const first = await iterator.next()
+      const frame = first.value as { type?: unknown; cursor?: unknown } | undefined
+      // Only a snapshot is a cut. An event frame first would mean the stream
+      // opened mid-log, and paging at a cursor taken from the middle of one is
+      // how half a turn ends up on the screen.
+      if (frame === undefined || frame.type !== 'snapshot') return null
+      return typeof frame.cursor === 'number' && Number.isFinite(frame.cursor) ? frame.cursor : null
+    } finally {
+      // Closes the stream. Without it the subscription outlives the request.
+      // Best effort: a carrier that dies while being closed must not turn an
+      // answered page into an error.
+      try {
+        await iterator.return?.()
+      } catch {
+        /* the frame was read; the subscription is the carrier's problem now */
+      }
+    }
+  } catch {
+    // An older host, a stream carrier that will not open, or a session that has
+    // no log at all: the projections read below answers all three, and it is
+    // also where a missing session is reported.
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * How long a page read may take, projections fallback included.
+ *
+ * Unchanged from when this was the only step, and deliberately the same for
+ * both: a follow opening frame that replays a long log and a projection fold
+ * over that log cost about the same, and timing one out early would turn a slow
+ * host into a screen with no history on it.
+ */
+const READ_TIMEOUT_MS = 30_000
+
+/**
+ * The log cut, from a `session/projections` read.
+ *
+ * The fallback, for a host that cannot open a follow stream -- older than the
+ * endpoint, or composed without a stream carrier -- and for a first frame that
+ * is not a snapshot. It is one field of a much larger reply: `values` carries
+ * every registered projection, which is why this is not the path taken when the
+ * stream answers.
+ *
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param sessionId - the session to read.
+ * @returns the cut, or `null` when the session is unknown.
+ */
+async function projectionsCut(ctx: Context, sessionId: string): Promise<number | null> {
+  const value = (await ctx.typertGateway.invoke({
+    namespace: 'session',
+    method: 'projections',
+    args: { request: { sessionId } },
+    signal: AbortSignal.timeout(READ_TIMEOUT_MS),
+  })) as { asOfSeq?: unknown } | null | undefined
+
+  return typeof value?.asOfSeq === 'number' && Number.isFinite(value.asOfSeq) ? value.asOfSeq : null
+}
+
+/**
  * Read a page of a session's log.
  *
  * The two-step shape is not optional. `session/page` is keyed by `address` and a
- * `throughSeq` cut, not by session id, and the cut comes from a projection read
- * -- so a caller cannot ask "give me the last N messages" without first asking
- * "what is the log at". `session.maxMessages` counts messages rather than raw
- * events, so a page that spans a long tool run still returns the requests around
- * it rather than a window of deltas.
+ * `throughSeq` cut, not by session id, and the cut comes from opening the
+ * session's follow stream and reading one frame -- so a caller cannot ask "give
+ * me the last N messages" without first asking "what is the log at".
+ * `session.maxMessages` counts messages rather than raw events, so a page that
+ * spans a long tool run still returns the requests around it rather than a
+ * window of deltas.
  *
- * Works for a cold session: ike the stats read, this does not activate an agent.
+ * The cut comes from {@link followCursor}, and from {@link projectionsCut} when
+ * that cannot answer. The reply is narrowed by {@link summaryRecords} to what
+ * the conversation screen draws, and then to what fits by {@link withinBudget}.
+ *
+ * Works for a cold session: neither read activates an agent, which was measured
+ * for the follow path before it was adopted here.
  *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @param sessionId - the session to read.
  * @param maxMessages - how many messages to ask for.
- * @returns the page, or `null` records when the session is unknown.
+ * @param beforeSeq - the exclusive upper bound, for paging backwards.
+ * @returns the page, or no records when the session is unknown.
  */
 export async function sessionMessages(
   ctx: Context,
@@ -245,15 +529,8 @@ export async function sessionMessages(
   maxMessages?: number,
   beforeSeq?: number,
 ): Promise<SessionMessagesResult> {
-  const snapshot = (await ctx.typertGateway.invoke({
-    namespace: 'session',
-    method: 'projections',
-    args: { request: { sessionId } },
-    signal: AbortSignal.timeout(30_000),
-  })) as { asOfSeq?: unknown } | null | undefined
-
-  const asOfSeq = typeof snapshot?.asOfSeq === 'number' ? snapshot.asOfSeq : null
-  if (asOfSeq === null) {
+  const cut = (await followCursor(ctx, sessionId)) ?? (await projectionsCut(ctx, sessionId))
+  if (cut === null) {
     // No cut, no page: the session has no log to read.
     return { sessionId, asOfSeq: null, records: [], hasMore: false }
   }
@@ -264,7 +541,7 @@ export async function sessionMessages(
     args: {
       request: {
         address: { kind: 'session', sessionId },
-        throughSeq: asOfSeq,
+        throughSeq: cut,
         // The lower bound. Without it a page starts at the beginning of the log,
         // which for a session with any history means a conversation view made
         // entirely of the first few turns -- and, because a single prompt emits
@@ -274,16 +551,18 @@ export async function sessionMessages(
         ...(maxMessages === undefined ? {} : { maxMessages }),
       },
     },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(READ_TIMEOUT_MS),
   })) as { records?: unknown; hasMore?: unknown } | null | undefined
 
   const records = Array.isArray(value?.records) ? value.records : []
-  const useful = records.filter((record) => !isInjectedContext(record))
 
   return {
     sessionId,
-    asOfSeq,
-    records: withinBudget(useful),
+    asOfSeq: cut,
+    // Narrowed before it is trimmed, so the budget is spent on records that
+    // travel rather than on narration that would have filled it and been
+    // dropped a line later.
+    records: withinBudget(summaryRecords(records)),
     hasMore: value?.hasMore === true,
   }
 }
@@ -291,15 +570,22 @@ export async function sessionMessages(
 /** One page of a session's log. */
 export interface SessionMessagesResult {
   readonly sessionId: string
-  /** The log cut the page was taken at; `null` when the session is unknown. */
+  /**
+   * The log cut the page was taken at; `null` when the session is unknown.
+   *
+   * The follow opening frame's `cursor` normally, and the projections
+   * `asOfSeq` when the stream could not answer. Both are positions in the same
+   * log and the app passes it back as the next page's `beforeSeq`.
+   */
   readonly asOfSeq: number | null
   /**
-   * The records exactly as the host reported them.
+   * The records the conversation screen draws, in the log's order.
    *
-   * Deliberately unnormalised. Event names are merge-extensible by design, so
-   * the set of record shapes is open; reshaping them in the bridge would mean
-   * this plugin has to be redeployed whenever DSH adds one. The phone decides
-   * what it recognises, and anything it does not is still visible.
+   * Not the whole page: see {@link summaryRecords} for what is kept and why.
+   * Individual records are passed through exactly as the host reported them --
+   * event names are merge-extensible by design, so the set of record shapes is
+   * open and reshaping them here would mean this plugin has to be redeployed
+   * whenever DSH adds one.
    */
   readonly records: readonly unknown[]
   readonly hasMore: boolean

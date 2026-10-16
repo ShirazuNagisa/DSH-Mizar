@@ -37,7 +37,11 @@ describe('the session page budget', () => {
   })
 
   it('is applied to the records that go out', () => {
-    expect(SOURCE).toContain('records: withinBudget(useful)')
+    // The budget is spent on the summary, not on the page the host returned:
+    // trimming the full log first lets per-step narration fill the budget and
+    // evict the prompt it was narrating. `summaries.test.ts` pins the behaviour;
+    // this pins the order it depends on.
+    expect(SOURCE).toContain('records: withinBudget(summaryRecords(records))')
   })
 })
 

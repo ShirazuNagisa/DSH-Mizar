@@ -197,6 +197,15 @@ export function createMethodTable(
      */
     'session.stats': async (payload) =>
       sessionStats(ctx, requireString(payload, 'sessionId', 'session.stats')),
+
+    /**
+     * One page of a session's history, summarised.
+     *
+     * The cut comes from the `session/follow` opening frame and the records are
+     * narrowed to what a conversation screen draws -- prompts, turn boundaries,
+     * one marker per step, and one assistant message per finished turn. See
+     * `sessionMessages` for what that leaves out and the measurements behind it.
+     */
     'session.messages': async (payload) => {
       const limit = (payload as Record<string, unknown> | undefined)?.['maxMessages']
       const before = (payload as Record<string, unknown> | undefined)?.['beforeSeq']

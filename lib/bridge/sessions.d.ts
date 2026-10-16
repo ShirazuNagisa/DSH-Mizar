@@ -50,32 +50,46 @@ export declare function sessionStats(ctx: Context, sessionId: string): Promise<S
  * Read a page of a session's log.
  *
  * The two-step shape is not optional. `session/page` is keyed by `address` and a
- * `throughSeq` cut, not by session id, and the cut comes from a projection read
- * -- so a caller cannot ask "give me the last N messages" without first asking
- * "what is the log at". `session.maxMessages` counts messages rather than raw
- * events, so a page that spans a long tool run still returns the requests around
- * it rather than a window of deltas.
+ * `throughSeq` cut, not by session id, and the cut comes from opening the
+ * session's follow stream and reading one frame -- so a caller cannot ask "give
+ * me the last N messages" without first asking "what is the log at".
+ * `session.maxMessages` counts messages rather than raw events, so a page that
+ * spans a long tool run still returns the requests around it rather than a
+ * window of deltas.
  *
- * Works for a cold session: ike the stats read, this does not activate an agent.
+ * The cut comes from {@link followCursor}, and from {@link projectionsCut} when
+ * that cannot answer. The reply is narrowed by {@link summaryRecords} to what
+ * the conversation screen draws, and then to what fits by {@link withinBudget}.
+ *
+ * Works for a cold session: neither read activates an agent, which was measured
+ * for the follow path before it was adopted here.
  *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @param sessionId - the session to read.
  * @param maxMessages - how many messages to ask for.
- * @returns the page, or `null` records when the session is unknown.
+ * @param beforeSeq - the exclusive upper bound, for paging backwards.
+ * @returns the page, or no records when the session is unknown.
  */
 export declare function sessionMessages(ctx: Context, sessionId: string, maxMessages?: number, beforeSeq?: number): Promise<SessionMessagesResult>;
 /** One page of a session's log. */
 export interface SessionMessagesResult {
     readonly sessionId: string;
-    /** The log cut the page was taken at; `null` when the session is unknown. */
+    /**
+     * The log cut the page was taken at; `null` when the session is unknown.
+     *
+     * The follow opening frame's `cursor` normally, and the projections
+     * `asOfSeq` when the stream could not answer. Both are positions in the same
+     * log and the app passes it back as the next page's `beforeSeq`.
+     */
     readonly asOfSeq: number | null;
     /**
-     * The records exactly as the host reported them.
+     * The records the conversation screen draws, in the log's order.
      *
-     * Deliberately unnormalised. Event names are merge-extensible by design, so
-     * the set of record shapes is open; reshaping them in the bridge would mean
-     * this plugin has to be redeployed whenever DSH adds one. The phone decides
-     * what it recognises, and anything it does not is still visible.
+     * Not the whole page: see {@link summaryRecords} for what is kept and why.
+     * Individual records are passed through exactly as the host reported them --
+     * event names are merge-extensible by design, so the set of record shapes is
+     * open and reshaping them here would mean this plugin has to be redeployed
+     * whenever DSH adds one.
      */
     readonly records: readonly unknown[];
     readonly hasMore: boolean;
