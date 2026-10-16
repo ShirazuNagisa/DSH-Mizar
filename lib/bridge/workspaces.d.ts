@@ -1,50 +1,51 @@
-/**
- * Workspace bridge.
- *
- * DSH's workspace list is **not** the session list. It lives in the host's own
- * workspace registry, and a session outlives the workspace it was created in:
- * deleting a workspace removes the registry entry and leaves the session log on
- * disk, so `session/list` keeps returning sessions whose `cwd` is a directory
- * DSH no longer has a workspace for.
- *
- * That is invisible from the phone, which has no other way to learn about
- * workspaces, so it drew one row per working directory any session had ever
- * used. Measured on the machine this was reported from: DSH had **4**
- * workspaces and the phone showed **10**, because six of them had been deleted
- * and their sessions had not.
- *
- * `workspace` has no `list` endpoint — the list is published through
- * `workspace/follow`, a stream whose first frame is a complete baseline. That is
- * what this reads: one frame, then the iterator is closed. Following the stream
- * for updates would keep the list live, and is worth doing when a workspace can
- * be deleted while the phone has the app open; today the phone re-reads on every
- * refresh, which is often enough for a change an operator makes on the Mac.
- *
- * @module dsh-mizar/bridge/workspaces
- */
 import type { Context } from '../dsh.js';
 /** One workspace, as much of it as the phone needs. */
 export interface WorkspaceRow {
     readonly workspaceId: string;
-    /** The directory the workspace is rooted at. This is what the phone matches on. */
+    /** The directory the workspace is rooted at. DSH's `fs.realpath` of it. */
     readonly path: string;
     /** What DSH calls it. */
     readonly title: string;
+    /**
+     * The sessions DSH has filed under it, in DSH's order.
+     *
+     * Not derivable from the session list: membership requires both a slot in the
+     * workspace's account and a session header whose canonical cwd equals the
+     * workspace path, and a session created with a bare directory has neither.
+     *
+     * Omitted -- not empty -- when the source did not carry the field at all,
+     * because the two mean different things to a phone deciding what belongs
+     * where: an empty list is DSH saying "nothing is filed here", and no list is
+     * DSH saying nothing, which leaves the phone matching on the path.
+     */
+    readonly sessionIds?: readonly string[];
 }
 /** Everything a caller gets back. */
 export interface WorkspaceListResult {
     readonly items: readonly WorkspaceRow[];
+    /**
+     * Whether `items` is the host's whole list.
+     *
+     * `false` means the list could not be read, not that it is empty. The phone
+     * needs the difference: it draws what it is given either way, but only a
+     * complete list lets it drop a workspace that is no longer there.
+     *
+     * Only ever `true` for a list that was read in full. An entry this bridge
+     * cannot make sense of is reported as no answer at all rather than as a
+     * shorter list, because a shorter list is what the phone deletes rows from.
+     */
+    readonly complete: boolean;
 }
 /**
  * List the workspaces DSH has, by directory.
  *
- * Returns an empty list rather than throwing when the stream cannot be read.
- * The phone already draws workspaces without this — by grouping sessions on
- * their working directory — and an empty answer means "keep doing that". A
+ * Returns an incomplete empty list rather than throwing when nothing can be
+ * read. The phone already draws workspaces without this — by grouping sessions
+ * on their working directory — and `complete: false` means "keep doing that". A
  * failure here must not be able to remove a workspace somebody is using.
  *
  * @param ctx - a context observing `ctx.typertGateway`.
- * @returns the rows, oldest-first order as DSH reports it.
+ * @returns the rows, and whether they are the whole list.
  */
 export declare function listWorkspaces(ctx: Context): Promise<WorkspaceListResult>;
 /**

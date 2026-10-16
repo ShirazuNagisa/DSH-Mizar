@@ -105,15 +105,14 @@ describe('workspaces', () => {
   })
 
   it('reads the list out of the follow baseline', async () => {
-    // `workspace` has no `list` endpoint. The list is published through a
-    // stream whose first frame is a complete baseline, and that is what the
-    // phone's workspace rows come from.
+    // The fallback path, for a composition with no workspace registry: the list
+    // is published through a stream whose first frame is a complete baseline.
     const ctx = streamContext([
       {
         type: 'baseline',
         value: {
           items: [
-            { workspaceId: 'w1', path: '/a', title: 'A', sessionIds: [], createdAt: '', updatedAt: '' },
+            { workspaceId: 'w1', path: '/a', title: 'A', sessionIds: ['s1'], createdAt: '', updatedAt: '' },
             { workspaceId: 'w2', path: '/b', title: 'B', sessionIds: [], createdAt: '', updatedAt: '' },
           ],
           archivedSessionIds: [],
@@ -124,6 +123,36 @@ describe('workspaces', () => {
     const result = await listWorkspaces(ctx)
     expect(result.items.map((row) => row.path)).toEqual(['/a', '/b'])
     expect(result.items.map((row) => row.title)).toEqual(['A', 'B'])
+    // A baseline is the whole list, so the phone is allowed to drop what it
+    // holds in favour of it.
+    expect(result.complete).toBe(true)
+  })
+
+  it('carries each workspace the sessions DSH filed under it', async () => {
+    // Membership is not derivable from the session list -- a session created
+    // with a bare directory is in none -- so it has to come with the workspace.
+    const ctx = streamContext([
+      {
+        type: 'baseline',
+        value: {
+          items: [{ workspaceId: 'w1', path: '/a', title: 'A', sessionIds: ['s1', 's2'] }],
+        },
+      },
+    ])
+    expect((await listWorkspaces(ctx)).items[0]?.sessionIds).toEqual(['s1', 's2'])
+  })
+
+  it('omits membership the source did not carry, rather than sending an empty list', async () => {
+    // The phone tells the two apart: an empty list is DSH saying nothing is
+    // filed here, and no list is DSH saying nothing, which leaves it matching on
+    // the path. Sending `[]` for both is how a recreated workspace adopts the
+    // sessions of the deleted one that used to live at the same directory.
+    const ctx = streamContext([
+      { type: 'baseline', value: { items: [{ workspaceId: 'w1', path: '/a', title: 'A' }] } },
+    ])
+    const row = (await listWorkspaces(ctx)).items[0]
+    expect(row).toEqual({ workspaceId: 'w1', path: '/a', title: 'A' })
+    expect('sessionIds' in (row ?? {})).toBe(false)
   })
 
   it('closes the stream it opened', async () => {
@@ -143,18 +172,30 @@ describe('workspaces', () => {
   })
 
   it('answers empty rather than throwing when the gateway refuses', async () => {
-    // Empty means "the host did not say", and the screen keeps grouping on the
-    // working directory. A failure here must not be able to remove a workspace
-    // somebody is using.
+    // Empty and incomplete means "the host did not say", and the screen keeps
+    // grouping on the working directory. A failure here must not be able to
+    // remove a workspace somebody is using.
     const ctx = streamContext([], { throwOnStream: true })
-    await expect(listWorkspaces(ctx)).resolves.toEqual({ items: [] })
+    await expect(listWorkspaces(ctx)).resolves.toEqual({ items: [], complete: false })
   })
 
-  it('drops entries that are not shaped like a workspace', async () => {
+  it('reports an unreadable entry as no answer rather than a shorter list', async () => {
+    // The rows are handed over as *complete*, and the phone deletes rows on the
+    // strength of that. Dropping one it cannot parse would take a real workspace
+    // off both screens and out of the new-session picker -- so one bad entry
+    // costs the whole answer, and the phone falls back to what it had.
     const ctx = streamContext([
-      { type: 'baseline', value: { items: [{ workspaceId: 'w1' }, null, 'nope', { path: '/no-id' }] } },
+      {
+        type: 'baseline',
+        value: {
+          items: [
+            { workspaceId: 'w1', path: '/a', title: 'A' },
+            { path: '/no-id' },
+          ],
+        },
+      },
     ])
-    expect((await listWorkspaces(ctx)).items).toEqual([])
+    await expect(listWorkspaces(ctx)).resolves.toEqual({ items: [], complete: false })
   })
 })
 

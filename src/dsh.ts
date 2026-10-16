@@ -20,6 +20,11 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-typert-registry'
+// Declaration-merges `ctx.workspaceRegistry` and its `Workspace` entity, so the
+// workspace bridge reads the real service instead of a hand-written guess at its
+// shape. Type-only, like the rest: a composition without `dsh-workspace` has no
+// service to find, and the bridge says so rather than failing.
+import type {} from '@deepseek-ai/dsh-workspace'
 
 // `SessionProjectionMap` is declaration-merged: each owning package contributes
 // its own keys, and a key only exists in the type when its package is in the

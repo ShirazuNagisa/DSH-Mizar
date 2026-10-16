@@ -29,16 +29,25 @@ interface Invocation {
 /** The workspace registry, as much of it as the bridge touches. */
 interface RegistryLike {
   create(path: string, title?: string): Promise<{ id?: unknown }>
+  /** The whole registry, in display order. */
+  list?(): readonly unknown[]
+  /** The workspace owning a canonical path, without creating one. */
+  resolveByPath?(path: string): Promise<unknown>
 }
 
 /** A context whose `workspace/follow` yields a baseline with these workspaces. */
 function context(options: {
   workspaces?: Array<{ workspaceId: string; path: string; title?: string }>
   registry?: RegistryLike | null
+  /** What `ctx.workspaceRegistry.list()` answers, when it is implemented. */
+  registryList?: readonly unknown[]
+  /** Whether the follow stream refuses outright. */
+  throwOnStream?: boolean
   onInvoke?: (request: Invocation) => unknown
-}): { ctx: Context; calls: Invocation[]; created: string[] } {
+}): { ctx: Context; calls: Invocation[]; created: string[]; streams: () => number } {
   const calls: Invocation[] = []
   const created: string[] = []
+  let streams = 0
   const rows = options.workspaces ?? []
   const registry =
     options.registry === undefined
@@ -47,23 +56,28 @@ function context(options: {
             created.push(path)
             return { id: `ws-for-${path}` }
           },
+          ...(options.registryList === undefined ? {} : { list: () => options.registryList ?? [] }),
         }
       : options.registry
 
   const ctx = {
     typertGateway: {
-      stream: async () => ({
-        [Symbol.asyncIterator]: () => ({
-          next: async () => ({
-            value: {
-              type: 'baseline',
-              value: { items: rows.map((row) => ({ title: row.path, ...row })), archivedSessionIds: [], pinnedSessionIds: [] },
-            },
-            done: false,
+      stream: async () => {
+        streams += 1
+        if (options.throwOnStream === true) throw new Error('gateway/invocation-unavailable')
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: async () => ({
+              value: {
+                type: 'baseline',
+                value: { items: rows.map((row) => ({ title: row.path, ...row })), archivedSessionIds: [], pinnedSessionIds: [] },
+              },
+              done: false,
+            }),
+            return: async () => ({ value: undefined, done: true }),
           }),
-          return: async () => ({ value: undefined, done: true }),
-        }),
-      }),
+        }
+      },
       invoke: async (request: Invocation) => {
         calls.push({ namespace: request.namespace, method: request.method, args: request.args })
         return options.onInvoke === undefined ? { sessionId: 'session-1' } : options.onInvoke(request)
@@ -74,7 +88,7 @@ function context(options: {
     // composition that does not gets `undefined` rather than a failure.
     get: (name: string) => (name === 'workspaceRegistry' ? registry ?? undefined : undefined),
   } as unknown as Context
-  return { ctx, calls, created }
+  return { ctx, calls, created, streams: () => streams }
 }
 
 describe('finding the workspace a directory belongs to', () => {
@@ -193,8 +207,30 @@ describe('creating a session', () => {
 })
 
 describe('the workspace list the phone draws from', () => {
-  it('is still the follow baseline, and still closes the stream', async () => {
-    const { ctx } = context({
+  it('comes from the registry when the composition has one', async () => {
+    // The registry is what the Mac's own sidebar is built from, so it is the
+    // only answer that can be *the same* list. `list()` is a synchronous
+    // projection of records already in memory: no round trip, no timeout.
+    const { ctx, streams } = context({
+      registryList: [
+        { id: 'ws-1', path: '/Users/you/projects/demo', title: 'demo', sessionIds: ['s1'] },
+        { id: 'ws-2', path: '/Users/you/projects/other', title: 'other', sessionIds: [] },
+      ],
+    })
+    const listed = await listWorkspaces(ctx)
+    expect(listed.items).toEqual([
+      { workspaceId: 'ws-1', path: '/Users/you/projects/demo', title: 'demo', sessionIds: ['s1'] },
+      { workspaceId: 'ws-2', path: '/Users/you/projects/other', title: 'other', sessionIds: [] },
+    ])
+    expect(listed.complete).toBe(true)
+    // And the stream is not opened at all: a second way to answer the same
+    // question is a second way to disagree with itself.
+    expect(streams()).toBe(0)
+  })
+
+  it('falls back to the follow baseline without a registry', async () => {
+    const { ctx, streams } = context({
+      registry: null,
       workspaces: [
         { workspaceId: 'ws-1', path: '/Users/you/projects/demo' },
         { workspaceId: 'ws-2', path: '/Users/you/projects/other' },
@@ -202,5 +238,126 @@ describe('the workspace list the phone draws from', () => {
     })
     const listed = await listWorkspaces(ctx)
     expect(listed.items.map((row) => row.workspaceId)).toEqual(['ws-1', 'ws-2'])
+    expect(listed.complete).toBe(true)
+    expect(streams()).toBe(1)
+  })
+
+  it('says so when neither can answer', async () => {
+    // `complete: false` is the difference the phone acts on: an incomplete list
+    // may only ever add, because "this host cannot say" and "this host has none"
+    // are the same empty array.
+    const { ctx } = context({ registry: null, throwOnStream: true })
+    await expect(listWorkspaces(ctx)).resolves.toEqual({ items: [], complete: false })
+  })
+
+  it('treats a registry that throws as no answer, not as the stream\'s opinion', async () => {
+    // The registry is the durable record; the stream is a separate service that
+    // may be holding an older set. Falling back would hand the phone a different
+    // answer labelled *complete*, and complete is what it deletes rows on -- so a
+    // registry that is there and will not answer ends the question, and the next
+    // refresh tries again.
+    const { ctx, streams } = context({
+      registry: {
+        create: async () => ({ id: 'ws-unused' }),
+        list: () => {
+          throw new Error('the workspace registry has not started yet')
+        },
+      },
+      workspaces: [{ workspaceId: 'ws-stale', path: '/Users/you/projects/old' }],
+    })
+    await expect(listWorkspaces(ctx)).resolves.toEqual({ items: [], complete: false })
+    expect(streams()).toBe(0)
+  })
+
+  it('falls back to the stream when the registry has no list at all', async () => {
+    // Not a failure: a composition whose registry predates `list` answers this
+    // question through the stream, and the stream's baseline is the whole list.
+    const { ctx, streams } = context({
+      registry: { create: async () => ({ id: 'ws-created' }) },
+      workspaces: [{ workspaceId: 'ws-1', path: '/Users/you/projects/demo' }],
+    })
+    const listed = await listWorkspaces(ctx)
+    expect(listed.items.map((row) => row.workspaceId)).toEqual(['ws-1'])
+    expect(listed.complete).toBe(true)
+    expect(streams()).toBe(1)
+  })
+
+  it('keeps an empty registry list, which is an answer', async () => {
+    // Somebody deleted their last workspace. Reporting that as "no answer" is
+    // how the phone keeps drawing workspaces that are gone -- the reported bug.
+    const { ctx } = context({ registryList: [] })
+    await expect(listWorkspaces(ctx)).resolves.toEqual({ items: [], complete: true })
+  })
+
+  it('drops registry entries that are not shaped like a workspace', async () => {
+    // All or nothing: the phone replaces its list on `complete`, so a row this
+    // cannot read is a workspace that would vanish from both screens -- and the
+    // stream does not get to answer instead, because a shorter list from another
+    // service is still a shorter list.
+    const { ctx, streams } = context({
+      registryList: [{ id: 'ws-1' }, null, 'nope', { path: '/no-id' }],
+      workspaces: [{ workspaceId: 'ws-1', path: '/a' }],
+    })
+    await expect(listWorkspaces(ctx)).resolves.toEqual({ items: [], complete: false })
+    expect(streams()).toBe(0)
+  })
+
+  it('omits membership the registry did not carry', async () => {
+    // `sessionIds` is optional on the wire so the phone can tell "nothing is
+    // filed here" from "the host did not say" -- the second one is matched on
+    // the path, and the first one is not.
+    const { ctx } = context({ registryList: [{ id: 'ws-1', path: '/a', title: 'A' }] })
+    expect((await listWorkspaces(ctx)).items[0]).toEqual({ workspaceId: 'ws-1', path: '/a', title: 'A' })
+  })
+})
+
+describe('resolving a directory through the registry', () => {
+  it('asks the registry for the canonical path, and does not create', async () => {
+    const asked: string[] = []
+    const { ctx, created } = context({
+      registry: {
+        create: async () => ({ id: 'ws-created' }),
+        resolveByPath: async (path: string) => {
+          asked.push(path)
+          return { id: 'ws-canonical' }
+        },
+      },
+    })
+    expect(await resolveWorkspaceId(ctx, '/tmp/project')).toBe('ws-canonical')
+    expect(asked).toEqual(['/tmp/project'])
+    expect(created).toEqual([])
+  })
+
+  it('creates when the registry owns no workspace for the directory', async () => {
+    const { ctx, created } = context({
+      registry: {
+        create: async (path: string) => {
+          created.push(path)
+          return { id: 'ws-created' }
+        },
+        resolveByPath: async () => undefined,
+      },
+    })
+    expect(await resolveWorkspaceId(ctx, '/Users/you/projects/fresh')).toBe('ws-created')
+    expect(created).toEqual(['/Users/you/projects/fresh'])
+  })
+
+  it('falls through to create when the lookup refuses the path', async () => {
+    // `resolveByPath` runs `fs.realpath`, so a path that does not exist rejects
+    // there. `create` is the one that decides whether that is fatal, and its
+    // answer -- null -- is the caller's cue to pass the directory itself.
+    const { ctx, created } = context({
+      registry: {
+        create: async (path: string) => {
+          created.push(path)
+          return { id: 'ws-created' }
+        },
+        resolveByPath: async () => {
+          throw new Error("realpath '/nope'")
+        },
+      },
+    })
+    expect(await resolveWorkspaceId(ctx, '/nope')).toBe('ws-created')
+    expect(created).toEqual(['/nope'])
   })
 })
