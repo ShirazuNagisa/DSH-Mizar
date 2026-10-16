@@ -1,0 +1,83 @@
+{
+  "note": "The relay tunnel protocol, in both directions. Read by the relay's test/protocol.test.ts and the plugin's test/relay-client.test.ts. Two decoders reading one artifact is what holds the contract; they are separate packages with separate builds, and the plugin is installed from a git checkout that contains no relay/ directory at all.",
+  "version": 1,
+  "relayToHost": [
+    {
+      "t": "welcome",
+      "room": "WBKW0NZVT5QZ",
+      "protocolVersion": 1
+    },
+    {
+      "t": "req",
+      "id": "r1",
+      "method": "POST",
+      "path": "/mizar/v1/pair",
+      "headers": { "content-type": "application/json", "x-mizar-probe": "kept" },
+      "body": "eyJjb2RlIjoiQUIyQy1EM0VGIn0="
+    },
+    {
+      "t": "req",
+      "id": "r2",
+      "method": "GET",
+      "path": "/mizar/v1/hello",
+      "headers": {},
+      "body": null
+    },
+    {
+      "t": "ws-open",
+      "id": "r3",
+      "path": "/mizar/v1/ws",
+      "headers": { "user-agent": "DSH-Mizar/0.1.0" }
+    },
+    {
+      "t": "ws-msg",
+      "id": "r3",
+      "data": "aGVsbG8=",
+      "binary": false
+    },
+    {
+      "t": "ws-close",
+      "id": "r3",
+      "code": 1001,
+      "reason": "going away"
+    },
+    {
+      "t": "ping",
+      "id": "p1"
+    }
+  ],
+  "hostToRelay": [
+    {
+      "t": "res",
+      "id": "r1",
+      "status": 200,
+      "headers": { "content-type": "application/json" },
+      "body": "eyJkZXZpY2VJZCI6ImRldi0xIn0="
+    },
+    {
+      "t": "ws-open-ok",
+      "id": "r3"
+    },
+    {
+      "t": "ws-msg",
+      "id": "r3",
+      "data": "d29ybGQ=",
+      "binary": false
+    },
+    {
+      "t": "ws-close",
+      "id": "r3",
+      "code": 1000,
+      "reason": "done"
+    },
+    {
+      "t": "pong",
+      "id": "p1"
+    },
+    {
+      "t": "error",
+      "id": "r4",
+      "message": "the local listener did not answer"
+    }
+  ]
+}
