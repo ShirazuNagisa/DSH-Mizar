@@ -36,7 +36,11 @@ export const PANEL_CSS = `
   overflow-y: auto;
   color: inherit;
 }
+.mizar-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .mizar-panel h1 { margin: 0; font-size: 18px; font-weight: 600; }
+/* The language button is a quiet control beside the title, not a call to
+   action: it is set once and then ignored. */
+.mizar-panel .mizar-lang { flex: none; font-size: 12px; padding: 4px 10px; border-radius: 999px; }
 .mizar-panel h2 { margin: 0; font-size: 13px; font-weight: 600; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.04em; }
 .mizar-panel p { margin: 0; font-size: 13px; line-height: 1.5; opacity: 0.75; }
 .mizar-card {
