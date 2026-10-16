@@ -47,3 +47,29 @@ export interface WorkspaceListResult {
  * @returns the rows, oldest-first order as DSH reports it.
  */
 export declare function listWorkspaces(ctx: Context): Promise<WorkspaceListResult>;
+/**
+ * The workspace a directory belongs to, creating one when DSH has none.
+ *
+ * **Why this exists.** DSH attaches a session to a workspace in exactly one
+ * place: `session/create`, and only when the request names a `workspaceId`.
+ * With a bare `cwd` it creates the session and attaches nothing —
+ *
+ *     const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd
+ *     ...
+ *     if (workspace !== undefined) await workspace.attachSession(sessionId)
+ *
+ * — and a workspace's session list is membership, not a directory scan. So a
+ * session created from the phone with a `cwd` belongs to no workspace, which the
+ * phone cannot tell: it groups by working directory and drew the session anyway.
+ * The Mac's sidebar is built on workspaces, so it drew nothing. Reported as
+ * "created a session on the phone, sent a message, the Mac never shows it".
+ *
+ * Creating the workspace when there is none is what DSH's own desktop does when
+ * somebody opens a folder: a session has to live somewhere, and "somewhere DSH
+ * does not know about" is not a place it can be shown from.
+ *
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param path - the directory the session was asked for.
+ * @returns the workspace id, or `null` when one could not be resolved.
+ */
+export declare function resolveWorkspaceId(ctx: Context, path: string): Promise<string | null>;

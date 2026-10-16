@@ -93,6 +93,20 @@ export interface CreateSessionResult {
  * writer lock, which is how the app reattaches to a conversation the desktop is
  * not currently using. Contention surfaces as `WRITER_HELD`.
  *
+ * ### A directory is turned into a workspace first
+ *
+ * DSH attaches a session to a workspace in one place, and only when the request
+ * names a `workspaceId`; a bare `cwd` creates a session that belongs to no
+ * workspace at all. Membership is what the Mac's sidebar lists from, so a
+ * session created here with a directory was invisible on the Mac -- while the
+ * phone, which groups by working directory, showed it. Reported as "created a
+ * session on the phone, sent a message, and the Mac never shows it".
+ *
+ * So the directory is resolved to the workspace rooted at it, and one is created
+ * when DSH has none, which is what the desktop does when somebody opens a
+ * folder. `sessionId` is the exception: adopting a session must not move it, and
+ * `workspaceId` together with a foreign directory is an attach that fails.
+ *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @param options - workspace, directory, preset or explicit session id.
  * @returns the session identity.
