@@ -94,6 +94,26 @@ final class AppFlowTests: XCTestCase {
         _ = done.wait(timeout: .now() + 6)
     }
 
+    /// Wait until an element's label says something.
+    ///
+    /// The figures in the composer bar come from a read that lands after the
+    /// screen does, so a plain `label.contains` is an assertion about a snapshot
+    /// taken at an arbitrary moment -- and it failed the once, on the run where
+    /// the read happened to be slower. Polling is what the rest of this file
+    /// does for the same reason.
+    ///
+    /// - Parameters:
+    ///   - element: what to watch.
+    ///   - text: what its label should contain.
+    /// - Returns: whether it got there.
+    private func labelLands(_ element: XCUIElement, containing text: String) -> Bool {
+        let arrived = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", text),
+            object: element,
+        )
+        return XCTWaiter().wait(for: [arrived], timeout: Self.patience) == .completed
+    }
+
     /// Scroll back through the conversation until an element is in the tree.
     ///
     /// A `LazyVStack` builds only what is near the screen, so an element that is
@@ -116,6 +136,11 @@ final class AppFlowTests: XCTestCase {
     /// - Returns: whether it turned up.
     @discardableResult
     private func reveal(_ element: XCUIElement, in app: XCUIApplication, swipes: Int = 6) -> Bool {
+        // Give the screen a moment to draw before touching it. Swiping at a
+        // conversation that is still loading scrolls nothing and reports the
+        // row as absent from a screen it is about to be on -- which is how this
+        // helper failed intermittently on a test that had passed a dozen times.
+        if element.waitForExistence(timeout: 5) { return true }
         for direction in [0, 1] {
             for _ in 0..<swipes {
                 if element.exists { return true }
@@ -172,10 +197,17 @@ final class AppFlowTests: XCTestCase {
     /// tests are about; a test that leaves it up is a test that measures the
     /// sheet.
     ///
+    /// It is offered *after* the first download -- the download is the whole
+    /// screen, and a prompt presented over it would be answered blind -- so the
+    /// wait has to outlast a download rather than a screen transition. Five
+    /// seconds was enough for a transition and not for a download, and the
+    /// symptom was an intermittent failure in whichever test ran slowest: the
+    /// sheet was still up, covering the screen every assertion was about.
+    ///
     /// - Parameter app: the launched app.
     private func dismissNamingIfPresented(_ app: XCUIApplication) {
         let skip = app.buttons["rename.skip"]
-        if skip.waitForExistence(timeout: 5) { skip.tap() }
+        if skip.waitForExistence(timeout: Self.patience) { skip.tap() }
     }
 
     /// Wait for an element to exist.
@@ -403,9 +435,10 @@ final class AppFlowTests: XCTestCase {
         // The figure is the host's number, not a placeholder. Asserted on the
         // button's label: setting one makes the button a single accessibility
         // element, so its inner Text is not a queryable child.
+        let context = app.buttons["composer.context"]
         XCTAssertTrue(
-            app.buttons["composer.context"].label.contains("35"),
-            "the context percentage is not the host's: \(app.buttons["composer.context"].label)",
+            labelLands(context, containing: "35"),
+            "the context percentage is not the host's: \(context.label)",
         )
     }
 
@@ -552,7 +585,7 @@ final class AppFlowTests: XCTestCase {
         let context = app.buttons["composer.context"]
         expect(context, "the context figure is missing")
         XCTAssertTrue(
-            context.label.contains("35"),
+            labelLands(context, containing: "35"),
             "the context percentage is not the host's: \(context.label)",
         )
         context.tap()
@@ -694,6 +727,44 @@ final class AppFlowTests: XCTestCase {
         )
         XCTAssertEqual(composer.value as? String, "Ask your agent…", "the composer never emptied")
     }
+
+    /// The selection bar is still there inside a conversation.
+    ///
+    /// It was not. Two reasons, and both are load-bearing:
+    ///
+    ///   - On iPhone a conversation is a *pushed* detail of the split view, and
+    ///     a pushed detail hides the bar below it unless it says otherwise --
+    ///     the behaviour UIKit has had since `hidesBottomBarWhenPushed`.
+    ///   - On iOS 26 the bar was allowed to minimize itself while scrolling,
+    ///     and a conversation opens scrolled to its newest message.
+    ///
+    /// Either one leaves the selector on the session list and gone from the one
+    /// screen it exists for, because the point of it is to reach the settings
+    /// without going back first.
+    ///
+    /// Opened by tapping, not by `-mizarSelectSession`: the launch argument sets
+    /// the selection directly and skips the push, so a test that used it would
+    /// have passed the whole time this was broken.
+    func testTheSelectionBarSurvivesOpeningAConversation() {
+        let app = launch(session: nil)
+        expect(app.staticTexts["demo"], "the session list never arrived")
+        app.staticTexts["demo"].tap()
+        let session = app.staticTexts["Mock session"]
+        expect(session, "the session row never appeared")
+        session.tap()
+        expect(app.textFields["composer.field"], "the conversation never opened")
+
+        // Both tabs, and the second one works -- a bar that is drawn but cannot
+        // be used is not a selector.
+        XCTAssertEqual(
+            app.tabBars.buttons.count,
+            2,
+            "the selection bar is not in the conversation",
+        )
+        app.tabBars.buttons.element(boundBy: 1).tap()
+        expect(app.staticTexts["settings.empty"], "the settings tab does not open from a conversation")
+    }
+
 
     // MARK: - Model and permission switching
 

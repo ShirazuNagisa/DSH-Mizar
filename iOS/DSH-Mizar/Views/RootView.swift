@@ -155,9 +155,17 @@ private struct UnreachableView: View {
 struct MainTabs: View {
     var body: some View {
         if #available(iOS 26.0, *) {
-            // Reading forward through a long conversation is what this screen is
-            // for, so the bar steps out of the way and comes back on the way up.
-            tabs.tabBarMinimizeBehavior(.onScrollDown)
+            // `.never`, not `.onScrollDown`.
+            //
+            // Letting the bar step out of the way while reading forward was the
+            // tidier choice and it was the wrong one: a selector that hides
+            // itself is a selector that is not there, and the whole point of
+            // putting it on this screen was that the operator can move between
+            // the conversation and the settings without going back first. On a
+            // conversation long enough to scroll -- which is every conversation
+            // worth opening -- scrolling to the bottom, or simply arriving at a
+            // screen that opens already scrolled there, left it minimized.
+            tabs.tabBarMinimizeBehavior(.never)
         } else {
             tabs
         }

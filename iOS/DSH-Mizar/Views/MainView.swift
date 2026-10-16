@@ -549,6 +549,16 @@ struct SessionDetailView: View {
         }
         .navigationTitle(stats?.title ?? String(localized: "Session"))
         .navigationBarTitleDisplayMode(.inline)
+        // Keeps the selection bar on screen while a conversation is open.
+        //
+        // On iPhone this screen is a *pushed* detail of the split view, and a
+        // pushed detail hides the bar below it unless it says otherwise -- the
+        // behaviour UIKit has had since `hidesBottomBarWhenPushed`, which the
+        // system bar still follows. Without this line the bar is on the session
+        // list and gone the moment a session is opened, which is exactly where
+        // it is wanted: the point of it is to reach the settings without going
+        // back first.
+        .toolbar(.visible, for: .tabBar)
         .toolbar {
             // Only the permission selector stays up here. The model is in the
             // bar above the composer now, next to the context figure it is read
