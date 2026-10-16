@@ -127,6 +127,29 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(send.isEnabled, "send is disabled with text in the field")
     }
 
+    /// A session whose workspace the host has deleted is not drawn.
+    ///
+    /// The host reports two sessions: one in a workspace it has, and one in a
+    /// directory it does not -- which is what a deleted workspace looks like,
+    /// because deleting it removes the registry entry and leaves the session log
+    /// behind. Grouping on the working directory drew both.
+    func testADeletedWorkspaceIsNotListed() {
+        let app = launch(session: nil)
+        expect(app.staticTexts["Mock Mac (fixture)"], "the host's name is missing")
+
+        // The workspace the host still has is there, with its one session.
+        let demo = app.buttons["workspace./Users/you/projects/demo"]
+        expect(demo, "the host's own workspace is missing")
+
+        // And the directory the host has no workspace for is not, even though a
+        // session still lives in it.
+        XCTAssertEqual(
+            app.buttons.matching(identifier: "workspace./Users/you/projects/deleted-workspace").count,
+            0,
+            "a session in a deleted workspace was listed",
+        )
+    }
+
     /// The three figures above the field, each of which is a control.
     func testTheComposerBarShowsTheModelContextAndCommands() {
         let app = launch()

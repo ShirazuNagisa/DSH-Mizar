@@ -73,6 +73,19 @@ final class AppModel {
     /// nothing about which is which.
     private(set) var titles: [String: String] = [:]
 
+    /// The workspaces DSH has, as paths.
+    ///
+    /// Kept because the session list cannot answer this on its own: a session
+    /// outlives the workspace it was created in, so grouping sessions by their
+    /// working directory draws a row for a workspace the operator deleted. From
+    /// the machine this was reported from, DSH had 4 workspaces and the phone
+    /// showed 10.
+    ///
+    /// Empty means "the host did not say", and the screen falls back to grouping
+    /// sessions on their working directory. A failure here must never remove a
+    /// workspace somebody is using.
+    private(set) var workspacePaths: Set<String> = []
+
     /// Fetch titles for sessions that do not have one yet.
     ///
     /// Concurrently, and only for the sessions actually on screen, because this
@@ -507,6 +520,7 @@ final class AppModel {
         do {
             let result = try await call("session.list", as: SessionListResult.self)
             sessions = result.items
+            await refreshWorkspaces()
             lastError = nil
         } catch {
             if reconnectingIfNeeded, await reconnect() {
@@ -517,6 +531,32 @@ final class AppModel {
             // screen is still usable; throwing the operator out to a failure
             // screen over one dropped request is a worse answer than saying so.
             lastError = Self.describe(error).isEmpty ? nil : Self.describe(error)
+        }
+    }
+
+    /// Re-read which workspaces DSH has.
+    ///
+    /// Best effort, and deliberately silent on failure. The workspaces are a
+    /// filter over a list the screen can draw without them, so a host that does
+    /// not answer leaves the previous answer in place rather than emptying the
+    /// screen.
+    private func refreshWorkspaces() async {
+        // `connection.call`, not `call`: the shared helper reconnects the whole
+        // socket when a request fails, and this is a best-effort read of a
+        // method an older host does not implement. Going through it meant one
+        // unimplemented method tore down the connection every time the session
+        // list refreshed -- which the context figure above the composer noticed
+        // before anything else did.
+        guard let connection else { return }
+        do {
+            let result = try await connection.call("workspace.list", as: WorkspaceListResult.self)
+            // An empty answer is treated as "no answer". A host that genuinely
+            // has no workspaces is a host with no sessions, and then there is
+            // nothing to filter anyway.
+            guard !result.items.isEmpty else { return }
+            workspacePaths = Set(result.items.map(\.path))
+        } catch {
+            // Left alone on purpose. See above.
         }
     }
 

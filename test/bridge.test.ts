@@ -9,9 +9,10 @@
  *
  * @module dsh-mizar/test/bridge
  */
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '../src/dsh.js'
 import { toMethodError } from '../src/bridge/errors.js'
+import { listWorkspaces } from '../src/bridge/workspaces.js'
 import {
   MethodError,
   optionalObject,
@@ -66,6 +67,96 @@ function fakeContext(result: unknown | ((request: Invocation) => unknown)): {
   } as unknown as Context
   return { ctx, calls }
 }
+
+/** A fake context whose `workspace/follow` yields the frames given. */
+function streamContext(frames: unknown[], options: { throwOnStream?: boolean } = {}): Context {
+  return {
+    typertGateway: {
+      stream: async () => {
+        if (options.throwOnStream === true) throw new Error('gateway/invocation-unavailable')
+        let index = 0
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: async () => (index < frames.length
+              ? { value: frames[index++], done: false }
+              : { value: undefined, done: true }),
+            // Recorded so a test can prove the stream is closed; one open
+            // subscription per refresh is a leak that only shows up after an
+            // hour of use.
+            return: async () => {
+              closed += 1
+              return { value: undefined, done: true }
+            },
+          }),
+        }
+      },
+      invoke: async () => {
+        throw new Error('not used')
+      },
+    },
+  } as unknown as Context
+}
+
+let closed = 0
+
+describe('workspaces', () => {
+  beforeEach(() => {
+    closed = 0
+  })
+
+  it('reads the list out of the follow baseline', async () => {
+    // `workspace` has no `list` endpoint. The list is published through a
+    // stream whose first frame is a complete baseline, and that is what the
+    // phone's workspace rows come from.
+    const ctx = streamContext([
+      {
+        type: 'baseline',
+        value: {
+          items: [
+            { workspaceId: 'w1', path: '/a', title: 'A', sessionIds: [], createdAt: '', updatedAt: '' },
+            { workspaceId: 'w2', path: '/b', title: 'B', sessionIds: [], createdAt: '', updatedAt: '' },
+          ],
+          archivedSessionIds: [],
+          pinnedSessionIds: [],
+        },
+      },
+    ])
+    const result = await listWorkspaces(ctx)
+    expect(result.items.map((row) => row.path)).toEqual(['/a', '/b'])
+    expect(result.items.map((row) => row.title)).toEqual(['A', 'B'])
+  })
+
+  it('closes the stream it opened', async () => {
+    const ctx = streamContext([{ type: 'baseline', value: { items: [] } }])
+    await listWorkspaces(ctx)
+    expect(closed).toBe(1)
+  })
+
+  it('refuses a list built from a delta', async () => {
+    // An `upsert` first means the stream started mid-change. Building the list
+    // out of deltas is how a workspace silently disappears from the phone, so
+    // anything but a baseline is reported as no answer at all.
+    const ctx = streamContext([
+      { type: 'upsert', workspace: { workspaceId: 'w1', path: '/a', title: 'A', sessionIds: [], createdAt: '', updatedAt: '' } },
+    ])
+    expect((await listWorkspaces(ctx)).items).toEqual([])
+  })
+
+  it('answers empty rather than throwing when the gateway refuses', async () => {
+    // Empty means "the host did not say", and the screen keeps grouping on the
+    // working directory. A failure here must not be able to remove a workspace
+    // somebody is using.
+    const ctx = streamContext([], { throwOnStream: true })
+    await expect(listWorkspaces(ctx)).resolves.toEqual({ items: [] })
+  })
+
+  it('drops entries that are not shaped like a workspace', async () => {
+    const ctx = streamContext([
+      { type: 'baseline', value: { items: [{ workspaceId: 'w1' }, null, 'nope', { path: '/no-id' }] } },
+    ])
+    expect((await listWorkspaces(ctx)).items).toEqual([])
+  })
+})
 
 describe('wire argument names', () => {
   it('session.list sends _request, not request', async () => {
@@ -435,7 +526,8 @@ describe('method table', () => {
         'session.rename',
         'question.answer',
         'session.messages',
-    'session.stats',
+        'session.stats',
+        'workspace.list',
       ].sort(),
     )
   })

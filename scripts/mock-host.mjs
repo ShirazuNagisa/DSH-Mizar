@@ -66,6 +66,24 @@ const QUESTION = {
   ],
 }
 
+/** A session whose working directory the host has no workspace for.
+ *
+ * The shape of the bug: deleting a workspace removes the host's registry entry
+ * and leaves the session log on disk, so `session.list` keeps returning it. A
+ * phone that grouped sessions by working directory drew a row for a workspace
+ * that had been deleted.
+ */
+const ORPHANED_SESSION = {
+  sessionId: 'session-mock-orphan',
+  cwd: '/Users/you/projects/deleted-workspace',
+  updatedAt: Date.now() - 900_000,
+  running: false,
+  blank: false,
+  agentAvailable: false,
+  parentSessionId: null,
+  origin: null,
+}
+
 const SESSION = {
   sessionId: 'session-mock-0001',
   cwd: '/Users/you/projects/demo',
@@ -109,8 +127,27 @@ function answer(frame) {
         home: '/Users/you',
         deviceId: 'mock-device-0000-4000-8000-000000000000',
       }
+    case 'workspace.list':
+      // The host's own workspace registry, which is not the session list: a
+      // session outlives the workspace it was created in, so a phone that
+      // grouped on the working directory drew rows for workspaces that had been
+      // deleted. One of these deliberately does not match any session's cwd, so
+      // a test can tell "filtered by the host's list" from "grouped by cwd".
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: {
+          items: [
+            { workspaceId: 'ws-demo', path: SESSION.cwd, title: 'demo' },
+          ],
+        },
+      }
     case 'session.list':
-      return { v: 1, type: 'ok', id, result: { items: [SESSION] } }
+      // Two sessions, one of them in a directory `workspace.list` does not
+      // mention, so a test can tell "filtered by the host's workspace list"
+      // apart from "grouped by working directory".
+      return { v: 1, type: 'ok', id, result: { items: [SESSION, ORPHANED_SESSION] } }
     case 'interactions.pending':
       return {
         v: 1,

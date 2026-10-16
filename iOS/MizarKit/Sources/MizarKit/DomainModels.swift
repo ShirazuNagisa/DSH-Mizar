@@ -32,6 +32,26 @@ public struct SessionListResult: Decodable, Sendable, Equatable {
     public let items: [SessionRow]
 }
 
+/// The workspaces DSH has.
+public struct WorkspaceListResult: Decodable, Sendable, Equatable {
+    public let items: [WorkspaceRow]
+}
+
+/// One workspace, as the host reports it.
+///
+/// The phone needs the path and nothing else: it already has the sessions, and
+/// a workspace is what tells it which of their working directories DSH still
+/// recognises.
+public struct WorkspaceRow: Decodable, Sendable, Equatable, Identifiable {
+    public let workspaceId: String
+    /// The directory the workspace is rooted at.
+    public let path: String
+    /// What DSH calls it.
+    public let title: String
+
+    public var id: String { workspaceId }
+}
+
 /// One row in the session list.
 public struct SessionRow: Decodable, Sendable, Equatable, Identifiable {
     public let sessionId: String

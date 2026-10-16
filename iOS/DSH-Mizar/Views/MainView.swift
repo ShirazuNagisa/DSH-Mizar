@@ -205,7 +205,9 @@ struct WorkspaceListView: View {
     private var workspaces: [(path: String, sessions: [SessionRow])] {
         var byPath: [String: [SessionRow]] = [:]
         for session in model.sessions
-        where !session.isSubagent && (!session.blank || session.sessionId == model.selectedSessionId) {
+        where !session.isSubagent
+            && (!session.blank || session.sessionId == model.selectedSessionId)
+            && isKnownWorkspace(session.cwd) {
             byPath[session.cwd ?? "", default: []].append(session)
         }
         return byPath
@@ -294,6 +296,26 @@ struct WorkspaceListView: View {
             }
         }
         .refreshable { await model.refreshSessions() }
+    }
+
+    /// Whether DSH still has a workspace rooted at this directory.
+    ///
+    /// A session is not a workspace. Deleting a workspace removes the host's
+    /// registry entry and leaves the session log on disk, so `session.list` keeps
+    /// returning sessions from directories DSH no longer recognises -- and
+    /// grouping on the working directory drew every one of them. Measured on the
+    /// machine this was reported from: 4 workspaces in DSH, 10 rows on the phone.
+    ///
+    /// An empty set means the host has not told us, and then every directory is
+    /// shown: the old behaviour is the safe one to fall back to, because hiding a
+    /// workspace somebody is working in is worse than showing one they deleted.
+    ///
+    /// - Parameter path: the session's working directory.
+    /// - Returns: whether to draw a row for it.
+    private func isKnownWorkspace(_ path: String?) -> Bool {
+        guard !model.workspacePaths.isEmpty else { return true }
+        guard let path else { return false }
+        return model.workspacePaths.contains(path)
     }
 
     /// The last path component, with the parent shown when two would collide.
