@@ -193,10 +193,20 @@ private struct TurnSection: View {
                 // The answer is the last thing the model *said*, not the last
                 // thing the turn did: a turn usually ends on a tool call, and
                 // that is not a summary of anything.
-                let answer = turn.steps.last { item in
-                    if case .message(_, .assistant, _, _) = item { return true }
-                    return false
-                }
+                //
+                // A turn that is still running has no answer, and the message
+                // that happens to be last is not one either -- it is wherever
+                // the model had got to when the screen was drawn. Pulling it out
+                // from under the bar presented half a streamed answer as the
+                // turn's conclusion and, worse, as a turn that had concluded.
+                // While a turn runs its steps all stay behind the bar: nothing
+                // is hidden, and nothing is claimed.
+                let answer = turn.isRunning
+                    ? nil
+                    : turn.steps.last { item in
+                        if case .message(_, .assistant, _, _) = item { return true }
+                        return false
+                    }
                 let details = answer.map { last in turn.steps.filter { $0.id != last.id } } ?? turn.steps
 
                 DisclosureGroup(isExpanded: $open) {
@@ -214,6 +224,20 @@ private struct TurnSection: View {
                 if let answer {
                     ConversationRow(item: answer)
                 }
+            } else if turn.isRunning {
+                // Running with nothing folded behind it -- a turn that has taken
+                // one step, or none yet. The bar stays, because whether the
+                // agent is working is the whole reason this screen was opened,
+                // and the steps stay in the open because there is nothing yet to
+                // fold away.
+                TurnSummary(turn: turn)
+                    // The same identity the folded row carries, so a caller can
+                    // look for a turn's state without knowing whether that turn
+                    // happened to have anything to fold.
+                    .accessibilityIdentifier("turn.\(turn.id)")
+                ForEach(turn.steps) { item in
+                    ConversationRow(item: item)
+                }
             } else {
                 // A turn that produced one reply is not a crowd, and hiding a
                 // single answer behind a tap gains nothing.
@@ -225,31 +249,71 @@ private struct TurnSection: View {
     }
 }
 
-/// "Completed in 2m 14s", or why it did not.
+/// "Running for 2m 14s", "Completed in 2m 14s", or why it did not.
 private struct TurnSummary: View {
     let turn: ConversationTurn
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: turn.failed ? "exclamationmark.triangle" : "checkmark.circle")
-                .font(.caption)
-                .foregroundStyle(turn.failed ? .orange : .secondary)
-            Text(headline)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+            if turn.isRunning {
+                // A spinner rather than a glyph: this bar is the answer to "is
+                // it still working", and motion says that without being read.
+                ProgressView().controlSize(.mini)
+            } else {
+                Image(systemName: turn.failed ? "exclamationmark.triangle" : "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(turn.failed ? .orange : .secondary)
+            }
+            headline
             Spacer()
             Text("\(turn.steps.count) steps")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
-        .accessibilityIdentifier("turn.summary.\(turn.id)")
+        // No identifier here. Folded, this view is the label of a
+        // `DisclosureGroup`, and that group puts its own accessibility identity
+        // on the whole row -- `turn.<n>` -- so anything set in here never
+        // reaches the tree. The state is in the label, which is where a reader
+        // finds it and where a test finds it.
     }
 
-    private var headline: String {
-        if turn.failed {
-            return turn.duration.map { "未完成，用时 \(Self.spell($0))" } ?? "未完成"
+    /// The state of the turn, and for a running one a clock that moves.
+    ///
+    /// Ticked locally rather than by re-reading the session. The host's answer
+    /// already said when the turn started, and the difference between that and
+    /// now is arithmetic the phone can do for itself -- a screen that asked the
+    /// Mac for the time every second would be a screen that stopped telling the
+    /// time whenever the link hiccuped, which on a phone is constant.
+    @ViewBuilder private var headline: some View {
+        if turn.isRunning, let beganAt = turn.beganAt {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(
+                    String(
+                        format: String(localized: "Running for %@"),
+                        Self.spell(context.date.timeIntervalSince(beganAt)),
+                    ),
+                )
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            }
+        } else {
+            Text(staticHeadline)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
         }
-        return turn.duration.map { "已完成，用时 \(Self.spell($0))" } ?? "已完成"
+    }
+
+    /// The headline for a turn whose text does not change.
+    private var staticHeadline: String {
+        if turn.isRunning { return String(localized: "Running") }
+        if turn.failed {
+            return turn.duration.map {
+                String(format: String(localized: "Unfinished after %@"), Self.spell($0))
+            } ?? String(localized: "Unfinished")
+        }
+        return turn.duration.map {
+            String(format: String(localized: "Completed in %@"), Self.spell($0))
+        } ?? String(localized: "Completed")
     }
 
     /// Minutes and seconds, because that is the unit a turn is measured in.
@@ -257,8 +321,12 @@ private struct TurnSummary: View {
     /// - Returns: the duration as words.
     static func spell(_ seconds: TimeInterval) -> String {
         let total = Int(seconds.rounded())
-        if total < 60 { return "\(total) 秒" }
-        return "\(total / 60) 分 \(total % 60) 秒"
+        if total < 60 { return String(format: String(localized: "%lld s"), total) }
+        return String(
+            format: String(localized: "%lld min %lld s"),
+            total / 60,
+            total % 60,
+        )
     }
 }
 

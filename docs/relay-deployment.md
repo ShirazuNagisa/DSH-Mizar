@@ -763,3 +763,123 @@ arrives through a tunnel, and none of it can be bypassed by reaching the relay.
 - Finally: the room derivation means a rotated token changes the room. When you retire a token,
   remember that phones paired against the old room must re-pair — and that anything holding the old
   token can no longer attach.
+
+---
+
+## 10. Push notifications
+
+The relay is the only machine in this system that can reach Apple, so it is the only machine that
+can send a notification. The plugin does not have — and must not have — the signing key: a key that
+ships inside a plugin installed from a public registry is not a key, it is a public string.
+
+The plugin tells the relay *what happened*; the relay decides nothing. Its judgement stays where the
+evidence is, on the Mac.
+
+### 10.1 Making the key
+
+In the Apple developer portal:
+
+1. **Keys → +**, name it anything, tick **Apple Push Notifications service (APNs)**, continue,
+   register, download the `.p8`. **It can only be downloaded once.**
+2. Note the **Key ID** (10 characters) it shows and your **Team ID** (top right of the portal).
+3. The **topic** is the app's bundle id: `me.shirazu.dshmizar`.
+
+The key file is text. Copy its whole contents, including the `-----BEGIN PRIVATE KEY-----` lines.
+
+### 10.2 Configuring the relay
+
+Add an `apns` object to `relay.config.json` (see `relay/relay.config.example.json`), or set the
+environment instead — the environment wins, and a container usually wants it:
+
+| file key | environment | meaning |
+|---|---|---|
+| `key` | `MIZAR_APNS_KEY` | the `.p8` contents; `\n` is unescaped for you |
+| — | `MIZAR_APNS_KEY_FILE` | or a path to the `.p8`, instead of inline |
+| `keyId` | `MIZAR_APNS_KEY_ID` | the 10-character key id |
+| `teamId` | `MIZAR_APNS_TEAM_ID` | the 10-character team id |
+| `topic` | `MIZAR_APNS_TOPIC` | the app's bundle id |
+| `production` | `MIZAR_APNS_ENV` | kept for config compatibility, no longer used for routing — see below |
+| `timeSensitive` | `MIZAR_APNS_TIME_SENSITIVE` | `1` to ask iOS to break through Focus |
+
+**Which APNs service to use is decided per device, not per relay.** Apple runs two completely
+separate push services and they do not accept each other's device tokens: a token minted by a debug
+build only works against `api.sandbox.push.apple.com`, and sending it to production earns
+`BadDeviceToken` — which says nothing about the real mistake.
+
+Which one a phone needs is a fact the *phone* has and a server cannot infer, so the app reports it
+with its registration and the relay routes each notification to the host that device's token belongs
+to. One relay therefore serves a Mac with a TestFlight phone and an Xcode phone on it at the same
+time, with nothing to configure. `MIZAR_APNS_ENV` is kept so existing config files keep loading, and
+leaving it set either way changes nothing.
+
+**`timeSensitive` is off by default** because it is only honoured when the app carries the
+time-sensitive-notifications entitlement, and asking for a capability an app was not provisioned for
+is not a decision the relay should make on an operator's behalf.
+
+Leave the whole `apns` object out and everything else still works: the plugin is told that push is
+unavailable, logs it once, and keeps serving sessions. A relay that refuses to boot because a
+notification key is missing would take the tunnel down with it, and the tunnel is the part that
+matters.
+
+### 10.3 Checking it
+
+```sh
+curl -s localhost:8787/healthz
+# {"ok":true,"rooms":1,"inFlight":0,"pushDevices":1,"push":true,"version":1}
+```
+
+`push: true` means a key is loaded; `pushDevices` counts the phones currently registered. And per
+room, with the Mac's own tunnel credential:
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" localhost:8787/push/v1/status
+# {"ok":true,"devices":[{"deviceId":"…","environment":"sandbox","locale":"zh-Hans","registeredAt":…}],"enabled":true}
+```
+
+Device tokens are deliberately **not** in that answer: a diagnostic that leaks credentials is not a
+diagnostic.
+
+The `environment` reported per device is the one its token belongs to, and it is what the relay
+routes that device's notifications through.
+
+A phone appears in `pushDevices` only after its app has been granted permission and told the Mac
+about it — which happens on the launch *after* the operator taps Allow. If the count is zero, the
+permission was refused or the app has not been opened since. Revoking a device from the panel removes
+it here as well, so a phone the operator has just removed stops being woken immediately rather than at
+the next relay restart.
+
+### 10.4 What gets sent
+
+Three things, and the list is deliberately short — a notification that arrives for everything is one
+nobody reads.
+
+| when | tile | priority |
+|---|---|---|
+| an agent is blocked on a **permission prompt** | 需要你的许可 / Permission needed | 10, immediate |
+| an agent is blocked on a **question** | 模型有问题要问你 / The model has a question | 10, immediate |
+| a session **stopped working** | 任务完成 / 任务出错 / 任务已停止 | 5, may be batched |
+
+The third one waits **15 seconds of silence** before it is sent. DSH does not emit one turn per
+instruction: measured on a real session, the log holds long runs of consecutive `turn/start` with no
+`user/message` between them, because the agent kept working after the turn that answered the prompt
+had ended. Announcing every `turn/end` would be three notifications for one instruction — and
+teaching somebody to ignore all of them.
+
+The tile says what *happened*, not merely that something did: a turn that ended in `error`,
+`aborted`, `blocked`, `max-tokens` or `interrupted` is reported as failed or stopped. Telling an
+operator their agent finished when it stopped on an error is worse than saying nothing.
+
+**A notification is not sent to a phone whose app is on screen.** The app reports where it is, and
+the plugin hands that down as a list of devices to leave out — so a second phone that is *not* being
+looked at still receives everything. (It was one global flag first, and an iPad left open on a session
+then silenced the iPhone in somebody's pocket — which is precisely the notification that matters.)
+
+### 10.5 Restarts, and why there is no database
+
+Registrations live in memory. A room's tokens are a cache of what the Mac already knows, and the Mac
+re-announces all of them every time its tunnel reconnects — which is exactly what happens when this
+process restarts. Persisting them here would be a second copy of a fact that has an owner, and a
+relay that came back with stale tokens would have nothing to correct them with.
+
+A token Apple reports as retired — `410 Unregistered`, or `BadDeviceToken` — is dropped on the spot.
+Retrying it forever turns a misconfiguration into a permanent stream of failed requests.

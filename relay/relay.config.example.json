@@ -9,5 +9,11 @@
   "maxClientsPerRoom": 8,
   "requestTimeoutMs": 30000,
   "tunnelIdleMs": 90000,
-  "probePort": 8788
+  "probePort": 8788,
+  "apns": {
+    "keyId": "ABCDE12345",
+    "teamId": "TEAM123456",
+    "topic": "me.shirazu.dshmizar",
+    "key": "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----\n"
+  }
 }

@@ -29,6 +29,20 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>DSH-Mizar connects to your Mac on the local network to monitor and guide your agent.</string>
 	<!--
+	  Declared because the app browses for it. iOS raises the local-network
+	  permission prompt when an app first *uses* the local network, and a Bonjour
+	  browse for an undeclared service type is answered with silence rather than
+	  with the prompt -- so the type has to be here for the ask to happen at all.
+
+	  Nothing has to advertise it. The browse exists to raise the question before
+	  the operator is halfway through scanning a pairing code, not to find
+	  anything: a Mac on the same Wi-Fi is reached at the address in the QR.
+	-->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mizar._tcp</string>
+	</array>
+	<!--
 	  The pairing URI is mizar://pair?...  Registering the scheme makes the QR
 	  payload work as a link as well as as a barcode: an operator who receives it
 	  in a message can tap it and be paired, without opening the camera.

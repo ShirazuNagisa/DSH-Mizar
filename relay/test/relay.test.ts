@@ -25,6 +25,7 @@ const config = (overrides: Partial<RelayConfig> = {}): RelayConfig => ({
   requestTimeoutMs: 2000,
   tunnelIdleMs: 60_000,
   probePort: 0, // disabled: binding a UDP port per test is noise
+  apns: null, // notifications are off unless a case turns them on
   ...overrides,
 })
 

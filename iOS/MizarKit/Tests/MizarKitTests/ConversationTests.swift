@@ -629,6 +629,81 @@ struct ConversationCacheTests {
         #expect(merged.map(\.turn) == [7, 8])
     }
 
+    @Test("a turn that straddles the page window keeps its prompt")
+    func windowedTurnKeepsItsPrompt() {
+        // The host trims a page to the newest few hundred messages, so the turn
+        // crossing the window's oldest edge comes back **without the prompt that
+        // began it**. Replacing the stored turn with that copy deleted the
+        // operator's own message from the conversation -- and from the screen,
+        // because the view draws turns and the turn no longer held it. Nothing
+        // they could do on the phone brought it back.
+        let stored = turn(78, prompts: [9628], steps: [9630])
+        let windowed = turn(78, prompts: [], steps: [9700])
+
+        let merged = mergeTurns(cached: [stored], fresh: [windowed])
+
+        #expect(merged.count == 1)
+        #expect(merged.first?.prompts.map(\.id) == ["seq-9628"])
+        #expect(merged.first?.steps.map(\.id) == ["seq-9630", "seq-9700"])
+    }
+
+    @Test("merging the same two pages twice does not duplicate anything")
+    func mergeIsIdempotent() {
+        // `collapseContinuations` folds a chain that the host sends unfurled
+        // again on the next page, so a turn's steps arrive both inside the
+        // folded turn and beside it. Concatenating showed them twice.
+        let asked = turn(2, prompts: [100], steps: [101], ended: "completed")
+        let carriedOn = turn(3, prompts: [], steps: [200], ended: "completed")
+        let once = mergeTurns(cached: [], fresh: [asked, carriedOn])
+        let twice = mergeTurns(cached: once, fresh: [asked, carriedOn])
+
+        #expect(twice.count == 1)
+        #expect(twice.first?.steps.map(\.id) == once.first?.steps.map(\.id))
+    }
+
+    @Test("a turn the operator cancelled is not a completed one")
+    func cancelledThenContinued() {
+        // Only `error` counted as unfinished, so a turn that was cancelled --
+        // and then carried on by a turn that completed -- reported "已完成" with
+        // the abort folded away behind the bar. The continuation shape is the
+        // real one: DSH emits consecutive `turn/start` with no user-authored
+        // message between them.
+        for kind in ["aborted", "blocked", "interrupted", "max-tokens"] {
+            // Built by hand rather than through the helper: these need real
+            // start and end times, and the helper deliberately leaves them out.
+            let asked = ConversationTurn(
+                turn: 5,
+                prompts: [.message(id: "seq-10", role: .user, text: "go", at: Date(timeIntervalSince1970: 10))],
+                steps: [.message(id: "seq-11", role: .assistant, text: "half", at: Date(timeIntervalSince1970: 11))],
+                startedAt: Date(timeIntervalSince1970: 10),
+                endedAt: Date(timeIntervalSince1970: 20),
+                endedReason: kind,
+            )
+            let carriedOn = ConversationTurn(
+                turn: 6,
+                prompts: [],
+                steps: [.message(id: "seq-20", role: .assistant, text: "the rest", at: Date(timeIntervalSince1970: 21))],
+                startedAt: Date(timeIntervalSince1970: 21),
+                endedAt: Date(timeIntervalSince1970: 30),
+                endedReason: "completed",
+            )
+
+            let merged = mergeTurns(cached: [], fresh: [asked, carriedOn])
+
+            #expect(merged.count == 1)
+            #expect(
+                merged.first?.failed == true,
+                "a turn that ended '\(kind)' and was continued is reported as finished",
+            )
+            // The first unfinished reason is kept, not flattened to `error`:
+            // "the operator cancelled this" and "it hit an error" are different
+            // things to be told.
+            #expect(merged.first?.endedReason == kind)
+            #expect(merged.first?.isRunning == false)
+            #expect(merged.first?.isCollapsible == false)
+        }
+    }
+
     @Test("a continuation that failed makes the whole turn failed")
     func continuationFailurePropagates() {
         // "completed" then "error" is a failed turn: the operator needs to see
@@ -764,7 +839,31 @@ struct TurnTests {
         #expect(turn.isCollapsible)
     }
 
-    @Test("one step is not collapsed")
+    @Test("a cancelled turn is not a completed one")
+    func abortedIsNotCompleted() throws {
+        // `turn/end.reason.kind` is `completed` only when the agent finished. A
+        // cancelled turn, a blocked one and one that ran out of context all end
+        // with their own kind -- and treating anything but `error` as success
+        // drew "已完成" over work that stopped halfway.
+        for kind in ["aborted", "blocked", "max-tokens", "interrupted", "forked", "something-new"] {
+            let result = try page("""
+            {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+              {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+              {"type":"event","event":{"type":"assistant/message","seq":2,"time":1200,
+                "data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"one"}]}}}},
+              {"type":"event","event":{"type":"assistant/message","seq":3,"time":1300,
+                "data":{"turn":1,"step":2,"message":{"role":"assistant","content":[{"type":"text","text":"two"}]}}}},
+              {"type":"event","event":{"type":"turn/end","seq":4,"time":4000,
+                "data":{"turn":1,"reason":{"kind":"\(kind)"}}}}
+            ]}
+            """)
+            let turn = try #require(result.conversationTurns().first)
+            #expect(turn.failed, "a turn that ended '\(kind)' is reported as finished")
+            #expect(!turn.isRunning, "a turn with an end record is still running")
+        }
+    }
+
+    @Test("a turn that produced one reply is not a crowd")
     func singleStepStaysOpen() throws {
         // Hiding a single answer behind a tap gains nothing -- the answer is the
         // whole point of the turn.
@@ -809,6 +908,65 @@ struct TurnTests {
         """)
         #expect(result.conversationTurns().map(\.turn) == [1, 2])
     }
+
+    @Test("a turn with no end is running, not finished")
+    func runningTurn() throws {
+        // The reported bug. A turn that is still working has no `turn/end`, and
+        // the reader invented an end time from the last record it held -- so a
+        // live turn was drawn as "已完成，用时 1 分 12 秒", with the seconds
+        // measuring the age of the newest message rather than any work.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"user/message","seq":2,"time":1100,
+            "data":{"content":[{"type":"text","text":"refactor it"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"assistant/message","seq":3,"time":5000,
+            "data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"Halfway"}]}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(turn.isRunning)
+        // No duration: there is nothing that can have taken one yet.
+        #expect(turn.duration == nil)
+        // The elapsed time is still answerable, and it is measured from the
+        // turn's own start rather than from the message that happens to be last.
+        #expect(turn.elapsed(asOf: Date(timeIntervalSince1970: 20)) == 19)
+    }
+
+    @Test("an ended turn is not running")
+    func endedTurnIsNotRunning() throws {
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"assistant/message","seq":2,"time":1200,
+            "data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}}},
+          {"type":"event","event":{"type":"turn/end","seq":3,"time":4000,
+            "data":{"turn":1,"reason":{"kind":"completed"}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(!turn.isRunning)
+        // A clock far past the end does not extend a finished turn.
+        #expect(turn.elapsed(asOf: Date(timeIntervalSince1970: 9000)) == 3)
+    }
+
+    @Test("a prompt whose turn never started is not work in progress")
+    func unstartedPromptIsNotRunning() throws {
+        // `user/message` is logged before the `turn/start` it begins, so a page
+        // cut in that gap holds a prompt with no turn number. Nothing is working
+        // on it, and drawing it as "正在处理" would claim an agent was thinking
+        // about a message that may be the last thing anybody ever said.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"user/message","seq":1,"time":1000,
+            "data":{"content":[{"type":"text","text":"anybody there?"}],"source":{"kind":"user"}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(turn.turn == nil)
+        #expect(!turn.isRunning)
+        #expect(!turn.isCollapsible)
+    }
 }
 
 @Suite("Turn merging")
@@ -847,5 +1005,40 @@ struct TurnMergeTests {
         // "Unknown" is not "earliest".
         let merged = mergeTurns(cached: [turn(1, "one")], fresh: [turn(nil, "loose")])
         #expect(merged.map(\.turn) == [1, nil])
+    }
+
+    /// A turn with an end time, so "finished" can be distinguished from "still going".
+    private func ended(_ n: Int, at seconds: Double) -> ConversationTurn {
+        ConversationTurn(
+            turn: n,
+            prompts: [],
+            steps: [.message(id: "t\(n)", role: .assistant, text: "done", at: Date(timeIntervalSince1970: 0))],
+            startedAt: Date(timeIntervalSince1970: 0),
+            endedAt: Date(timeIntervalSince1970: seconds),
+            endedReason: "completed",
+        )
+    }
+
+    @Test("an older page cannot un-end a turn")
+    func olderPageCannotRestartATurn() {
+        // `loadOlder` passes the *older* page as `fresh`. With plain
+        // "fresh wins", the copy of a turn that straddled the page boundary --
+        // the one without its `turn/end`, because that record is in the newer
+        // page -- replaced the copy that had it. Harmless while an end time was
+        // invented from the last step; a turn that flipped back to "正在处理"
+        // every time the operator scrolled up once it stopped being invented.
+        let merged = mergeTurns(cached: [ended(7, at: 60)], fresh: [turn(7, "still going")])
+        #expect(merged.count == 1)
+        #expect(merged.first?.endedAt != nil)
+        #expect(merged.first?.isRunning == false)
+    }
+
+    @Test("a page that knows the turn ended wins over one that does not")
+    func newerPageEndsTheTurn() {
+        // The other direction, which is the ordinary path: the turn finished
+        // between two refreshes and the newer page carries its end.
+        let merged = mergeTurns(cached: [turn(7, "still going")], fresh: [ended(7, at: 60)])
+        #expect(merged.first?.endedAt != nil)
+        #expect(merged.first?.isRunning == false)
     }
 }

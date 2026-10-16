@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the app target.
+
+  One key, and it is not optional: without `aps-environment`,
+  `registerForRemoteNotifications()` fails on a real device and no push token is
+  ever issued. The app would look like it worked -- it asks for notification
+  permission, the operator says yes, nothing ever arrives -- which is the worst
+  shape a failure can have.
+
+  `development` here is what Xcode substitutes for a Debug build; a Release
+  archive built for the App Store gets `production` from the profile it is signed
+  with. That switch is exactly why the relay needs to be told which APNs
+  environment it is talking to (see `docs/relay-deployment.md` §10.2): a token
+  from one is refused by the other, with an error that names neither.
+
+  Enabling the capability is also required on the App ID itself -- either in the
+  developer portal, or by adding "Push Notifications" under Signing &
+  Capabilities in Xcode with automatic signing on. See `docs/testflight.md`.
+-->
+<plist version="1.0">
+<dict>
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

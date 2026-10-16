@@ -22,7 +22,36 @@ const port = Number(process.argv[2] ?? 19395)
 const CODE = 'MOCK-CODE'
 // A real host rarely has pending requests and a conversation at the same time;
 // the flag lets each be seen on its own.
-const WITH_PENDING = process.env['MIZAR_MOCK_PENDING'] !== '0'
+/**
+ * Whether a pending approval and question are on offer.
+ *
+ * A launch flag, and switchable at runtime by `/reset`. The two cards take most
+ * of a phone screen, which is right -- an agent blocked on a decision is the
+ * most urgent thing there is -- but it leaves a test about the conversation
+ * measuring a screenful of card. A test says which it wants.
+ */
+let withPending = process.env['MIZAR_MOCK_PENDING'] !== '0'
+
+/**
+ * How long to stall every answer, in milliseconds.
+ *
+ * For the two screens that exist to say how long something is taking, and which
+ * are therefore impossible to observe against a mock that answers instantly: a
+ * progress bar that appears and vanishes inside one runloop turn is a progress
+ * bar no test can see. Set by `/reset?slow=NNN`, and zero otherwise so the rest
+ * of the suite is not slowed down for it.
+ */
+let answerDelayMs = 0
+
+/**
+ * Whether the mock should refuse every connection.
+ *
+ * A Mac that is asleep, or on a network that has gone away. Switchable at
+ * runtime by `/offline?on=1` so a test can take the host away *after* the phone
+ * has synced from it -- which is the only way to check that an unreachable Mac
+ * does not take away what the phone already stored.
+ */
+let offline = false
 
 /** A pending approval, shaped like the one the bridge builds. */
 const APPROVAL = {
@@ -153,7 +182,7 @@ function answer(frame) {
         v: 1,
         type: 'ok',
         id,
-        result: WITH_PENDING ? { approvals: [APPROVAL], questions: [QUESTION] } : { approvals: [], questions: [] },
+        result: withPending ? { approvals: [APPROVAL], questions: [QUESTION] } : { approvals: [], questions: [] },
       }
     case 'session.stats':
       // Field names and nesting copied from the fixture recorded off a live
@@ -278,14 +307,23 @@ function answer(frame) {
     }
     case 'session.messages':
       // Record shapes copied from a real session log, including the failure this
-      // machine's host produces on every turn.
+      // machine's host produces on every turn -- and, at the end, a turn that is
+      // still running.
+      //
+      // The running turn is the shape that was reported broken: a `turn/start`
+      // with steps after it and **no `turn/end`**. The reader used to invent an
+      // end time from the last record it held, so a live turn was drawn as
+      // "已完成，用时 10 秒" with the seconds measuring the age of the newest
+      // message. It carries two steps so the fold is exercised: neither message
+      // may be shown as the turn's summary, and both must appear when the turn
+      // is opened.
       return {
         v: 1,
         type: 'ok',
         id,
         result: {
           sessionId: SESSION.sessionId,
-          asOfSeq: 17,
+          asOfSeq: 27 + sentPrompts.length,
           hasMore: false,
           records: [
             ev(0, 'permission/preset', { preset: 'workspace-write' }),
@@ -305,12 +343,28 @@ function answer(frame) {
                 { type: 'chunk', time: 1, chunk: { type: 'delta', text: 'the parser so it can be tested alone.' } },
               ],
             }),
-            ev(5, 'user/message', {
+            ev(5, 'assistant/message', {
+              turn: 1,
+              step: 1,
+              message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'The parser is now two files.' }],
+              },
+            }),
+            ev(6, 'turn/end', { turn: 1, reason: { kind: 'completed' } }),
+            ev(7, 'user/message', {
               content: [{ type: 'text', text: 'Now add a case for trailing commas.' }],
+              // `source.kind` is not decoration: the reader shows a
+              // `user/message` only when it says a person wrote it, because DSH
+              // sends its own injected context through the same event. A fixture
+              // without it is a prompt that never appears -- and, worse, a turn
+              // with no prompt, which is what the reader folds into the turn above
+              // it. Omitting it here made one turn out of three.
+              source: { kind: 'user' },
               role: 'user',
               id: 'm2',
             }),
-            ev(6, 'assistant/attempt', {
+            ev(8, 'assistant/attempt', {
               turn: 2,
               step: 1,
               stream: [
@@ -331,10 +385,37 @@ function answer(frame) {
                 },
               ],
             }),
-            ev(7, 'step/end', { turn: 2, step: 1 }),
+            ev(9, 'step/end', { turn: 2, step: 1 }),
+            ev(10, 'turn/end', { turn: 2, reason: { kind: 'error' } }),
+            ev(11, 'turn/start', { turn: 3 }),
+            ev(12, 'user/message', {
+              content: [{ type: 'text', text: 'And run the whole suite.' }],
+              source: { kind: 'user' },
+              role: 'user',
+              id: 'm3',
+            }),
+            ev(13, 'step/start', { turn: 3, step: 1 }),
+            ev(14, 'assistant/message', {
+              turn: 3,
+              step: 1,
+              message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'Running the tests now.' }],
+              },
+            }),
+            ev(15, 'step/start', { turn: 3, step: 2 }),
+            ev(16, 'assistant/message', {
+              turn: 3,
+              step: 2,
+              message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'Two failures, fixing them.' }],
+              },
+            }),
+            // No `turn/end` for turn 3: it is still working.
             // Anything the client has sent since, appended the way a host would.
             ...sentPrompts.map((text, index) =>
-              ev(8 + index, 'user/message', {
+              ev(17 + index, 'user/message', {
                 content: [{ type: 'text', text }],
                 source: { kind: 'user' },
                 role: 'user',
@@ -355,6 +436,41 @@ function answer(frame) {
 }
 
 const server = createServer((request, response) => {
+  if (request.url?.startsWith('/offline')) {
+    offline = (request.url ?? '').includes('on=1')
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, offline }))
+    return
+  }
+  if (request.url?.startsWith('/slow')) {
+    // Set the stall *after* the app is up, so a test can make one screen slow
+    // without also making the launch that leads to it slow.
+    const match = /ms=(\d+)/.exec(request.url ?? '')
+    answerDelayMs = match === null ? 0 : Math.min(5000, Number(match[1]))
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, delayMs: answerDelayMs }))
+    return
+  }
+  if (request.url?.startsWith('/reset')) {
+    // Between UI tests, so each one starts from the same fixture.
+    //
+    // `sentPrompts` is deliberate -- the conversation has to grow when something
+    // is sent, or the send path is untestable -- but it grew for the life of the
+    // process, which is the whole suite. Every test after the first send
+    // therefore ran against a longer conversation than the one before it, and a
+    // test that scrolled to find a message found a different amount of content
+    // depending on which tests had run first. That is a suite whose failures
+    // depend on test order, which is a suite nobody can trust.
+    sentPrompts.length = 0
+    // `?pending=0` takes the two interaction cards off the screen, for a test
+    // that is about what is underneath them. The default is to offer them.
+    withPending = !(request.url ?? '').includes('pending=0')
+    const slow = /slow=(\d+)/.exec(request.url ?? '')
+    answerDelayMs = slow === null ? 0 : Math.min(5000, Number(slow[1]))
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true }))
+    return
+  }
   if (request.url?.startsWith('/mizar/v1/hello')) {
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({
@@ -394,10 +510,19 @@ const server = createServer((request, response) => {
 
 const wss = new WebSocketServer({ server, path: '/mizar/v1/ws' })
 wss.on('connection', (socket) => {
+  if (offline) {
+    // Closed immediately rather than left hanging: a socket that opens and then
+    // says nothing is what a network failure looks like from the app's side, and
+    // that is the case being reproduced.
+    socket.close(1011, 'mock offline')
+    return
+  }
   socket.on('message', (raw) => {
     let frame
     try { frame = JSON.parse(String(raw)) } catch { return }
-    socket.send(JSON.stringify(answer(frame)))
+    const reply = () => socket.send(JSON.stringify(answer(frame)))
+    if (answerDelayMs === 0) reply()
+    else setTimeout(reply, answerDelayMs)
   })
 })
 

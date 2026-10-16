@@ -517,6 +517,9 @@ describe('method table', () => {
         'interactions.pending',
         'model.catalog',
         'permissions.catalog',
+        'push.presence',
+        'push.register',
+        'push.unregister',
         'session.cancel',
         'session.create',
         'session.list',
@@ -530,6 +533,77 @@ describe('method table', () => {
         'workspace.list',
       ].sort(),
     )
+  })
+
+  it('hands push registrations to the binding, and the device id with them', async () => {
+    const { ctx } = fakeContext({})
+    const calls: unknown[] = []
+    const push = {
+      register: async (deviceId: string, input: unknown) => {
+        calls.push(['register', deviceId, input])
+        return true
+      },
+      presence: (deviceId: string, foreground: boolean) => {
+        calls.push(['presence', deviceId, foreground])
+      },
+      unregister: async (deviceId: string) => {
+        calls.push(['unregister', deviceId])
+        return true
+      },
+      republish: async () => 0,
+    }
+    const table = createMethodTable(ctx, facts, new InteractionBroker(), push)
+
+    // The device id comes from the authenticated connection, never from the
+    // payload: a caller must not be able to register a token against somebody
+    // else's phone.
+    expect(
+      await table['push.register']?.(
+        { token: 'deadbeef', environment: 'sandbox', locale: 'zh-Hans', deviceId: 'somebody-else' },
+        context,
+      ),
+    ).toEqual({ registered: true })
+    expect(calls[0]).toEqual([
+      'register',
+      context.deviceId,
+      { token: 'deadbeef', environment: 'sandbox', locale: 'zh-Hans' },
+    ])
+
+    expect(await table['push.presence']?.({ foreground: true }, context)).toEqual({ accepted: true })
+    expect(calls[1]).toEqual(['presence', context.deviceId, true])
+    expect(await table['push.unregister']?.({}, context)).toEqual({ unregistered: true })
+    expect(calls[2]).toEqual(['unregister', context.deviceId])
+  })
+
+  it('requires an environment on a push registration', async () => {
+    const { ctx } = fakeContext({})
+    const table = createMethodTable(ctx, facts, new InteractionBroker(), {
+      register: async () => true,
+      presence: () => {},
+      unregister: async () => true,
+      republish: async () => 0,
+    })
+    // Not defaulted. A sandbox token sent to the production host is refused by
+    // Apple with `BadDeviceToken`, which says nothing about the real mistake --
+    // so guessing here turns a clear client bug into an unexplained silence.
+    await expect(table['push.register']?.({ token: 'aa' }, context)).rejects.toMatchObject({
+      code: 'MALFORMED_FRAME',
+    })
+    await expect(table['push.presence']?.({}, context)).rejects.toMatchObject({
+      code: 'MALFORMED_FRAME',
+    })
+  })
+
+  it('answers push calls cleanly when the host has no push at all', async () => {
+    const { ctx } = fakeContext({})
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+    // A composition without a relay still has to answer. An error here would be
+    // a phone that has to know which plugin build it is talking to.
+    expect(await table['push.register']?.({ token: 'aa', environment: 'production' }, context)).toEqual(
+      { registered: false },
+    )
+    expect(await table['push.presence']?.({ foreground: false }, context)).toEqual({ accepted: true })
+    expect(await table['push.unregister']?.({}, context)).toEqual({ unregistered: false })
   })
 })
 

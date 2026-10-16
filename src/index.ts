@@ -16,7 +16,12 @@ import type { Config as MizarConfig } from './config.js'
 import { registerAnswerers } from './bridge/answerers.js'
 import { createMethodTable } from './bridge/index.js'
 import { InteractionBroker } from './bridge/interactions.js'
+import { sessionStats } from './bridge/sessions.js'
 import { registerPanelApi } from './panel/api.js'
+import { createPushBinding } from './push/binding.js'
+import { PushNotifier } from './push/notifier.js'
+import { isNotifiable, type ScopedSessionHeader } from './push/scope.js'
+import { NoopTransport, RelayTransport, type PushTransport } from './push/transport.js'
 import { MizarStore, resolveMizarHome } from './auth/store.js'
 import {
   selectBindAddresses,
@@ -36,6 +41,40 @@ import { runSpike } from './spike.js'
 export const name = 'mizar'
 
 /**
+ * The two shapes the session-event observer needs, declared structurally.
+ *
+ * Not imported from `@deepseek-ai/dsh-session`: this file is the composition
+ * root, and naming the full `Session` type here would tie the whole plugin's
+ * compile to a package it only touches through two fields. The header is
+ * `./push/scope.js`'s, so the rule about which sessions are notified about is
+ * stated once, where it can be tested.
+ */
+interface SessionHandle {
+  readonly id: string
+  readonly header: ScopedSessionHeader
+}
+
+/** One post-commit log record, as much of it as the notifier reads. */
+interface SessionEventLike {
+  readonly type: string
+  readonly data?: unknown
+}
+
+/**
+ * This machine's own language, for a host whose phones have never said.
+ *
+ * Read once at module load: a process-wide locale does not change while the
+ * process runs, and calling it per notification would be work for nothing.
+ */
+const systemLocale = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale
+  } catch {
+    return 'en'
+  }
+})()
+
+/**
  * The version this build reports at startup.
  *
  * Printed because the most expensive confusion in this project's history was
@@ -44,7 +83,7 @@ export const name = 'mizar'
  * code in place and every symptom unchanged. One line at boot turns that from a
  * guess into a fact.
  */
-const MIZAR_VERSION = '0.6.0'
+const MIZAR_VERSION = '0.7.1'
 
 /**
  * Services this plugin must observe before it activates.
@@ -153,7 +192,68 @@ async function startListener(
   }
 
   const liveDevices = store.state.devices.filter((d) => d.revokedAt === undefined).length
-  report(`dsh-mizar ${MIZAR_VERSION} · state: ${stateDir} · devices: ${liveDevices} live`)
+  const withPush = store.state.devices.filter(
+    (d) => d.revokedAt === undefined && d.push !== undefined,
+  ).length
+  // The notification count is on the same line as everything else because the
+  // question it answers -- "is my phone actually registered" -- is asked at
+  // exactly the moment somebody is looking at this log for the version number.
+  report(
+    `dsh-mizar ${MIZAR_VERSION} · state: ${stateDir} · devices: ${liveDevices} live` +
+      (config.relay.enabled ? ` · push: ${withPush}/${liveDevices} registered` : ' · push: no relay'),
+  )
+
+  // No token configured is the normal case, not an error: this install invents
+  // its own identity and the relay derives the room from it. That is what makes
+  // "install and scan" possible -- there is no per-user credential for anyone to
+  // issue, hand out or keep in sync.
+  //
+  // Resolved here rather than beside the tunnel because notifications need it
+  // too: the relay authenticates a push against the same secret it authenticates
+  // the tunnel with, which is what keeps a second enrolment mechanism out of the
+  // design.
+  const tunnelToken =
+    config.relay.token !== ''
+      ? config.relay.token
+      : await loadOrCreateTunnelSecret(stateDir, report)
+
+  const relayBaseURL =
+    config.relay.enabled && config.relay.url !== ''
+      ? phoneBaseURL(config.relay.url, config.relay.publicUrl)
+      : null
+
+  // With no relay there is nowhere to send a notification: pushing needs a
+  // server that can reach Apple, and a phone that is asleep has no socket here.
+  const pushTransport: PushTransport =
+    relayBaseURL === null
+      ? new NoopTransport()
+      : new RelayTransport({ baseURL: relayBaseURL, token: tunnelToken, log: report })
+
+  const notifier = new PushNotifier({
+    transport: pushTransport,
+    describeSession: async (sessionId) => {
+      try {
+        const frame = await sessionStats(ctx, sessionId)
+        return frame.stats?.title ?? null
+      } catch {
+        // A notification is not worth failing over a title.
+        return null
+      }
+    },
+    locale: () => {
+      // The newest phone that asked, because that is the one most likely to be
+      // carried. Falls back to this Mac's own locale, which is right when the
+      // operator reads the same language in both places.
+      for (let index = store.state.devices.length - 1; index >= 0; index -= 1) {
+        const push = store.state.devices[index]?.push
+        if (push !== undefined) return push.locale
+      }
+      return systemLocale
+    },
+    log: report,
+  })
+
+  const push = createPushBinding({ store, notifier, transport: pushTransport, log: report })
 
   // Created before the listener so the method table can reach it, and given its
   // transport only once the listener is up: the broker must not hold a socket
@@ -169,6 +269,7 @@ async function startListener(
       protocolVersion: PROTOCOL_VERSION,
     },
     broker,
+    push,
   )
 
   // A stable handle the rest of the plugin reads through, so a rebind can swap
@@ -215,15 +316,6 @@ async function startListener(
   // to until the port exists, and nothing to say once it is gone.
   let relayState: RelayClientState = { connected: false, room: null, lastError: null }
 
-  // No token configured is the normal case, not an error: this install invents
-  // its own identity and the relay derives the room from it. That is what makes
-  // "install and scan" possible -- there is no per-user credential for anyone to
-  // issue, hand out or keep in sync.
-  const tunnelToken =
-    config.relay.token !== ''
-      ? config.relay.token
-      : await loadOrCreateTunnelSecret(stateDir, report)
-
   const relay =
     config.relay.enabled && config.relay.url !== ''
       ? new RelayClient({
@@ -234,10 +326,24 @@ async function startListener(
           reconnectBaseMs: config.relay.reconnectBaseMs,
           reconnectMaxMs: config.relay.reconnectMaxMs,
           onState: (state) => {
+            const wasConnected = relayState.connected
             relayState = state
-            if (state.connected && state.room !== null) {
+            if (!state.connected) return
+            if (state.room !== null && !wasConnected) {
               const base = phoneBaseURL(config.relay.url, config.relay.publicUrl, state.room)
               if (base !== null) report(`relay: phones should pair against ${base}`)
+            }
+            // Every reconnect, not only the first. The relay holds push
+            // registrations in memory, so a relay restarted under a live tunnel
+            // comes back knowing about nobody -- and the tunnel reconnecting is
+            // exactly how this Mac finds out. The roster is the durable copy.
+            if (!wasConnected) {
+              void push
+                .republish()
+                .then((count) => {
+                  if (count > 0) report(`push: re-registered ${count} device(s) with the relay`)
+                })
+                .catch(() => {})
             }
           },
         })
@@ -264,9 +370,26 @@ async function startListener(
         if (current === null) throw new Error('the listener is not running')
         return current.issuePairingCode()
       },
-      revokeDevice: (deviceId: string) => {
+      revokeDevice: async (deviceId: string) => {
         const current = holder.current
-        if (current === null) return Promise.resolve(false)
+        // Revoking from the panel goes straight to the listener, which is the
+        // one path that removes a device without passing through the push
+        // binding -- and the binding is where every other removal tells the
+        // notifier and the relay. Two things are left behind if this path skips
+        // it:
+        //
+        //   - a foreground flag that is never cleared, because a revoked device
+        //     never reports a `false` again -- so the notifier goes on holding
+        //     presence for a phone that is not on the roster; and
+        //   - a registration at the relay, which pushes to that phone's token
+        //     until the relay restarts. A device the operator has just removed
+        //     should stop being woken about this Mac's work immediately, not at
+        //     the next deploy.
+        //
+        // Both happen before the revocation is attempted, so a revocation that
+        // fails still leaves the safer of the two states behind.
+        await push.unregister(deviceId)
+        if (current === null) return false
         return current.revokeDevice(deviceId)
       },
     },
@@ -290,7 +413,38 @@ async function startListener(
   })
   // Registered with `prepend`, so the phone is asked alongside the desktop GUI
   // rather than only when the GUI declines.
-  registerAnswerers(ctx, broker)
+  registerAnswerers(ctx, broker, notifier)
+
+  // The one exact signal that a turn finished. `session/event` is the post-commit
+  // append feed, so this is the log itself rather than a summary of it, and
+  // `turn/end` is the only record that ends a turn -- `agent/status` going idle
+  // is coarser and also fires for maintenance that is not a turn at all.
+  //
+  // Unscoped, so it sees every session including subagents and forks. The filter
+  // is explicit and one line, and it is written as "would the app draw a row for
+  // this session" rather than "is this a subagent", because those are different
+  // questions with different answers. The app hides a row carrying either an
+  // origin or a parent, and the two are not the same thing: a subagent is a
+  // delegated child nobody asked to follow, while a fork is a session the
+  // operator duplicated and can go on working in. What both have in common is
+  // that the notification would be a banner for a session with no row to open,
+  // which is a notification that can only be dismissed.
+  ctx.on('session/event', (session: SessionHandle, event: SessionEventLike) => {
+    if (!isNotifiable(session.header)) return
+    if (event.type === 'turn/end') {
+      const reason = (event.data as { reason?: { kind?: unknown } } | undefined)?.reason
+      notifier.turnEnded(session.id, typeof reason?.kind === 'string' ? reason.kind : null)
+      return
+    }
+    // A continuation that starts before the quiet period runs out cancels the
+    // announcement it was about to earn, which is what keeps one instruction
+    // from producing three notifications. The record type goes through so the
+    // notifier can tell work from bookkeeping: a title written by the title
+    // model, a rename from the desktop GUI or a todo snapshot is not the agent
+    // starting up again, and treating it as one swallowed the announcement
+    // entirely.
+    notifier.noteActivity(session.id, event.type)
+  })
 
   startBindWatcher(config, readPlan, holder, plan, signal)
 
@@ -299,6 +453,9 @@ async function startListener(
     // leaving it up while the listener closes would produce 502s instead of
     // clean disconnects for whatever is still connected.
     relay?.stop()
+    // A pending notification is about a session that has stopped; on unload
+    // there is nothing left to announce it with.
+    notifier.dispose()
     // Release anything still waiting before the transport disappears, so no
     // agent is left holding a turn open for a question nobody can answer.
     broker.dispose()

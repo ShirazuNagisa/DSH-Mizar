@@ -10,8 +10,8 @@
 |---|---|
 | **Bundle ID** | `me.shirazu.dshmizar` |
 | **显示名** | `DSH-Mizar` |
-| **版本号** | `0.1.0` |
-| **构建号** | `1` |
+| **版本号** | `0.7.1` |
+| **构建号** | `12` |
 | **Team ID** | `5Q2A46685M` |
 | 团队名 | Vreeland Lee |
 | 签名身份 | `Apple Distribution: Vreeland Lee (5Q2A46685M)` |
@@ -35,9 +35,10 @@
   2. 类型选 **App** → **Continue**
   3. **Description**：`DSH-Mizar`
   4. **Bundle ID**：选 **Explicit**，填 `me.shirazu.dshmizar`
-  5. **Capabilities**：**什么都不用勾**
-     （这个 App 不用推送、不用 iCloud、不用 App Groups。它的网络走普通 TCP，
-     不需要任何特殊 capability）
+  5. **Capabilities**：勾上 **Push Notifications**
+     （通知要用它。不勾的话真机上 `registerForRemoteNotifications()` 会静默失败：
+     权限弹窗问了、用户点了允许、然后什么都不会到 —— 这是最难查的一种坏法。
+     其余 iCloud、App Groups 都不用勾）
   6. **Continue** → **Register**
 
 > ⚠️ `me.shirazu.dshmizar` **必须和 Xcode 工程里完全一致**，包括大小写。

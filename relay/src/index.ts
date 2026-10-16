@@ -24,7 +24,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from 'node:stream'
 import { createSocket, type Socket as UdpSocket } from 'node:dgram'
 import { WebSocketServer, type WebSocket } from 'ws'
+import { ApnsClient } from './apns.js'
 import { loadConfig, type RelayConfig } from './config.js'
+import { deliver, PushRegistry, readDevice, readNotification } from './push.js'
 import { deriveRoom, secretsEqual } from './room.js'
 import { RoomRegistry, Tunnel, saneCloseCode, type TunnelStream } from './tunnel.js'
 import {
@@ -33,6 +35,12 @@ import {
   TUNNEL_PROTOCOL_VERSION,
   splitRoomPath,
 } from './protocol.js'
+
+/** Path prefix of the push API. */
+const PUSH_PREFIX = '/push/v1/'
+
+/** Largest push request body. A notification is a few hundred bytes. */
+const MAX_PUSH_BODY_BYTES = 64 * 1024
 
 /** Headers that describe this hop rather than the request. */
 const HOP_BY_HOP = new Set([
@@ -107,6 +115,9 @@ export async function startRelay(
   /** Live tunnels per source address. Not a security boundary, a resource one. */
   const tunnelsPerIp = new Map<string, number>()
   const wss = new WebSocketServer({ noServer: true })
+  /** Every room's notification endpoints. See `push.ts` for why this is memory. */
+  const pushRegistry = new PushRegistry()
+  const apns = config.apns === null ? null : new ApnsClient(config.apns, log)
   /** Phone sockets waiting for the Mac to accept their upgrade. */
   // The upgrade socket is a Duplex, not a net.Socket: `ws` accepts whatever the
   // HTTP server hands over, and typing it as a Socket made every use of it an error.
@@ -127,8 +138,18 @@ export async function startRelay(
         ok: true,
         rooms: rooms.size,
         inFlight: rooms.inFlight,
+        pushDevices: pushRegistry.deviceCount,
+        push: apns !== null,
         version: TUNNEL_PROTOCOL_VERSION,
       })
+      return
+    }
+
+    // The plugin's notification API. Handled before the room paths because it is
+    // not part of the tunnel: these requests are answered here, not replayed to
+    // a Mac.
+    if (url.startsWith(PUSH_PREFIX)) {
+      await handlePush(request, response, url.slice(PUSH_PREFIX.length).split('?')[0] ?? '')
       return
     }
 
@@ -168,6 +189,115 @@ export async function startRelay(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       writeJson(response, 502, { error: 'the Mac did not answer', detail: message })
+    }
+  }
+
+  /**
+   * Answer one push request.
+   *
+   * Authenticated by the tunnel credential, and the room is derived from it --
+   * the same derivation the tunnel upgrade uses, so a Mac can only ever register
+   * a token against its own room. The phone never calls this: it hands its token
+   * to the Mac over the authenticated Mizar protocol, and the Mac brings it
+   * here. That is what keeps a second trust relationship out of the design.
+   *
+   * @param request - the request.
+   * @param response - the response to fill.
+   * @param path - the endpoint, with the prefix removed.
+   */
+  async function handlePush(
+    request: IncomingMessage,
+    response: ServerResponse,
+    path: string,
+  ): Promise<void> {
+    const presented = bearerToken(request)
+    const known =
+      presented !== null &&
+      presented.length >= 16 &&
+      (config.tokens.length === 0 || config.tokens.some((token) => secretsEqual(token, presented)))
+    if (!known || presented === null) {
+      writeJson(response, 401, { error: 'a tunnel credential is required' })
+      return
+    }
+    const room = deriveRoom(presented)
+
+    const raw = await readBody(request, MAX_PUSH_BODY_BYTES)
+    if (raw === null) {
+      writeJson(response, 413, { error: 'request body too large' })
+      return
+    }
+    let parsed: unknown = null
+    if (raw.length > 0) {
+      try {
+        parsed = JSON.parse(raw.toString('utf8'))
+      } catch {
+        parsed = null
+      }
+    }
+
+    switch (path) {
+      case 'register': {
+        const device = readDevice(parsed)
+        if (device === null) {
+          writeJson(response, 400, {
+            error: 'deviceId, a hex token and an environment are required',
+          })
+          return
+        }
+        if (!pushRegistry.register(room, device)) {
+          writeJson(response, 429, { error: 'this room has as many devices as it may have' })
+          return
+        }
+        log(`push: registered ${device.deviceId} (${device.environment}) for room ${room}`)
+        writeJson(response, 200, {
+          ok: true,
+          devices: pushRegistry.devices(room).length,
+          enabled: apns !== null,
+        })
+        return
+      }
+
+      case 'unregister': {
+        const deviceId = (parsed as { deviceId?: unknown } | null)?.deviceId
+        if (typeof deviceId !== 'string' || deviceId === '') {
+          writeJson(response, 400, { error: 'deviceId is required' })
+          return
+        }
+        const removed = pushRegistry.unregister(room, deviceId)
+        writeJson(response, 200, { ok: true, removed, devices: pushRegistry.devices(room).length })
+        return
+      }
+
+      case 'notify': {
+        const notification = readNotification(parsed)
+        if (notification === null) {
+          writeJson(response, 400, { error: 'title and body are required' })
+          return
+        }
+        const outcome = await deliver({ registry: pushRegistry, client: apns, log }, room, notification)
+        writeJson(response, 200, { ok: true, ...outcome })
+        return
+      }
+
+      case 'status': {
+        // Deliberately no tokens: this is the endpoint an operator curls to find
+        // out why their phone is silent, and a diagnostic that leaks credentials
+        // is not a diagnostic.
+        writeJson(response, 200, {
+          ok: true,
+          devices: pushRegistry.devices(room).map((device) => ({
+            deviceId: device.deviceId,
+            environment: device.environment,
+            locale: device.locale,
+            registeredAt: device.registeredAt,
+          })),
+          enabled: apns !== null,
+        })
+        return
+      }
+
+      default:
+        writeJson(response, 404, { error: 'not found' })
     }
   }
 
@@ -451,6 +581,7 @@ export async function startRelay(
       for (const entry of waiting) clearTimeout(entry.timer)
       waiting.clear()
       rooms.closeAll()
+      apns?.close()
       probe?.close()
       await new Promise<void>((resolve) => wss.close(() => resolve()))
       await new Promise<void>((resolve) => server.close(() => resolve()))

@@ -12,6 +12,7 @@
 
 import Foundation
 import Observation
+import UserNotifications
 import MizarKit
 
 @MainActor
@@ -98,10 +99,18 @@ final class AppModel {
         // One at a time. A task group across the actor trips Swift 6's
         // region-based isolation checker, and the caller only ever asks for the
         // rows it is about to draw -- ten of them.
+        var learned = false
         for sessionId in missing {
             guard let frame = await stats(for: sessionId) else { continue }
-            if let title = frame.title, !title.isEmpty { titles[sessionId] = title }
+            if let title = frame.title, !title.isEmpty {
+                titles[sessionId] = title
+                learned = true
+            }
         }
+        // Titles are one request per session over a link that may not answer;
+        // a title that has been learned once is kept, so the second visit to a
+        // workspace is not a second round of requests that can fail.
+        if learned { await persistIndex() }
     }
 
     /// What a sync is doing, or `nil` when none is.
@@ -117,14 +126,70 @@ final class AppModel {
         var current: String
         /// How many sessions are done.
         var completed: Int
-        /// How many there are to do.
+        /// How many there are to do, or `0` while that is not known yet.
         var total: Int
+        /// When this pass began, which is what an estimate is measured from.
+        var startedAt: Date = Date()
 
         var fraction: Double { total == 0 ? 0 : Double(completed) / Double(total) }
+
+        /// How much longer, once a rate can be measured at all.
+        ///
+        /// `nil` until at least one session has finished, and the restraint is
+        /// the point: an estimate from no samples is not a small estimate, it is
+        /// no estimate, and a countdown that starts at a made-up number and then
+        /// changes is worse than a progress bar on its own.
+        ///
+        /// Measured per *session* rather than per byte, because the size of a
+        /// conversation is not known before it is fetched and the number of them
+        /// is.
+        var remaining: TimeInterval? {
+            guard completed > 0, total > completed else { return nil }
+            let elapsed = Date().timeIntervalSince(startedAt)
+            guard elapsed > 0 else { return nil }
+            return (elapsed / Double(completed)) * Double(total - completed)
+        }
     }
 
     /// Whether a sync is running.
     var isSyncing: Bool { syncProgress != nil }
+
+    /// Why the last sync produced nothing to report, when it did.
+    ///
+    /// The window that reports a refresh has a branch for "there is nothing
+    /// running right now", and before this that branch said "Up to date. Every
+    /// conversation on this Mac is stored on this phone." -- which is a claim
+    /// about the operator's data, made out of a request that was never sent.
+    /// Tapping refresh with the Mac unreachable said it.
+    private(set) var syncProblem: String?
+
+    /// Whether there is a stored session list for the current machine.
+    ///
+    /// This is what decides whether an unreachable Mac is a dead end or a
+    /// banner over data that is still here. The phone is opened on trains, in
+    /// lifts and on the far side of a relay having a bad day, and a screen that
+    /// replaces a conversation the operator already has with "cannot reach the
+    /// Mac" is a screen that threw away the answer to the question they opened
+    /// it with.
+    private(set) var hasStoredIndex = false
+
+    /// The thing that is currently wrong, if anything.
+    ///
+    /// One accessor for two sources -- a failure of the connection itself and a
+    /// request that did not land -- because the screen shows one banner and does
+    /// not care which of them it is describing.
+    var problem: String? {
+        if case .failed(let message) = phase { return lastError ?? message }
+        return lastError
+    }
+
+    /// Whether this pairing's first download is running.
+    ///
+    /// A flag rather than a second set of numbers: the full-screen view draws
+    /// the same progress the sheet does, and two trackers would be two things to
+    /// keep in step for no gain. `nil`-ing `syncProgress` between the phases of
+    /// a sync is why this cannot simply be `syncProgress != nil`.
+    private(set) var firstLoad = false
     /// The session the conversation screen is showing.
     var selectedSessionId: String? {
         didSet {
@@ -188,14 +253,61 @@ final class AppModel {
     private let credentials: any CredentialStore
     /// Conversations kept on the phone, so history survives a lost network.
     let conversations: any ConversationCache
+    /// The session list, its titles and the workspaces, kept on the phone.
+    ///
+    /// Separate from `conversations` because it answers a different question.
+    /// The two are written at different moments and fail differently: a
+    /// conversation that will not load is a screen with no messages, an index
+    /// that will not load is a list with no rows.
+    private let indexStore: any SessionIndexStore
     private var connection: MizarConnection?
 
     init(
         credentials: any CredentialStore = KeychainCredentialStore(),
         conversations: any ConversationCache = FileConversationCache(),
+        index: any SessionIndexStore = FileSessionIndexStore(),
     ) {
         self.credentials = credentials
         self.conversations = conversations
+        self.indexStore = index
+    }
+
+    /// Put what this phone already knows on screen, before asking anybody.
+    ///
+    /// The point of the stored index. Every one of these three used to be the
+    /// result of a request made while the screen was opening, so a phone on a
+    /// slow link showed an empty list and unnamed sessions until the round trip
+    /// came back -- and showed them forever if it never did.
+    ///
+    /// - Parameter hostId: the machine to read for.
+    private func loadIndex(for hostId: String) async {
+        guard let stored = await indexStore.load(hostId: hostId) else {
+            hasStoredIndex = false
+            return
+        }
+        hasStoredIndex = !stored.sessions.isEmpty
+        // Only ever adds. A stored list that is empty must not be able to wipe
+        // what a live read has already put on screen.
+        if !stored.sessions.isEmpty { sessions = stored.sessions }
+        if !stored.titles.isEmpty { titles.merge(stored.titles) { _, stored in stored } }
+        if !stored.workspacePaths.isEmpty { workspacePaths.formUnion(stored.workspacePaths) }
+    }
+
+    /// Write down what is on screen, so a later launch starts from it.
+    ///
+    /// Called after every successful update rather than on a timer: the stored
+    /// index is then always the last thing the host actually said, and never a
+    /// mixture of that and something this app inferred.
+    private func persistIndex() async {
+        guard let hostId = host?.hostId else { return }
+        await indexStore.save(
+            SessionIndex(
+                hostId: hostId,
+                sessions: sessions,
+                titles: titles,
+                workspacePaths: Array(workspacePaths),
+            ),
+        )
     }
 
     /// Load any stored pairing and, if there is one, connect.
@@ -205,6 +317,16 @@ final class AppModel {
     /// typing into fields or tapping through an alert. It is the same payload
     /// the QR carries, so the path exercised is the real one.
     func start() async {
+        if Self.launchResetsCache {
+            // Before the first read, not after: everything below loads what is
+            // stored, so this is the only place where "start empty" can be true.
+            //
+            // Both stores, because "start from nothing" is a claim about the
+            // whole app: leaving the index behind would show a fixture's session
+            // list under a fresh install's pairing.
+            await conversations.clear()
+            await indexStore.clear()
+        }
         if let raw = Self.launchPairingURI, let target = PairingURI.parse(raw) {
             await pair(with: target, deviceName: "iPhone")
             return
@@ -254,6 +376,10 @@ final class AppModel {
     /// - Parameter hostId: the machine to forget.
     func forget(hostId: String) async {
         try? await credentials.remove(hostId: hostId)
+        // The machine is gone, so what this phone remembers of it is gone too.
+        // Leaving it would show one Mac's sessions under another's name the next
+        // time somebody paired a machine that reused the id.
+        await indexStore.remove(hostId: hostId)
         hosts.removeAll { $0.hostId == hostId }
         guard host?.hostId == hostId else { return }
         disconnectCurrent()
@@ -275,6 +401,16 @@ final class AppModel {
         welcome = nil
         sessions = []
         selectedSessionId = nil
+        statsError = nil
+        conversationError = nil
+        // Per-machine facts, cleared with the machine. `workspacePaths` is a
+        // filter: leaving the last Mac's set in place and unioning the new one's
+        // into it means this Mac's deleted workspaces are drawn again the moment
+        // its own `workspace.list` fails -- which the code itself says older
+        // hosts do.
+        titles = [:]
+        workspacePaths = []
+        hasStoredIndex = false
         phase = .launching
     }
 
@@ -291,6 +427,22 @@ final class AppModel {
     /// is built and a UI that has been seen working.
     private static var launchSelectedSession: String? {
         launchArgument("-mizarSelectSession")
+    }
+
+    /// Whether to throw the stored conversations away before anything loads.
+    ///
+    /// The cache is meant to be long-lived -- being able to see yesterday's
+    /// conversation without a network is the point of it -- so it survives
+    /// relaunches and, in the simulator, it survives reinstalls of the same
+    /// bundle. That makes a UI test lie: measure a screen against a fixture and
+    /// the screen may be showing a fixture from a week ago, merged with the new
+    /// one, which is exactly what "the turn has 5 steps and is still running"
+    /// turned out to be.
+    ///
+    /// A test that asserts on a fixture has to say it wants the fixture and
+    /// nothing else.
+    private static var launchResetsCache: Bool {
+        ProcessInfo.processInfo.arguments.contains("-mizarFreshStart")
     }
 
     /// Read a `-flag value` pair from the launch arguments.
@@ -493,6 +645,9 @@ final class AppModel {
     /// Distinct from forgetting one machine: this is "start over", which is what
     /// a reinstall or a shared phone needs.
     func unpair() async {
+        // Before the socket goes: this is the last chance to tell the host that
+        // this phone should stop being woken for a machine it is leaving.
+        await forgetPushRegistration()
         interactionPoll?.cancel()
         eventListener?.cancel()
         await connection?.disconnect()
@@ -500,9 +655,16 @@ final class AppModel {
         welcome = nil
         sessions = []
         selectedSessionId = nil
+        // Captured first. Iterating `hosts` after `hosts = []` walked an empty
+        // array, so "start over" left every stored session list on disk.
+        let forgetting = hosts.map(\.hostId)
         host = nil
         hosts = []
         try? await credentials.clear()
+        for forgotten in forgetting { await indexStore.remove(hostId: forgotten) }
+        titles = [:]
+        workspacePaths = []
+        hasStoredIndex = false
         phase = .unpaired
     }
 
@@ -522,6 +684,9 @@ final class AppModel {
             sessions = result.items
             await refreshWorkspaces()
             lastError = nil
+            // Written after the workspaces, so the two halves of one answer land
+            // together rather than as a list with the previous workspace set.
+            await persistIndex()
         } catch {
             if reconnectingIfNeeded, await reconnect() {
                 await refreshSessions(reconnectingIfNeeded: false)
@@ -733,21 +898,25 @@ final class AppModel {
             // keeps a scroll at the top from looping.
             if reached == nil || reached == before || fresh.isEmpty { return 0 }
 
-            let items = mergeConversations(cached: cached.items, fresh: fresh)
-            let turns = mergeTurns(cached: cached.turns ?? [], fresh: result.conversationTurns())
-            await conversations.save(
-                CachedConversation(
+            // Folded in as one step, so a reload landing at the same moment
+            // cannot have its write undone by this one.
+            let stored = await conversations.update(sessionId: sessionId) { current in
+                // `current` rather than the `cached` read before the request:
+                // that one is several round trips old by now, and anything the
+                // time it took fetched would be thrown away.
+                let known = current ?? cached
+                return CachedConversation(
                     sessionId: sessionId,
-                    items: items,
-                    throughSeq: cached.throughSeq,
+                    items: mergeConversations(cached: known.items, fresh: fresh),
+                    throughSeq: known.throughSeq,
                     hasMore: result.hasMore,
-                    turns: turns,
+                    turns: mergeTurns(cached: known.turns ?? [], fresh: result.conversationTurns()),
                     oldestSeq: [before, reached].compactMap { $0 }.min(),
-                    stats: cached.stats,
-                ),
-            )
+                    stats: known.stats,
+                )
+            }
             lastError = nil
-            return items.count - cached.items.count
+            return stored.items.count - cached.items.count
         } catch {
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             if !message.isEmpty { lastError = message }
@@ -783,21 +952,51 @@ final class AppModel {
         // nil at the end of the happy path only, so any early return or
         // cancellation left `isSyncing` true for good, with the refresh button
         // spinning and disabled and no way back.
-        guard connection != nil, syncProgress == nil else { return }
-        syncProgress = SyncProgress(current: "", completed: 0, total: sessions.count)
+        guard syncProgress == nil else { return }
+        guard connection != nil else {
+            // Reported rather than silently skipped. The window is already up
+            // by the time this runs, and doing nothing looks exactly like having
+            // nothing to do.
+            syncProblem = "Not connected to the Mac."
+            return
+        }
+        syncProblem = nil
+        // One clock for the whole pass, carried across the two assignments
+        // below: the estimate is measured from when the operator asked, not from
+        // whenever the session list happened to come back.
+        let startedAt = Date()
+        syncProgress = SyncProgress(current: "", completed: 0, total: sessions.count, startedAt: startedAt)
         defer { syncProgress = nil }
 
         await refreshSessions()
-        guard !sessions.isEmpty else { return }
+        guard !sessions.isEmpty else {
+            // Either the Mac listed nothing or the read failed. Both are worth
+            // saying out loud; neither is "up to date".
+            syncProblem = lastError ?? "The Mac listed no sessions."
+            return
+        }
 
         let runnable = sessions.filter { $0.parentSessionId == nil }
-        syncProgress = SyncProgress(current: "", completed: 0, total: runnable.count)
+        syncProgress = SyncProgress(current: "", completed: 0, total: runnable.count, startedAt: startedAt)
 
         for (index, session) in runnable.enumerated() {
             syncProgress?.current = session.cwd.map { ($0 as NSString).lastPathComponent } ?? session.sessionId
             await syncConversation(for: session.sessionId)
+            // The usage frame too, not only the messages. It carries the row's
+            // title and the model and context figures above the composer, and a
+            // history download that skipped it left every row unnamed and every
+            // session's cost unknown until the operator opened it -- on a link
+            // that may not answer by then. One extra request per session, once.
+            if let frame = await stats(for: session.sessionId),
+               let title = frame.title, !title.isEmpty {
+                titles[session.sessionId] = title
+            }
             syncProgress?.completed = index + 1
         }
+        await persistIndex()
+        // The pass ran to the end. Whatever went wrong inside it is already in
+        // `lastError`, and this is the line that lets the window stop saying it.
+        syncProblem = lastError
     }
 
     /// Fetch one session's page and fold it into the cache.
@@ -819,33 +1018,35 @@ final class AppModel {
             )
             let fresh = result.conversationItems()
             let freshTurns = result.conversationTurns()
-            let cached = await conversations.load(sessionId: sessionId)
-            let merged = mergeConversations(cached: cached?.items ?? [], fresh: fresh)
-            // Grouped on the fresh page and kept beside it, because a page is
-            // where the turn boundaries are -- they are in the records, and the
-            // merged item list has already lost which step belonged to what.
-            let mergedTurns = mergeTurns(cached: cached?.turns ?? [], fresh: freshTurns)
-            let previous = cached?.oldestSeq
             let older = result.oldestSeq
-            await conversations.save(
+            // Read, merged and written as one step. Loading here and saving
+            // three lines later is two, and the automatic paging at the top of
+            // this conversation runs against a returning-to-foreground reload --
+            // two overlapping read-modify-writes of one file lose one of them,
+            // and what is lost is a page somebody just asked for.
+            let stored = await conversations.update(sessionId: sessionId) { cached in
                 CachedConversation(
                     sessionId: sessionId,
-                    items: merged,
+                    items: mergeConversations(cached: cached?.items ?? [], fresh: fresh),
                     throughSeq: result.asOfSeq,
                     hasMore: result.hasMore,
-                    turns: mergedTurns,
+                    // Grouped on the fresh page and kept beside it, because a
+                    // page is where the turn boundaries are -- they are in the
+                    // records, and the merged item list has already lost which
+                    // step belonged to what.
+                    turns: mergeTurns(cached: cached?.turns ?? [], fresh: freshTurns),
                     // The older of the two: this page may not reach as far back as
                     // what is already stored, and paging from the wrong end would
                     // re-fetch what is already here.
-                    oldestSeq: [previous, older].compactMap { $0 }.min(),
+                    oldestSeq: [cached?.oldestSeq, older].compactMap { $0 }.min(),
                     // Carried forward: this write replaces the whole file, and
                     // dropping the frame here would undo the cache above.
                     stats: cached?.stats,
-                ),
-            )
+                )
+            }
             lastError = nil
             conversationError = nil
-            return merged
+            return stored.items
         } catch {
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             if !message.isEmpty { lastError = message }
@@ -878,8 +1079,9 @@ final class AppModel {
     ///   - frame: what the host sent.
     ///   - sessionId: the session it belongs to.
     private func storeStats(_ frame: SessionStatsFrame, for sessionId: String) async {
-        let existing = await conversations.load(sessionId: sessionId)
-        await conversations.save(
+        // One step, for the same reason: this runs from the usage read while a
+        // page may be being folded in beside it, and the file holds both.
+        await conversations.update(sessionId: sessionId) { existing in
             CachedConversation(
                 sessionId: sessionId,
                 items: existing?.items ?? [],
@@ -889,8 +1091,8 @@ final class AppModel {
                 turns: existing?.turns,
                 oldestSeq: existing?.oldestSeq,
                 stats: frame,
-            ),
-        )
+            )
+        }
     }
 
     /// Read a session's recent log, as items a view can draw.
@@ -963,6 +1165,139 @@ final class AppModel {
         }
     }
 
+    /// Tell the host where to reach this phone, and whether it is on screen.
+    ///
+    /// Called on every connection and every time iOS issues a token. Both are
+    /// needed: the token arrives once and the connection is rebuilt constantly,
+    /// and a registration sent on a socket that has since been replaced is a
+    /// registration the host never saw.
+    ///
+    /// Best-effort throughout. A phone that cannot be notified is a worse app,
+    /// not a broken one, and an error here would be a failure screen over a
+    /// feature the operator may not even want.
+    func syncPushRegistration() async {
+        guard let connection, let token = PushRegistration.storedToken else { return }
+        let payload = JSONValue.object([
+            "token": .string(token),
+            "environment": .string(PushRegistration.environment),
+            "locale": .string(PushRegistration.locale),
+        ])
+        do {
+            _ = try await connection.call("push.register", payload: payload, as: PushRegistrationResult.self)
+        } catch {
+            // Logged by the host's side of the story; nothing to show here.
+        }
+        await sendPresence()
+    }
+
+    /// Report whether this app is on screen.
+    ///
+    /// Its own method rather than folded into the registration, because it runs
+    /// on every app switch and the registration tells the relay where the phone
+    /// is. Together they would put an HTTP request to the relay behind every
+    /// switch away from the app.
+    ///
+    /// - Parameter foreground: whether the app is in the foreground.
+    func setPresence(foreground: Bool) async {
+        self.foreground = foreground
+        await sendPresence()
+    }
+
+    /// Whether the app last told the host it was on screen.
+    private var foreground = true
+
+    private func sendPresence() async {
+        guard let connection else { return }
+        let payload = JSONValue.object(["foreground": .bool(foreground)])
+        _ = try? await connection.call("push.presence", payload: payload, as: AcceptanceResult.self)
+    }
+
+    /// Forget this phone's notification endpoint.
+    ///
+    /// Called when the operator unpairs, so a phone that has been detached stops
+    /// being woken for a machine it no longer knows about.
+    func forgetPushRegistration() async {
+        guard let connection else { return }
+        _ = try? await connection.call("push.unregister", as: PushUnregisterResult.self)
+    }
+
+    /// Register for remote notifications if the operator has already agreed.
+    ///
+    /// Runs on every launch. The prompts above deliberately happen once, and iOS
+    /// only offers each permission once anyway -- so somebody who tapped "Don't
+    /// Allow" and then changed their mind in iOS Settings would otherwise have
+    /// to reinstall the app before a single notification could arrive. Asking
+    /// Apple for a token when permission is already granted costs nothing and
+    /// closes that hole.
+    func ensurePushRegistration() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        guard settings.authorizationStatus == .authorized
+            || settings.authorizationStatus == .provisional
+        else {
+            // Forgets a token from a previous grant. The operator can revoke
+            // permission in iOS Settings at any time, and a token that outlives
+            // the permission is a row on the Mac's roster that pushes into
+            // nothing.
+            PushRegistration.storedToken = nil
+            return
+        }
+        await Permissions.registerForRemoteNotifications()
+    }
+
+    /// Ask for what the app cannot do without, on the first launch after install.
+    ///
+    /// Two prompts and no more. Notifications, because a phone that cannot be
+    /// told anything is a phone the operator has to keep opening; and the local
+    /// network, because the direct route to a Mac on the same Wi-Fi is refused
+    /// silently without it -- which is the worst kind of failure, since the app
+    /// looks connected and never is.
+    ///
+    /// Asked here rather than where each is first needed, because both arrive as
+    /// system alerts and an alert during pairing reads as the pairing failing.
+    ///
+    /// The camera is asked for where it is used -- on the scan button -- and that
+    /// is the whole reason this file has a comment about what it leaves out.
+    ///
+    /// Once ever, tracked in `UserDefaults`: iOS only offers each of these once
+    /// anyway, and re-requesting a permission the operator already refused does
+    /// nothing but burn a turn.
+    func requestFirstRunPermissions() async {
+        guard !Self.launchSkipsPermissions else { return }
+        guard !UserDefaults.standard.bool(forKey: Self.permissionsAskedKey) else { return }
+        UserDefaults.standard.set(true, forKey: Self.permissionsAskedKey)
+        await Permissions.requestNotifications()
+        // Only if the answer was yes. Registering regardless gave a phone that
+        // tapped "Don't Allow" a token anyway, which it then handed to the Mac --
+        // so the host logged a healthy registration for a phone that could never
+        // show the notification it was being sent.
+        await ensurePushRegistration()
+        // Sequenced rather than concurrent: two alerts at once is one alert
+        // dismissed by reflex, and this one has to be read to be answered.
+        await Permissions.requestLocalNetwork()
+    }
+
+    /// Whether this launch should skip the system prompts.
+    ///
+    /// For UI tests, which run against a fresh install and would otherwise be
+    /// answered by a system alert instead of by the app.
+    private static var launchSkipsPermissions: Bool {
+        ProcessInfo.processInfo.arguments.contains("-mizarSkipPermissionPrompts")
+    }
+
+    /// Where "the operator has been asked" is remembered.
+    private static let permissionsAskedKey = "mizar.permissionsAsked"
+
+    /// Download everything once, with the whole screen reporting how it is going.
+    ///
+    /// `defer`, not a happy-path assignment: a cancelled load -- and a phone
+    /// switching away mid-download is the ordinary case -- must not leave the
+    /// full-screen progress view up for good.
+    private func runFirstLoad() async {
+        firstLoad = true
+        defer { firstLoad = false }
+        await syncAllConversations()
+    }
+
     /// Complete pairing with a scanned target.
     /// - Parameters:
     ///   - target: the decoded QR payload.
@@ -987,13 +1322,23 @@ final class AppModel {
             // Offered once, now, while the operator still knows which machine
             // they just scanned. The connection is opened first so the name is
             // asked for over a working screen rather than a spinner.
-            pendingNameHostId = paired.hostId
             try await connect(using: paired)
-            // First pairing pulls the history down, so the phone has something
-            // to show the next time the network is not there. Deliberately after
-            // the screen is up: the operator should see the app working, not a
-            // progress dialog, and the sync reports itself in the toolbar.
-            Task { await syncAllConversations() }
+            // The history comes down before anything else, and this time it is
+            // the whole screen.
+            //
+            // It used to be a background task with a spinner in a toolbar, on
+            // the reasoning that the operator should see the app working rather
+            // than a dialog. Measured against a real pairing, the opposite is
+            // true: until this has run, every screen is empty -- no sessions, no
+            // titles, no figures -- and an empty app is indistinguishable from a
+            // broken one. A first pairing is the one moment where a progress
+            // dialog is the honest thing to show.
+            //
+            // Also before the naming prompt: that prompt belongs to the session
+            // screen, and the session screen is not in the hierarchy while this
+            // is.
+            await runFirstLoad()
+            pendingNameHostId = paired.hostId
         } catch {
             phase = .failed(
                 Self.describe(error, authority: target.authority ?? target.baseURL),
@@ -1016,6 +1361,12 @@ final class AppModel {
     /// - Parameter host: the pairing to connect with.
     private func connect(using host: PairedHost) async throws {
         phase = .connecting
+        // Before the first request, not after it. Everything below waits on a
+        // machine that may be asleep, and a session list that is empty until a
+        // round trip lands is empty for as long as the round trip takes -- which
+        // on a phone is how the operator spends the first several seconds of
+        // every launch.
+        await loadIndex(for: host.hostId)
         let endpoints = host.endpoints
         guard !endpoints.isEmpty else {
             let error = MizarError(
@@ -1126,6 +1477,10 @@ final class AppModel {
         self.activeEndpoint = endpoint
         phase = .ready
         await refreshSessions()
+        // After the session list, so the first screen is not waiting on a
+        // registration the operator never asked for. A round trip, not a
+        // dependency: the app works identically whether or not it lands.
+        await syncPushRegistration()
         startInteractionPoll()
 
         if let requested = Self.launchSelectedSession {

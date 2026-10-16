@@ -18,6 +18,10 @@ struct DSHMizarApp: App {
     /// One model for the whole app: a single connection, a single pairing.
     @State private var model = AppModel()
 
+    /// The pieces of push that SwiftUI has no hook for: the device token, what
+    /// a notification looks like while the app is open, and what a tap does.
+    @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
+
     var body: some Scene {
         WindowGroup {
             RootView()

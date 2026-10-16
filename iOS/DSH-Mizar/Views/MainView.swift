@@ -35,17 +35,41 @@ struct MainView: View {
                     // A refresh that failed says so and stays out of the way. It
                     // used to take over the whole screen, which read as the
                     // connection dying rather than one request not arriving.
-                    if let error = model.lastError {
+                    //
+                    // It now also covers a connection that failed outright, for
+                    // the same reason: with a stored session list there is a
+                    // whole app behind this banner, and taking it away would
+                    // take away conversations the operator can still read.
+                    if let error = model.problem {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle.fill")
-                            Text(error).font(.caption).lineLimit(2)
-                            Spacer()
-                            Button("Retry") { Task { await model.refreshSessions() } }
+                            Text(error)
                                 .font(.caption)
+                                .lineLimit(2)
+                                // On the text, not the row: an identifier on a
+                                // container does not reach the accessibility
+                                // tree, so a test looking for the banner would
+                                // report the app as silent while it is shouting.
+                                .accessibilityIdentifier("sessions.error")
+                            Spacer()
+                            Button("Retry") {
+                                Task {
+                                    // Reconnect as well as re-read: a banner over
+                                    // stored data is usually a connection that
+                                    // went away, and a refresh alone would only
+                                    // fail again. The order is the one the
+                                    // failure screen uses, and for the same
+                                    // reason -- a refresh that fails calls back
+                                    // into `reconnect`.
+                                    if await model.reconnect(patient: true) {
+                                        await model.refreshSessions()
+                                    }
+                                }
+                            }
+                            .font(.caption)
                         }
                         .padding(10)
                         .background(.yellow.opacity(0.15))
-                        .accessibilityIdentifier("sessions.error")
                     }
                 }
                 .navigationTitle(model.host?.displayName ?? model.welcome?.hostName ?? "Sessions")
@@ -80,6 +104,13 @@ struct MainView: View {
                 .sheet(isPresented: $showingNewSession) {
                     NewSessionView()
                 }
+                // Wired, at last. `showingSync` was set by the refresh button and
+                // read by nothing: the sheet it was written for was never
+                // attached, so a refresh over a slow link was a spinner with no
+                // end and no idea how far along it was -- for as long as it took.
+                .sheet(isPresented: $showingSync) {
+                    SyncProgressSheet()
+                }
                 .sheet(isPresented: namingPrompt) {
                     if let host = model.pendingNameHostId.flatMap({ id in
                         model.hosts.first { $0.hostId == id }
@@ -109,50 +140,6 @@ struct MainView: View {
                 )
             }
         }
-    }
-}
-
-/// What a sync is doing.
-///
-/// Shown while a sync runs and kept up for a moment after, so a sync that
-/// finishes quickly does not flash a dialog nobody can read.
-struct SyncProgressSheet: View {
-    let progress: AppModel.SyncProgress?
-
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                if let progress {
-                    ProgressView(value: progress.fraction)
-                        .progressViewStyle(.linear)
-                    Text("Syncing \(progress.completed) of \(progress.total)")
-                        .font(.headline)
-                    Text(progress.current.isEmpty ? "…" : progress.current)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Label("Up to date", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Every conversation on this Mac is stored on this phone.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-            }
-            .padding(28)
-            .navigationTitle("History")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .accessibilityIdentifier("sync.done")
-                }
-            }
-        }
-        .presentationDetents([.height(220)])
     }
 }
 
@@ -632,7 +619,15 @@ struct SessionDetailView: View {
     /// - Parameter sent: the text that was accepted.
     private func refreshAfterSend(_ sent: String) async {
         for _ in 0..<8 {
-            items = await model.conversation(for: sessionId)
+            // Synced rather than merely read. `conversation(for:)` returns the
+            // flat list, and the screen draws *turns* whenever the host gave
+            // turn numbers -- so a message that arrived only in the flat list
+            // was a message that did not appear. It went unnoticed because the
+            // stored conversation, from a previous visit, happened to contain an
+            // equivalent prompt: pull-to-refresh fixed it, and a fresh install
+            // did not need fixing.
+            items = await model.syncConversation(for: sessionId)
+            turns = (await model.cachedConversation(for: sessionId))?.turns ?? []
             let arrived = items.contains { item in
                 if case .message(_, .user, let text, _) = item { return text == sent }
                 return false

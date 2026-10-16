@@ -90,6 +90,30 @@ public protocol ConversationCache: Sendable {
     /// - Parameter conversation: what to store.
     func save(_ conversation: CachedConversation) async
 
+    /// Read one session, change it, and write it back as one step.
+    ///
+    /// Load-then-save at the call site is two steps, and this file is written
+    /// from four of them -- `syncConversation`, `loadOlder`, `storeStats` and a
+    /// page arriving while the operator pulls to refresh. They genuinely overlap:
+    /// the automatic paging at the top of a conversation runs against the reload
+    /// that a returning-to-foreground triggers. Two overlapping read-modify-write
+    /// cycles on one file lose one of them, and what is lost is whatever the
+    /// other one had just fetched -- messages, or the cursor that paging needs.
+    ///
+    /// Implementations must not suspend between the read and the write. An actor
+    /// gets that for free by doing both synchronously inside itself.
+    ///
+    /// - Parameters:
+    ///   - sessionId: the session to change.
+    ///   - transform: what the stored conversation should become, given what is
+    ///     there now.
+    /// - Returns: what was stored.
+    @discardableResult
+    func update(
+        sessionId: String,
+        _ transform: @Sendable (CachedConversation?) -> CachedConversation,
+    ) async -> CachedConversation
+
     /// Forget one session.
     /// - Parameter sessionId: the session to forget.
     func remove(sessionId: String) async
@@ -207,11 +231,37 @@ public actor FileConversationCache: ConversationCache {
     }
 
     public func load(sessionId: String) async -> CachedConversation? {
+        read(sessionId: sessionId)
+    }
+
+    public func save(_ conversation: CachedConversation) async {
+        write(conversation)
+    }
+
+    public func update(
+        sessionId: String,
+        _ transform: @Sendable (CachedConversation?) -> CachedConversation,
+    ) async -> CachedConversation {
+        // Synchronous from here to the return, so no other updater can interleave
+        // between the read and the write. `read` and `write` are both synchronous
+        // for exactly this reason; an `await` anywhere between them would put the
+        // race back.
+        let next = transform(read(sessionId: sessionId))
+        write(next)
+        return next
+    }
+
+    /// Read one session from disk, synchronously.
+    /// - Parameter sessionId: the session.
+    /// - Returns: what is stored, or `nil`.
+    private func read(sessionId: String) -> CachedConversation? {
         guard let data = try? Data(contentsOf: url(for: sessionId)) else { return nil }
         return try? JSONDecoder().decode(CachedConversation.self, from: data)
     }
 
-    public func save(_ conversation: CachedConversation) async {
+    /// Write one session to disk, synchronously.
+    /// - Parameter conversation: what to store.
+    private func write(_ conversation: CachedConversation) {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let data = try JSONEncoder().encode(conversation)
@@ -270,13 +320,31 @@ public func mergeConversations(
 
 /// Fold a fresh page of turns into what is already stored.
 ///
-/// By turn number, newest winning, the same way items are merged and for the
-/// same reason: consecutive pages overlap, and appending one to the other
-/// duplicates the turns they share.
+/// By turn number, the same way items are merged and for the same reason:
+/// consecutive pages overlap, and appending one to the other duplicates the
+/// turns they share.
+///
+/// **Merged, not replaced.** "Fresh wins" is the obvious rule and it is wrong,
+/// in both directions at once:
+///
+///   - A page fetched with `beforeSeq` is *older* than what is stored, and the
+///     caller passes it as `fresh` -- so the older copy of a turn straddling the
+///     page boundary used to replace the newer one, and the turn flipped back to
+///     "still running" every time the operator scrolled up.
+///   - A page is a *window*: the host trims it to the newest few hundred
+///     messages, so the turn crossing the window's oldest edge arrives without
+///     the prompt that began it. Replacing the stored copy with that one deleted
+///     the operator's own message from the conversation -- permanently, because
+///     the view draws turns and the turn no longer held the prompt.
+///
+/// So the turn is unioned by item id, and the end is kept if either copy has one.
+/// An end is durable and append-only, which makes that safe in the only
+/// direction that matters: a turn that has ended cannot be un-ended by a later
+/// read, whichever page it came from.
 ///
 /// - Parameters:
 ///   - cached: turns the phone already had.
-///   - fresh: turns the host just sent.
+///   - fresh: turns from the page just fetched, older or newer than `cached`.
 /// - Returns: the union, oldest first.
 public func mergeTurns(
     cached: [ConversationTurn],
@@ -284,7 +352,13 @@ public func mergeTurns(
 ) -> [ConversationTurn] {
     var byId: [String: ConversationTurn] = [:]
     for turn in cached { byId[turn.id] = turn }
-    for turn in fresh { byId[turn.id] = turn }
+    for turn in fresh {
+        guard let known = byId[turn.id] else {
+            byId[turn.id] = turn
+            continue
+        }
+        byId[turn.id] = turn.merging(known)
+    }
     // Ordered by where each turn sits in the log, not by its number. A turn can
     // arrive without one -- see `reclaimStrandedPrompts` -- and ordering by
     // number put those at the end of the conversation regardless of when they
@@ -379,6 +453,15 @@ public actor InMemoryConversationCache: ConversationCache {
 
     public func load(sessionId: String) async -> CachedConversation? { store[sessionId] }
     public func save(_ conversation: CachedConversation) async { store[conversation.sessionId] = conversation }
+    @discardableResult
+    public func update(
+        sessionId: String,
+        _ transform: @Sendable (CachedConversation?) -> CachedConversation,
+    ) async -> CachedConversation {
+        let next = transform(store[sessionId])
+        store[sessionId] = next
+        return next
+    }
     public func remove(sessionId: String) async { store[sessionId] = nil }
     public func clear() async { store.removeAll() }
     public func count() async -> Int { store.count }

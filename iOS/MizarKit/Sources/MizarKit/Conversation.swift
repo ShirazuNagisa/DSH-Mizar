@@ -473,24 +473,103 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
 
     /// This turn and the one that carried on from it, as one turn.
     ///
+    /// The *last* turn in the chain decides whether the whole thing has ended,
+    /// which is why `endedAt` is taken from the continuation outright rather
+    /// than falling back to this turn's own end. Folding a still-running
+    /// continuation into a finished predecessor and keeping the predecessor's
+    /// end time is what drew a working turn as "已完成，用时 2 分 14 秒": the end
+    /// time was real, it just belonged to the turn before.
+    ///
+    /// A continuation with neither a start nor an end is not a real turn -- it
+    /// is an unnumbered group of steps the pager dropped the envelope of -- and
+    /// it supersedes nothing.
+    ///
+    /// Steps are unioned by id rather than concatenated, because this runs on
+    /// every merge and not only once: a chain that was folded last time comes
+    /// back unfurled from the host on the next page, so the same step arrives
+    /// both inside the folded turn and beside it, and appending would show it
+    /// twice.
+    ///
     /// - Parameter next: the continuation, which has no prompt of its own.
     /// - Returns: the combined turn.
     public func absorbing(_ next: ConversationTurn) -> ConversationTurn {
-        ConversationTurn(
+        let continuation = next.startedAt != nil || next.endedAt != nil
+        // Any reason that is not `completed` is unfinished, and the first one
+        // wins. Only `error` counted before, so a turn the operator cancelled --
+        // or the agent abandoned, or ran out of context in -- was continued by a
+        // turn that completed and then reported "已完成" with the abort folded
+        // away behind the bar.
+        let unfinished = Self.unfinished(endedReason) ?? Self.unfinished(next.endedReason)
+        return ConversationTurn(
             turn: turn,
             prompts: prompts,
-            steps: steps + next.steps,
+            steps: Self.union(steps, next.steps),
             startedAt: startedAt,
-            endedAt: next.endedAt ?? endedAt,
-            // Failure wins over any later success. Taking simply the later
-            // reason meant a turn that failed and was then continued by a
-            // completing turn reported "completed" -- which folded the failure
-            // away behind the summary bar, so the one state an operator most
-            // needs to see was the one the fold could hide.
-            endedReason: endedReason == "error" || next.endedReason == "error"
-                ? "error"
-                : (next.endedReason ?? endedReason),
+            endedAt: continuation ? next.endedAt : endedAt,
+            endedReason: unfinished ?? (continuation ? next.endedReason : endedReason),
         )
+    }
+
+    /// This turn, with another copy of itself folded in.
+    ///
+    /// Two reads of one turn are both partial, and neither is a superset of the
+    /// other. A page is a *window* -- the host trims it to the newest few hundred
+    /// messages -- so the turn straddling the window's oldest edge comes back
+    /// without the prompt that began it. Replacing the stored copy with the
+    /// fetched one therefore deleted the operator's own message from the
+    /// conversation, and nothing they could do on the phone brought it back: the
+    /// view draws turns rather than the flat item list, and the turn no longer
+    /// had the prompt in it.
+    ///
+    /// The end is taken from this copy where it has one, because this copy is the
+    /// one just fetched and an end is durable -- a later read cannot un-end a
+    /// turn. Everything else is unioned by item id, the same rule the flat item
+    /// list has always used and for the same reason.
+    ///
+    /// - Parameter other: the other copy.
+    /// - Returns: the two, as one turn.
+    public func merging(_ other: ConversationTurn) -> ConversationTurn {
+        ConversationTurn(
+            turn: turn ?? other.turn,
+            // `other` first, so this copy -- the one just fetched -- wins where
+            // the two describe the same item.
+            prompts: Self.union(other.prompts, prompts),
+            steps: Self.union(other.steps, steps),
+            startedAt: [startedAt, other.startedAt].compactMap { $0 }.min(),
+            endedAt: endedAt ?? other.endedAt,
+            endedReason: endedReason ?? other.endedReason,
+        )
+    }
+
+    /// Every item from both lists, once, in log order.
+    ///
+    /// - Parameters:
+    ///   - first: one list.
+    ///   - second: the other.
+    /// - Returns: the union.
+    private static func union(
+        _ first: [ConversationItem],
+        _ second: [ConversationItem],
+    ) -> [ConversationItem] {
+        var byId: [String: ConversationItem] = [:]
+        for item in first { byId[item.id] = item }
+        // The second list wins on a collision: it is the copy just fetched.
+        for item in second { byId[item.id] = item }
+        return byId.values.sorted(by: ConversationItem.precedes)
+    }
+
+    /// The reason a turn did not finish, when it is one.
+    ///
+    /// The vocabulary is merge-extensible -- plugins add their own `kind` -- so
+    /// anything that is not `completed` counts. That is the safe direction: an
+    /// unknown reason shown as done is a lie, and the same reason shown as
+    /// unfinished is merely cautious.
+    ///
+    /// - Parameter reason: `turn/end.reason.kind`, as recorded.
+    /// - Returns: the reason, or `nil` when the turn completed or has not ended.
+    private static func unfinished(_ reason: String?) -> String? {
+        guard let reason, reason != "completed" else { return nil }
+        return reason
     }
 
     public init(
@@ -510,21 +589,72 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     }
 
     /// How long the turn took, when both ends are known.
+    ///
+    /// `nil` while the turn is running, and that is the point: `turn/end` is the
+    /// only record that ends a turn, and a duration invented from the last step
+    /// is a duration for something that has not stopped.
     public var duration: TimeInterval? {
         guard let startedAt, let endedAt else { return nil }
         return max(0, endedAt.timeIntervalSince(startedAt))
     }
 
+    /// Whether this is a turn that has started and has not ended.
+    ///
+    /// Both halves matter, and each was got wrong once:
+    ///
+    /// - `turn/end` is the only thing that ends a turn. A duration invented from
+    ///   the last step made every unfinished turn look finished, which is the
+    ///   bug this exists to fix.
+    /// - A group with **no turn number is not a turn**. It is a prompt whose
+    ///   `turn/start` has not been written yet — a real and ordinary state,
+    ///   because `user/message` is logged before the turn it begins — and it is
+    ///   also what a prompt from the end of a session that never started a turn
+    ///   looks like. Drawn as work in progress it would claim an agent was
+    ///   thinking about a message nobody ever answered.
+    public var isRunning: Bool { turn != nil && endedAt == nil }
+
+    /// When the turn began, as well as the log can say.
+    ///
+    /// Normally `turn/start`. When a page was cut across a turn -- which happens
+    /// at the boundary between two pages, and to whichever turn straddled it --
+    /// the earliest thing the turn holds is the same instant to within a record,
+    /// and a running turn with no start time would otherwise have no way to say
+    /// how long it had been going.
+    public var beganAt: Date? { startedAt ?? items.map(\.at).min() }
+
+    /// How long the turn has been going, measured against a clock.
+    ///
+    /// A finished turn answers with its own duration; a running one counts up to
+    /// `now`, which is what lets the screen tick without asking the host
+    /// anything.
+    ///
+    /// - Parameter now: the instant to measure to.
+    /// - Returns: the elapsed time, or `nil` when the turn has no start.
+    public func elapsed(asOf now: Date) -> TimeInterval? {
+        guard let beganAt else { return nil }
+        return max(0, (endedAt ?? now).timeIntervalSince(beganAt))
+    }
+
     /// Whether the turn ended without finishing.
     ///
-    /// The host's own reason is not enough. Measured on this machine: every turn
-    /// ends `turn/end.reason.kind = "completed"`, while the attempt inside it
-    /// carries a chunk that failed -- the host has no provider credential, so
-    /// the model never ran and the turn "completed" anyway. Trusting the reason
-    /// alone made ``isCollapsible`` true for those turns, and a failure inside a
-    /// folded turn is a failure nobody sees.
+    /// Two separate facts, because neither on its own is enough.
+    ///
+    /// **The host's reason.** `turn/end.reason.kind` is `completed` when the
+    /// agent finished, and one of `error`, `aborted`, `blocked`, `max-tokens`,
+    /// `interrupted` or `forked` when it did not. Only `error` was treated as a
+    /// failure here, so a turn the operator cancelled -- or the agent abandoned,
+    /// or ran out of context in -- read as "已完成". The vocabulary is
+    /// merge-extensible, so anything that is not `completed` counts as
+    /// unfinished. That is the safe direction: an unknown reason shown as done
+    /// is a lie, and the same reason shown as unfinished is merely cautious.
+    ///
+    /// **The steps.** Measured on this machine: every turn ends `completed`
+    /// while the attempt inside it carries a chunk that failed -- the host has
+    /// no provider credential, so the model never ran and the turn "completed"
+    /// anyway. Trusting the reason alone made ``isCollapsible`` true for those
+    /// turns, and a failure inside a folded turn is a failure nobody sees.
     public var failed: Bool {
-        if endedReason == "error" { return true }
+        if let endedReason, endedReason != "completed" { return true }
         return steps.contains { item in
             if case .failure = item { return true }
             return false
@@ -543,7 +673,16 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     /// A turn that failed is never folded either. Failure is the one thing that
     /// has to be visible without a tap -- an operator who has to open a turn to
     /// discover it went wrong will not open it.
-    public var isCollapsible: Bool { steps.count > 1 && !failed }
+    ///
+    /// A running turn follows the one-step rule and nothing else: it is not
+    /// finished, so it cannot have failed, and folding its steps away is right
+    /// because a turn in progress is mostly tool noise. The state itself is
+    /// never folded -- see `TurnSummary`, which is drawn whether or not there is
+    /// anything behind it.
+    public var isCollapsible: Bool {
+        if isRunning { return steps.count > 1 }
+        return steps.count > 1 && !failed
+    }
 }
 
 extension SessionMessagesResult {
@@ -629,7 +768,12 @@ extension SessionMessagesResult {
                 prompts: prompts[turn] ?? [],
                 steps: steps[turn] ?? [],
                 startedAt: started[turn],
-                endedAt: ended[turn] ?? (steps[turn] ?? []).last.map(Self.time(of:)),
+                // Only a `turn/end` ends a turn. This used to fall back to the
+                // time of the last step, which made every unfinished turn look
+                // finished: the screen drew "已完成，用时 1 分 12 秒" for a turn
+                // that was still working, and the number was just the age of the
+                // newest message in it.
+                endedAt: ended[turn],
                 endedReason: reason[turn],
             )
         }
@@ -641,16 +785,5 @@ extension SessionMessagesResult {
     /// for next when it wants what came before the page it holds.
     public var oldestSeq: Int? {
         records.compactMap { $0.payload["seq"]?.intValue }.min()
-    }
-
-    /// When an item happened.
-    /// - Parameter item: the item.
-    /// - Returns: its time.
-    private static func time(of item: ConversationItem) -> Date {
-        switch item {
-        case .message(_, _, _, let at): at
-        case .activity(_, _, let at): at
-        case .failure(_, _, let at): at
-        }
     }
 }

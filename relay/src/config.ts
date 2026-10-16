@@ -9,6 +9,7 @@
  * @module dsh-mizar-relay/config
  */
 import { readFileSync } from 'node:fs'
+import type { ApnsConfig } from './apns.js'
 
 /** How the relay is configured. */
 export interface RelayConfig {
@@ -58,6 +59,14 @@ export interface RelayConfig {
   readonly tunnelIdleMs: number
   /** UDP port for the endpoint probe, or 0 to disable. */
   readonly probePort: number
+  /**
+   * How to reach Apple, or `null` when this relay does not send notifications.
+   *
+   * `null` is the default and a perfectly good deployment: everything except
+   * notifications works without it, and a self-hoster who does not want a signing
+   * key on their server should not have to have one.
+   */
+  readonly apns: ApnsConfig | null
 }
 
 /** Where the config file lives unless overridden. */
@@ -111,5 +120,61 @@ export function loadConfig(
     requestTimeoutMs: Number(pick(env['MIZAR_RELAY_REQUEST_TIMEOUT'], file.requestTimeoutMs, 30_000)),
     tunnelIdleMs: Number(pick(env['MIZAR_RELAY_TUNNEL_IDLE'], file.tunnelIdleMs, 90_000)),
     probePort: Number(pick(env['MIZAR_RELAY_PROBE_PORT'], file.probePort, 8788)),
+    apns: readApns(env, file.apns ?? null),
+  }
+}
+
+/**
+ * Resolve the APNs half of the configuration.
+ *
+ * The `.p8` key arrives either inline or as a path, and inline is supported
+ * because that is what a container's secret store usually gives you. The `\n`
+ * unescaping is for the same place: a PEM pasted into an environment variable
+ * has its newlines written as two characters, and a key that is nearly right is
+ * one that fails at signing time with a message about PEM parsing rather than
+ * about the environment.
+ *
+ * @param env - the environment.
+ * @param file - the `apns` object from the config file, when present.
+ * @returns the configuration, or `null` when this relay does not push.
+ */
+function readApns(
+  env: NodeJS.ProcessEnv,
+  file: Partial<ApnsConfig> | null,
+): ApnsConfig | null {
+  const pick = <T>(fromEnv: string | undefined, fromFile: T | undefined, fallback: T): T =>
+    fromEnv !== undefined && fromEnv !== '' ? (fromEnv as unknown as T) : (fromFile ?? fallback)
+
+  const keyId = pick(env['MIZAR_APNS_KEY_ID'], file?.keyId, '')
+  const teamId = pick(env['MIZAR_APNS_TEAM_ID'], file?.teamId, '')
+  const topic = pick(env['MIZAR_APNS_TOPIC'], file?.topic, '')
+  const inline = pick(env['MIZAR_APNS_KEY'], file?.key, '')
+  const path = pick(env['MIZAR_APNS_KEY_FILE'], undefined, '')
+
+  let key = inline.replace(/\\n/g, '\n')
+  if (key === '' && path !== '') {
+    try {
+      key = readFileSync(path, 'utf8')
+    } catch {
+      // Treated as "not configured" rather than as a startup failure: a relay
+      // that refuses to boot because a notification key is missing takes the
+      // tunnel down with it, and the tunnel is the part that matters.
+      return null
+    }
+  }
+
+  if (key === '' || keyId === '' || teamId === '' || topic === '') return null
+
+  const environment: string = pick(env['MIZAR_APNS_ENV'], undefined as string | undefined, 'production')
+  return {
+    key,
+    keyId,
+    teamId,
+    topic,
+    production: environment !== 'sandbox',
+    ...(env['MIZAR_APNS_TIME_SENSITIVE'] === '1' ||
+    env['MIZAR_APNS_TIME_SENSITIVE'] === 'true'
+      ? { timeSensitive: true }
+      : {}),
   }
 }

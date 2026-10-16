@@ -53,7 +53,12 @@ public struct WorkspaceRow: Decodable, Sendable, Equatable, Identifiable {
 }
 
 /// One row in the session list.
-public struct SessionRow: Decodable, Sendable, Equatable, Identifiable {
+///
+/// `Codable`, not merely `Decodable`, because the list is kept on the phone:
+/// `session/list` needs a round trip to a machine that may be asleep, and a
+/// screen that can only draw rows while the network is up is a screen that is
+/// empty exactly when the operator wants to know what their agent is doing.
+public struct SessionRow: Codable, Sendable, Equatable, Identifiable {
     public let sessionId: String
     /// Last activity, epoch milliseconds.
     public let updatedAt: Double
@@ -355,6 +360,25 @@ public struct QuestionAnswerBatch: Codable, Sendable, Equatable {
     public init(answers: [QuestionAnswer]) {
         self.answers = answers
     }
+}
+
+/// The host's answer to a push registration.
+///
+/// `registered` is false when the machine has no push at all -- no relay, or a
+/// relay that does not carry notifications. Reported rather than thrown, so a
+/// client that meets it has nothing to retry: the answer will be the same next
+/// time, and the app works without notifications.
+public struct PushRegistrationResult: Decodable, Sendable, Equatable {
+    public let registered: Bool
+}
+
+/// The host's answer to forgetting a push registration.
+///
+/// Its own type rather than reusing ``AcceptanceResult``: the two methods answer
+/// different fields, and decoding the wrong one turns a reply that cannot be read
+/// into a silent `try?` that no future change can detect breaking.
+public struct PushUnregisterResult: Decodable, Sendable, Equatable {
+    public let unregistered: Bool
 }
 
 /// An acceptance response that carries only a flag.

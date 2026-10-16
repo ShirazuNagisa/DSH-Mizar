@@ -36,25 +36,133 @@ final class AppFlowTests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// Put the mock host's conversation back to its fixture.
+    ///
+    /// The mock remembers what has been sent to it -- that is what makes the send
+    /// path testable at all -- but it remembered it for the life of the process,
+    /// which is the whole suite. Every test after the first send ran against a
+    /// longer conversation than the one before it, so a test that scrolled to
+    /// find a message found a different amount of content depending on which
+    /// tests had run first. A suite whose failures depend on test order is a
+    /// suite whose failures cannot be trusted, and two of them were exactly that.
+    ///
+    /// - Parameters:
+    ///   - pending: whether the mock should offer a pending approval and
+    ///     question. They fill most of a phone screen, which is correct
+    ///     behaviour and useless to a test about what is underneath them.
+    ///   - slow: how long the mock should stall every answer, in milliseconds.
+    ///     For the two screens that exist to report how long something is
+    ///     taking, which cannot be observed against a host that answers instantly.
+    private static func resetMockHost(pending: Bool = true, slow: Int = 0) {
+        var query = pending ? "" : "?pending=0"
+        if slow > 0 { query += query.isEmpty ? "?slow=\(slow)" : "&slow=\(slow)" }
+        guard let url = URL(string: "http://127.0.0.1:19395/reset\(query)") else { return }
+        let done = DispatchSemaphore(value: 0)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { _, _, _ in done.signal() }.resume()
+        // Bounded, because a mock host that is not running is a suite that is
+        // about to fail on its own terms -- not one to hang on here.
+        _ = done.wait(timeout: .now() + 6)
+    }
+
+    /// Make the mock host refuse connections, or stop refusing them.
+    ///
+    /// - Parameter off: whether it should be unreachable.
+    private static func setMockOffline(_ off: Bool) {
+        guard let url = URL(string: "http://127.0.0.1:19395/offline?on=\(off ? 1 : 0)") else { return }
+        let done = DispatchSemaphore(value: 0)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 6)
+    }
+
+    /// Stall every answer the mock host gives, from now on.
+    ///
+    /// Called mid-test rather than at launch: the launch itself is a download,
+    /// and making that slow too would leave the screen under test unreachable --
+    /// the refresh button is disabled while the first download runs.
+    ///
+    /// - Parameter milliseconds: how long each answer should take.
+    private static func stallMockHost(_ milliseconds: Int) {
+        guard let url = URL(string: "http://127.0.0.1:19395/slow?ms=\(milliseconds)") else { return }
+        let done = DispatchSemaphore(value: 0)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 6)
+    }
+
+    /// Scroll back through the conversation until an element is in the tree.
+    ///
+    /// A `LazyVStack` builds only what is near the screen, so an element that is
+    /// in the data can be absent from the accessibility hierarchy entirely --
+    /// and `waitForExistence` cannot see what the app has not built. The
+    /// conversation opens anchored to its newest message, so anything older than
+    /// that needs scrolling to before it can be asserted on.
+    ///
+    /// Both directions, and that is not tidiness. Expanding a turn inserts its
+    /// steps where the turn is, so a row that was on screen can be pushed off the
+    /// top while another is pulled up from below -- and a helper that only
+    /// travels one way then reports the row as missing from a screen it is on.
+    /// Measured: an English-language case found the failure card and the same
+    /// case with one turn more expanded did not.
+    ///
+    /// - Parameters:
+    ///   - element: what to look for.
+    ///   - app: the running app.
+    ///   - swipes: how many screenfuls to travel in each direction.
+    /// - Returns: whether it turned up.
+    @discardableResult
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication, swipes: Int = 6) -> Bool {
+        for direction in [0, 1] {
+            for _ in 0..<swipes {
+                if element.exists { return true }
+                // Zero travels towards older messages, one towards newer.
+                if direction == 0 { app.swipeDown() } else { app.swipeUp() }
+            }
+        }
+        return element.exists
+    }
+
     /// Launch the app, optionally pairing and opening a session on the way in.
     /// - Parameters:
     ///   - pairing: whether to pass a pairing URI.
     ///   - session: a session to open, or `nil` to stay on the list.
     ///   - language: a language to force, or `nil` to follow the system.
+    ///   - pending: whether the mock should offer a pending approval and question.
+    ///   - slow: how long the mock should stall every answer, in milliseconds.
+    ///   - freshStart: whether to throw the stored data away first.
+    ///   - naming: whether to wait for the naming prompt before returning.
+    ///     It is offered *after* a first download, so a test about that download
+    ///     would spend the whole of it here instead of looking at it.
     /// - Returns: the running application.
     private func launch(
         pairing: Bool = true,
         session: String? = "first",
         language: String? = "en",
+        pending: Bool = true,
+        slow: Int = 0,
+        naming: Bool = true,
+        freshStart: Bool = true,
     ) -> XCUIApplication {
+        Self.resetMockHost(pending: pending, slow: slow)
         let app = XCUIApplication()
         var arguments: [String] = []
         if pairing { arguments += ["-mizarPairURI", Self.mockPairingURI] }
         if let session { arguments += ["-mizarSelectSession", session] }
         if let language { arguments += ["-AppleLanguages", "(\(language))"] }
+        // The stored conversations outlive a relaunch, which is the point of
+        // them -- and means a test that did not ask for a clean one would be
+        // measuring an earlier run's fixture merged with this one's.
+        if freshStart { arguments += ["-mizarFreshStart"] }
+        // The system prompts are real and belong to the app, not to a test:
+        // answered by an alert, every assertion after them measures the alert.
+        arguments += ["-mizarSkipPermissionPrompts"]
         app.launchArguments = arguments
         app.launch()
-        dismissNamingIfPresented(app)
+        if naming { dismissNamingIfPresented(app) }
         return app
     }
 
@@ -107,10 +215,145 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(appeared, "the app reached neither the pairing screen nor the session list")
     }
 
+    /// The second tab, which is where the settings will go.
+    ///
+    /// It exists because the bar does: a bar with one tab is not a bar. Asked
+    /// for as a bar with "对话" on the left and "设置" on the right.
+    func testTheSecondTabOpensSettings() {
+        let app = launch(session: nil)
+        let settings = app.tabBars.buttons.element(boundBy: 1)
+        let opener = settings.exists ? settings : app.buttons["Settings"]
+        expect(opener, "there is no settings tab")
+        opener.tap()
+        expect(app.staticTexts["settings.empty"], "the settings tab is not a settings screen")
+        // Both tabs, so a bar that switched to a screen it cannot leave would
+        // not pass.
+        let conversation = app.tabBars.buttons.element(boundBy: 0)
+        conversation.tap()
+        expect(app.buttons["sessions.new"], "the conversation tab does not come back")
+    }
+
+    /// A first pairing downloads everything, and says how far along it is.
+    ///
+    /// Without the stalled mock this screen is invisible: a local host answers
+    /// in milliseconds, so the whole download lives inside one runloop turn. The
+    /// delay is what makes the assertion possible at all, and what it asserts is
+    /// the thing that was asked for -- that the operator is shown progress
+    /// rather than an empty app.
+    func testAFirstPairingShowsAFullScreenDownload() {
+        let app = launch(session: nil, slow: 500, naming: false)
+        XCTAssertTrue(
+            app.staticTexts["firstload.title"].waitForExistence(timeout: Self.patience),
+            "a first pairing downloaded the history with nothing on screen to say so",
+        )
+        // And it is a download, not a splash: it counts, and it says how much
+        // longer. The estimate needs at least one session finished, which is
+        // exactly the restraint being asserted -- a number invented before any
+        // sample exists is a number that will change.
+        XCTAssertTrue(
+            app.staticTexts["firstload.counter"].waitForExistence(timeout: Self.patience),
+            "the full-screen download showed no progress count",
+        )
+        XCTAssertTrue(
+            app.staticTexts["firstload.eta"].waitForExistence(timeout: Self.patience),
+            "the full-screen download showed no estimate",
+        )
+        // And it gets out of the way when it is done, handing over to the naming
+        // prompt rather than sitting under it.
+        dismissNamingIfPresented(app)
+        XCTAssertTrue(
+            app.buttons["sessions.new"].waitForExistence(timeout: Self.patience * 3),
+            "the download never finished",
+        )
+    }
+
+    /// A refresh reports itself in a window, with an estimate.
+    ///
+    /// The sheet existed and nothing presented it, so tapping refresh was a
+    /// spinner in the toolbar and no idea how long the wait was.
+    func testRefreshingShowsAProgressWindow() {
+        let app = launch(session: nil)
+        // The first download has to be finished first: the refresh button is
+        // disabled while it runs, and a disabled button that does nothing would
+        // fail this test for the wrong reason.
+        expect(app.buttons["sessions.new"], "the session list never arrived")
+        expect(app.staticTexts["demo"], "the session list is empty")
+
+        // Slowed now, not at launch, and deliberately: the window exists to say
+        // how long something is taking, so a host that answers instantly leaves
+        // nothing to look at.
+        Self.stallMockHost(1200)
+
+        let refresh = app.buttons["sessions.refresh"]
+        expect(refresh, "there is no way to refresh")
+        refresh.tap()
+
+        XCTAssertTrue(
+            app.buttons["sync.done"].waitForExistence(timeout: Self.patience),
+            "tapping refresh did not show the progress window",
+        )
+        // The window is the point: it says how far along, and how much longer.
+        XCTAssertTrue(
+            app.staticTexts["sync.counter"].waitForExistence(timeout: Self.patience),
+            "the progress window showed no count",
+        )
+        XCTAssertTrue(
+            app.staticTexts["sync.eta"].waitForExistence(timeout: Self.patience),
+            "the progress window showed no estimate",
+        )
+        app.buttons["sync.done"].tap()
+        Self.stallMockHost(0)
+    }
+
+    /// An unreachable Mac does not take away what this phone already has.
+    ///
+    /// The other half of the local storage: reading a conversation is entirely
+    /// local once it has been synced, so a failure screen that replaces the list
+    /// does not report a problem, it destroys an answer. And the phone is opened
+    /// on trains, in lifts, and on the far side of a relay having a bad day.
+    func testAnUnreachableMacKeepsTheStoredSessions() {
+        // First: a normal launch, so there is something stored to keep.
+        let first = launch(session: nil)
+        expect(first.staticTexts["demo"], "the session list never synced")
+        first.terminate()
+
+        Self.setMockOffline(true)
+        defer { Self.setMockOffline(false) }
+
+        // Second: the same pairing, the same stored data, and a Mac that has
+        // stopped answering.
+        let app = launch(session: nil, naming: false, freshStart: false)
+        XCTAssertTrue(
+            app.staticTexts["demo"].waitForExistence(timeout: Self.patience),
+            "an unreachable Mac hid the sessions this phone already had",
+        )
+        // And it says so rather than pretending everything is fine.
+        XCTAssertTrue(
+            app.staticTexts["sessions.error"].waitForExistence(timeout: Self.patience),
+            "the app did not say the Mac was unreachable",
+        )
+
+        // A refresh while unreachable must not report an all-clear. It did: the
+        // pass returned without asking anything and the window said "Up to date.
+        // Every conversation on this Mac is stored on this phone." -- a claim
+        // about the operator's data made out of a request that was never sent.
+        let refresh = app.buttons["sessions.refresh"]
+        expect(refresh, "there is no way to refresh")
+        refresh.tap()
+        XCTAssertTrue(
+            app.buttons["sync.done"].waitForExistence(timeout: Self.patience),
+            "tapping refresh did not show the progress window",
+        )
+        XCTAssertFalse(
+            app.staticTexts["Up to date"].waitForExistence(timeout: 4),
+            "a refresh against an unreachable Mac claimed everything was already stored",
+        )
+    }
+
     // MARK: - Session detail
 
     func testOpeningASessionShowsTheComposer() {
-        let app = launch()
+        let app = launch(pending: false)
         let field = app.textFields["composer.field"]
         expect(field, "the composer is missing")
 
@@ -172,21 +415,34 @@ final class AppFlowTests: XCTestCase {
     /// took eleven steps read as the model talking to itself -- so a test that
     /// looks for a step has to open the turn it is in first.
     ///
+    /// The element to tap is the `DisclosureGroup`, and its identifier is
+    /// `turn.<n>`, not `turn.summary.<n>`: `DisclosureGroup` puts its own
+    /// accessibility identity on the whole folded row and the identifier set
+    /// inside the label never reaches the tree. This used to query
+    /// `turn.summary.` in a loop until the first match stopped being hittable,
+    /// which found nothing at all -- so it silently expanded nothing, and the
+    /// assertions that relied on it were reading whatever happened to be open.
+    ///
+    /// Each summary is tapped **once**, keyed on its identifier, because
+    /// expanding a row leaves it exactly where it was: a loop that taps until
+    /// the row goes away taps it open and shut again.
+    ///
     /// - Parameter app: the running app.
     private func expandTurns(_ app: XCUIApplication) {
-        var guardCount = 0
-        while guardCount < 20 {
-            let summary = app.descendants(matching: .any)
-                .matching(NSPredicate(format: "identifier BEGINSWITH 'turn.summary.'"))
-                .firstMatch
-            guard summary.exists, summary.isHittable else { break }
+        let summaries = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'turn.'"))
+        var opened = Set<String>()
+        for index in 0..<summaries.count {
+            let summary = summaries.element(boundBy: index)
+            guard summary.exists else { continue }
+            guard opened.insert(summary.identifier).inserted else { continue }
             summary.tap()
-            guardCount += 1
         }
     }
 
     func testTheConversationRendersMessagesAndAFailedTurn() {
-        let app = launch()
+        // Nothing pending: the two interaction cards fill most of a phone screen,
+        // and this test is about the conversation underneath them.
+        let app = launch(pending: false)
         expect(app.staticTexts["Refactor the parser and run the tests."], "the user's message is missing")
         // The prompt is never folded: it is what the operator typed. The steps
         // are, so they have to be opened.
@@ -199,6 +455,91 @@ final class AppFlowTests: XCTestCase {
         // A turn that produced nothing is the one state where the agent looks
         // busy and is doing nothing, so it has to be visible.
         expect(app.staticTexts["The turn ended without a response"], "a failed turn was not surfaced")
+    }
+
+    /// A turn that is still working says so, and does not claim to have finished.
+    ///
+    /// The reported bug, exactly. A running turn has no `turn/end`, and the
+    /// reader invented an end time from its last record -- so a live turn was
+    /// drawn as "已完成，用时 10 秒", with the seconds measuring the age of the
+    /// newest message, and that newest message was then lifted out from under
+    /// the bar and presented as the turn's conclusion.
+    func testARunningTurnSaysItIsRunning() {
+        // With nothing pending, so the conversation has the screen. The two
+        // interaction cards take most of it, and they are asserted on by their
+        // own tests.
+        let app = launch(pending: false)
+
+        // The state is written on the folded row, which is a `DisclosureGroup`
+        // and therefore a button; its label is the whole summary. Found by label
+        // rather than by identifier, because the identifier belongs to the
+        // disclosure and the state belongs to the label.
+        let running = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Running for "))
+            .firstMatch
+        expect(running, "no turn is reported as running")
+
+        // Turn 1 did end, and still reads as finished -- so the fix is not just
+        // "everything says running".
+        let finished = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Completed in "))
+            .firstMatch
+        XCTAssertTrue(reveal(finished, in: app), "no turn is reported as completed")
+    }
+
+    /// The clock on a running turn moves.
+    ///
+    /// Separate from the assertion above because it is a different claim: that
+    /// the elapsed time is the turn's own start measured against now, rather
+    /// than a number computed once when the screen was drawn. The host is not
+    /// asked anything, so this is the only evidence that the phone is doing the
+    /// arithmetic itself.
+    func testARunningTurnsClockMoves() {
+        let app = launch(pending: false)
+        let running = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Running for "))
+            .firstMatch
+        expect(running, "no turn is reported as running")
+        let first = running.label
+
+        let moved = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@", first),
+            object: running,
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [moved], timeout: 10),
+            .completed,
+            "the running turn's clock did not move past \(first)",
+        )
+    }
+
+    /// A running turn shows no summary message, and folds its steps away.
+    ///
+    /// Both halves of the request, and they are opposites: the message that
+    /// happens to be last must not be presented as a conclusion, and it must
+    /// also not be lost -- opening the turn brings it back.
+    func testARunningTurnShowsNoSummaryMessage() {
+        let app = launch(pending: false)
+        // Waited for first: without this the two assertions below pass on a
+        // screen that has not drawn yet, which is a test that proves nothing.
+        expect(app.staticTexts["And run the whole suite."], "the running turn's prompt is missing")
+
+        let lastMessage = app.staticTexts["Two failures, fixing them."]
+        let firstStep = app.staticTexts["Running the tests now."]
+
+        // Closed, so neither step is on screen: nothing is presented as the
+        // turn's answer while the turn is still being written.
+        XCTAssertFalse(
+            lastMessage.waitForExistence(timeout: 2),
+            "a running turn's last message was shown as its summary",
+        )
+        XCTAssertFalse(firstStep.exists, "a running turn's steps are not folded")
+
+        expandTurns(app)
+
+        // Opened, so both are: the content was folded, not dropped.
+        expect(firstStep, "opening a running turn did not reveal its first step")
+        expect(lastMessage, "opening a running turn did not reveal its last step")
     }
 
     /// The context figure opens the breakdown it is computed from.
@@ -349,7 +690,7 @@ final class AppFlowTests: XCTestCase {
         }
         XCTAssertNotNil(
             inConversation,
-            "the message never reached the conversation (\(candidates.count) elements carry the text, none above the composer)",
+            "the message never reached the conversation (\(candidates.count) elements carry the text, none above the composer)\nHIERARCHY-START\n\(app.debugDescription)\nHIERARCHY-END",
         )
         XCTAssertEqual(composer.value as? String, "Ask your agent…", "the composer never emptied")
     }
@@ -404,8 +745,11 @@ final class AppFlowTests: XCTestCase {
     // MARK: - Localisation
 
     func testInterfaceFollowsTheLanguageAndContentDoesNot() {
-        let chinese = launch(language: "zh-Hans")
-        expect(chinese.staticTexts["本轮没有产生回复"], "the failure card did not translate")
+        let chinese = launch(language: "zh-Hans", pending: false)
+        // Scrolled back to: the failure card belongs to the second turn, and the
+        // conversation opens on its newest one.
+        let failure = chinese.staticTexts["本轮没有产生回复"]
+        XCTAssertTrue(reveal(failure, in: chinese), "the failure card did not translate")
         // The composer's placeholder, which is interface copy. This used to
         // assert on the "对话" segmented control; that control is gone, and the
         // placeholder is the localised string nearest the same place on screen.
@@ -415,15 +759,14 @@ final class AppFlowTests: XCTestCase {
             "the interface did not follow Chinese",
         )
         // Message content is data from the session, not interface copy.
-        expect(
-            chinese.staticTexts["Refactor the parser and run the tests."],
-            "message content was translated",
-        )
+        let prompt = chinese.staticTexts["Refactor the parser and run the tests."]
+        XCTAssertTrue(reveal(prompt, in: chinese), "message content was translated")
         chinese.terminate()
 
-        let english = launch(language: "en")
+        let english = launch(language: "en", pending: false)
         expandTurns(english)
-        expect(english.staticTexts["The turn ended without a response"], "the failure card did not translate")
+        let englishFailure = english.staticTexts["The turn ended without a response"]
+        XCTAssertTrue(reveal(englishFailure, in: english), "the failure card did not translate")
         XCTAssertEqual(
             english.textFields["composer.field"].value as? String,
             "Ask your agent…",

@@ -13,6 +13,7 @@
  */
 import type { Context } from '../dsh.js';
 import { InteractionBroker } from './interactions.js';
+import type { PushBinding } from '../push/binding.js';
 /** Per-connection facts handed to a method. */
 export interface MethodContext {
     /** The authenticated device's id. */
@@ -37,6 +38,8 @@ export interface HostFacts {
  * @param ctx - the plugin context, used for every DSH call.
  * @param facts - host identity reported to clients.
  * @param broker - the interaction broker holding pending approvals and questions.
+ * @param push - where a device's notification endpoint is recorded, when the host
+ *   has push at all. Absent in compositions without a relay.
  * @returns the table, keyed by wire method name.
  */
-export declare function createMethodTable(ctx: Context, facts: HostFacts, broker: InteractionBroker): Record<string, MethodHandler>;
+export declare function createMethodTable(ctx: Context, facts: HostFacts, broker: InteractionBroker, push?: PushBinding): Record<string, MethodHandler>;
