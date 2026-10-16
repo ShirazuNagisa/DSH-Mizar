@@ -70,7 +70,7 @@ public struct SessionStatsResult: Decodable, Sendable, Equatable {
 }
 
 /// Everything the usage screen renders.
-public struct SessionStatsFrame: Decodable, Sendable, Equatable {
+public struct SessionStatsFrame: Codable, Sendable, Equatable {
     public let tokenUsage: TokenUsage?
     public let cacheHit: CacheHit?
     public let context: ContextPressure?
@@ -81,7 +81,7 @@ public struct SessionStatsFrame: Decodable, Sendable, Equatable {
 }
 
 /// Cumulative billed tokens over the whole durable log.
-public struct TokenUsage: Decodable, Sendable, Equatable {
+public struct TokenUsage: Codable, Sendable, Equatable {
     public let uncachedInputTokens: Int
     public let outputTokens: Int
     public let cacheReadTokens: Int
@@ -91,7 +91,7 @@ public struct TokenUsage: Decodable, Sendable, Equatable {
 }
 
 /// Cache effectiveness, computed host-side.
-public struct CacheHit: Decodable, Sendable, Equatable {
+public struct CacheHit: Codable, Sendable, Equatable {
     /// Exact ratio in `[0, 1]`, or `nil` when nothing has been billed.
     public let ratio: Double?
     /// Display-ready percentage that never overstates the saving.
@@ -103,7 +103,7 @@ public struct CacheHit: Decodable, Sendable, Equatable {
 }
 
 /// Context-window occupancy.
-public struct ContextPressure: Decodable, Sendable, Equatable {
+public struct ContextPressure: Codable, Sendable, Equatable {
     public let window: Int?
     public let pressureTokens: Int?
     public let projectedTokens: Int?
@@ -114,14 +114,14 @@ public struct ContextPressure: Decodable, Sendable, Equatable {
 }
 
 /// Approximate composition of the context.
-public struct ContextBreakdown: Decodable, Sendable, Equatable {
+public struct ContextBreakdown: Codable, Sendable, Equatable {
     public let systemTokens: Int
     public let toolsTokens: Int
     public let messageTokens: Int
 }
 
 /// Latency and throughput folded from the durable log.
-public struct Throughput: Decodable, Sendable, Equatable {
+public struct Throughput: Codable, Sendable, Equatable {
     public let turns: Int
     public let steps: Int
     public let llmMs: Double
@@ -132,13 +132,13 @@ public struct Throughput: Decodable, Sendable, Equatable {
 }
 
 /// The route the last request used, and any pending change.
-public struct ModelSelectionPair: Decodable, Sendable, Equatable {
+public struct ModelSelectionPair: Codable, Sendable, Equatable {
     public let lastUsed: ModelSelection?
     public let next: ModelSelection?
 }
 
 /// A provider, model and optional reasoning effort.
-public struct ModelSelection: Decodable, Sendable, Equatable, Hashable {
+public struct ModelSelection: Codable, Sendable, Equatable, Hashable {
     public let provider: String
     public let model: String
     public let reasoningEffort: String?

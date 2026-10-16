@@ -100,6 +100,49 @@ public enum ConversationItem: Sendable, Equatable, Identifiable {
         case .failure(let id, _, _): id
         }
     }
+
+    /// The log position this item came from, when it has one.
+    ///
+    /// Timestamps cannot order this log and were being asked to. `time` has
+    /// millisecond resolution while one prompt emits about eighteen records, so
+    /// runs of them share a millisecond exactly -- measured on a real session,
+    /// the first three records all carry `time: …167121`. Sorting on that alone
+    /// leaves ties, and the merge that produced the list went through a
+    /// dictionary first, so which way the ties fell changed between runs. That
+    /// is the scrambling: the same conversation, ordered differently each time
+    /// it was loaded.
+    ///
+    /// `seq` is the log's own counter and is strictly increasing, so it breaks
+    /// every tie the timestamp leaves. It is carried inside the identifier
+    /// because ``SessionRecord/recordId`` builds it as `seq-<n>`; an item whose
+    /// id does not have that shape has no position and sorts by time alone.
+    public var seq: Int? {
+        guard id.hasPrefix("seq-") else { return nil }
+        return Int(id.dropFirst("seq-".count))
+    }
+
+    /// A total order over items, oldest first.
+    ///
+    /// Time first, because it is what a reader compares; `seq` second, because
+    /// time does not distinguish everything.
+    ///
+    /// - Parameters:
+    ///   - left: one item.
+    ///   - right: the other.
+    /// - Returns: whether `left` comes first.
+    public static func precedes(_ left: ConversationItem, _ right: ConversationItem) -> Bool {
+        if left.at != right.at { return left.at < right.at }
+        return (left.seq ?? .max) < (right.seq ?? .max)
+    }
+
+    /// When this item happened.
+    public var at: Date {
+        switch self {
+        case .message(_, _, _, let at): at
+        case .activity(_, _, let at): at
+        case .failure(_, _, let at): at
+        }
+    }
 }
 
 extension SessionRecord {
@@ -379,7 +422,76 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     /// How it ended, when the host said.
     public let endedReason: String?
 
-    public var id: String { turn.map(String.init) ?? "unopened" }
+    /// A stable identity, unique within a conversation.
+    ///
+    /// Unnumbered groups carry their position, not a shared word. Every group
+    /// without a turn number used to be called `"unopened"`, and since the merge
+    /// between pages is a dictionary keyed on this, they overwrote one another
+    /// and only the last survived.
+    public var id: String {
+        if let turn { return String(turn) }
+        return "unopened-\(orderSeq.map(String.init) ?? "head")"
+    }
+
+    /// Where this turn sits in the log: the earliest position it holds.
+    ///
+    /// This, not the turn number, is what orders a conversation. A page of the
+    /// log can end immediately after a prompt, before the turn that prompt
+    /// started, and that prompt then has no number at all -- so ordering by
+    /// number sent it to the very end, below messages written hours later.
+    /// Measured on a real session: a prompt sent at 09:57 was drawn beneath one
+    /// sent at 12:01.
+    public var orderSeq: Int? { items.compactMap(\.seq).min() }
+
+    /// A total order over turns, oldest first.
+    ///
+    /// - Parameters:
+    ///   - left: one turn.
+    ///   - right: the other.
+    /// - Returns: whether `left` comes first.
+    public static func precedes(_ left: ConversationTurn, _ right: ConversationTurn) -> Bool {
+        let lhs = left.orderSeq ?? .max
+        let rhs = right.orderSeq ?? .max
+        if lhs != rhs { return lhs < rhs }
+        return (left.turn ?? .max) < (right.turn ?? .max)
+    }
+
+    /// This turn, with prompts put in front of the ones it already has.
+    ///
+    /// - Parameter extra: the prompts to put first.
+    /// - Returns: the combined turn.
+    public func prepending(prompts extra: [ConversationItem]) -> ConversationTurn {
+        ConversationTurn(
+            turn: turn,
+            prompts: extra + prompts,
+            steps: steps,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            endedReason: endedReason,
+        )
+    }
+
+    /// This turn and the one that carried on from it, as one turn.
+    ///
+    /// - Parameter next: the continuation, which has no prompt of its own.
+    /// - Returns: the combined turn.
+    public func absorbing(_ next: ConversationTurn) -> ConversationTurn {
+        ConversationTurn(
+            turn: turn,
+            prompts: prompts,
+            steps: steps + next.steps,
+            startedAt: startedAt,
+            endedAt: next.endedAt ?? endedAt,
+            // Failure wins over any later success. Taking simply the later
+            // reason meant a turn that failed and was then continued by a
+            // completing turn reported "completed" -- which folded the failure
+            // away behind the summary bar, so the one state an operator most
+            // needs to see was the one the fold could hide.
+            endedReason: endedReason == "error" || next.endedReason == "error"
+                ? "error"
+                : (next.endedReason ?? endedReason),
+        )
+    }
 
     public init(
         turn: Int?,
@@ -404,7 +516,20 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     }
 
     /// Whether the turn ended without finishing.
-    public var failed: Bool { endedReason == "error" }
+    ///
+    /// The host's own reason is not enough. Measured on this machine: every turn
+    /// ends `turn/end.reason.kind = "completed"`, while the attempt inside it
+    /// carries a chunk that failed -- the host has no provider credential, so
+    /// the model never ran and the turn "completed" anyway. Trusting the reason
+    /// alone made ``isCollapsible`` true for those turns, and a failure inside a
+    /// folded turn is a failure nobody sees.
+    public var failed: Bool {
+        if endedReason == "error" { return true }
+        return steps.contains { item in
+            if case .failure = item { return true }
+            return false
+        }
+    }
 
     /// Everything in the turn, for a caller that wants a flat list.
     public var items: [ConversationItem] { prompts + steps }

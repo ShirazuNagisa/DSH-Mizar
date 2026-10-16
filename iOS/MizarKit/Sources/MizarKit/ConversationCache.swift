@@ -46,6 +46,17 @@ public struct CachedConversation: Codable, Sendable, Equatable {
     /// first record sits. Without it there is no way to ask for what came
     /// before, which is why scrolling up did nothing.
     public let oldestSeq: Int?
+    /// The last usage frame the host sent for this session.
+    ///
+    /// Stored beside the conversation rather than fetched when the screen opens.
+    /// The figures above the composer are read from it, and without a copy the
+    /// model name and the context percentage simply vanished whenever the read
+    /// did not come back -- on a phone that is every time the app is suspended,
+    /// which is constantly. Measured from the operator's side: "有时候退出会话
+    /// 之后再进来就不见了，有时候又有".
+    ///
+    /// Optional so a cache written before this existed still decodes.
+    public let stats: SessionStatsFrame?
 
     public init(
         sessionId: String,
@@ -55,9 +66,11 @@ public struct CachedConversation: Codable, Sendable, Equatable {
         hasMore: Bool = false,
         turns: [ConversationTurn]? = nil,
         oldestSeq: Int? = nil,
+        stats: SessionStatsFrame? = nil,
     ) {
         self.turns = turns
         self.oldestSeq = oldestSeq
+        self.stats = stats
         self.sessionId = sessionId
         self.items = items
         self.throughSeq = throughSeq
@@ -247,9 +260,12 @@ public func mergeConversations(
     for item in cached { byId[item.id] = item }
     // Fresh wins on a collision: it is the host's current answer.
     for item in fresh { byId[item.id] = item }
-    return byId.values.sorted { left, right in
-        (time(of: left) ?? .distantPast) < (time(of: right) ?? .distantPast)
-    }
+    // Ordered by time and then by log position, which is a total order. The
+    // values come back from a dictionary in no particular order, so a comparison
+    // that leaves ties -- and sorting on the timestamp alone left one for every
+    // run of records written in the same millisecond -- let unrelated messages
+    // swap places between one load and the next.
+    return byId.values.sorted(by: ConversationItem.precedes)
 }
 
 /// Fold a fresh page of turns into what is already stored.
@@ -269,22 +285,86 @@ public func mergeTurns(
     var byId: [String: ConversationTurn] = [:]
     for turn in cached { byId[turn.id] = turn }
     for turn in fresh { byId[turn.id] = turn }
-    // A turn with no number is one the log did not place; it sorts last rather
-    // than first, because "unknown" is not "earliest".
-    return byId.values.sorted { left, right in
-        (left.turn ?? Int.max) < (right.turn ?? Int.max)
-    }
+    // Ordered by where each turn sits in the log, not by its number. A turn can
+    // arrive without one -- see `reclaimStrandedPrompts` -- and ordering by
+    // number put those at the end of the conversation regardless of when they
+    // happened.
+    return collapseContinuations(
+        in: reclaimStrandedPrompts(in: byId.values.sorted(by: ConversationTurn.precedes)),
+    )
 }
 
-/// When an item happened.
-/// - Parameter item: the item.
-/// - Returns: its time.
-private func time(of item: ConversationItem) -> Date? {
-    switch item {
-    case .message(_, _, _, let at): at
-    case .activity(_, _, let at): at
-    case .failure(_, _, let at): at
+/// Fold the turns an agent continued on its own back into the turn they continued.
+///
+/// DSH does not emit one turn per prompt. Measured on a real session, the log
+/// holds long runs of consecutive `turn/start` with **no `user/message` between
+/// them at all** -- turn 2 into 3 into 4 into 5, and later 29 into 30 into 31
+/// into 32. The agent kept working after the turn that answered the prompt had
+/// ended, which is what it does when there is more to do.
+///
+/// The screen drew every one of those as its own "已完成" bar, so a single
+/// instruction came back as two or three finished turns stacked under one
+/// message: the reported "one turn split into two". A turn with no prompt is not
+/// a turn the operator asked for -- it is the previous one still going -- so it
+/// is absorbed into the turn above it.
+///
+/// - Parameter turns: merged turns, oldest first.
+/// - Returns: the same turns, with continuations folded in.
+public func collapseContinuations(in turns: [ConversationTurn]) -> [ConversationTurn] {
+    var out: [ConversationTurn] = []
+    for turn in turns {
+        if turn.prompts.isEmpty, let previous = out.last, !previous.prompts.isEmpty {
+            out[out.count - 1] = previous.absorbing(turn)
+            continue
+        }
+        out.append(turn)
     }
+    return out
+}
+
+/// Give a page-edge prompt back to the turn it started.
+///
+/// A page can end in the gap between a prompt and the turn that prompt opens.
+/// Measured on a real session: `turn/start` for turn 78 is at seq 9625 and the
+/// prompt that began it at seq 9628, so a page cut at 9629 holds the prompt and
+/// nothing that claims it. That prompt then formed its own group, which sorted
+/// to the end -- a message sent at 09:57 drawn underneath one sent at 12:01.
+///
+/// The cure is the pairing rule the grouping already uses, applied one page
+/// later: a group that has prompts and no number belongs to the next turn, when
+/// that turn is positioned after it and came out of its own page without a
+/// prompt.
+///
+/// - Parameter turns: merged turns, oldest first.
+/// - Returns: the same turns, with page-edge prompts reattached.
+public func reclaimStrandedPrompts(in turns: [ConversationTurn]) -> [ConversationTurn] {
+    var out: [ConversationTurn] = []
+    var held: ConversationTurn?
+    for turn in turns {
+        if turn.turn == nil, !turn.prompts.isEmpty {
+            // Two unnumbered prompt groups in a row: the first is genuinely on
+            // its own, so it is released rather than held indefinitely.
+            if let previous = held { out.append(previous) }
+            held = turn
+            continue
+        }
+        guard let previous = held else {
+            out.append(turn)
+            continue
+        }
+        held = nil
+        let followsIt = previous.orderSeq.flatMap { before in
+            turn.orderSeq.map { before < $0 }
+        } ?? false
+        if turn.prompts.isEmpty, followsIt {
+            out.append(turn.prepending(prompts: previous.prompts))
+        } else {
+            out.append(previous)
+            out.append(turn)
+        }
+    }
+    if let held { out.append(held) }
+    return out
 }
 
 /// A cache that keeps nothing.

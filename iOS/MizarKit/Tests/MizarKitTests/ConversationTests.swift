@@ -471,6 +471,244 @@ struct ConversationCacheTests {
         #expect(text == "new text")
     }
 
+    @Test("records written in the same millisecond keep their log order")
+    func tiesBreakBySeq() {
+        // The scrambling. One prompt emits about eighteen records and runs of
+        // them are written inside a single millisecond -- measured on a real
+        // session, the first three records all carry `time: 1791089167121`. The
+        // merge collected into a dictionary and sorted on the timestamp alone,
+        // so those ties came out in whatever order the hash table offered, and
+        // the same conversation ordered differently between one load and the
+        // next. `seq` is the log's own strictly increasing counter and is what
+        // settles them.
+        let at = Date(timeIntervalSince1970: 1_791_089_167.121)
+        let merged = mergeConversations(
+            cached: [
+                .message(id: "seq-12", role: .assistant, text: "third", at: at),
+                .message(id: "seq-10", role: .user, text: "first", at: at),
+            ],
+            fresh: [.message(id: "seq-11", role: .assistant, text: "second", at: at)],
+        )
+        #expect(merged.map(\.id) == ["seq-10", "seq-11", "seq-12"])
+    }
+
+    @Test("the same merge repeated gives the same order")
+    func mergeIsDeterministic() {
+        // Dictionary iteration order varies between runs, so a comparison with
+        // ties can put the same items in a different order every time. Ten runs
+        // of the same input is what catches a comparator that leaves any.
+        let at = Date(timeIntervalSince1970: 1_791_089_167.121)
+        let items: [ConversationItem] = (0..<20).map {
+            .message(id: "seq-\($0)", role: .assistant, text: "line \($0)", at: at)
+        }
+        let expected = (0..<20).map { "seq-\($0)" }
+        for _ in 0..<10 {
+            // Shuffled on the way in: the merge is not allowed to depend on the
+            // order it is handed either.
+            let merged = mergeConversations(cached: items.shuffled(), fresh: items.shuffled())
+            #expect(merged.map(\.id) == expected)
+        }
+    }
+
+    @Test("an item with no log position still sorts")
+    func itemsWithoutSeqSort() {
+        // Not every item carries a position -- the id shape is `seq-<n>` and
+        // anything else has none. Those still have to land somewhere rather
+        // than crashing or vanishing.
+        let merged = mergeConversations(
+            cached: [item("unknown", "no position", at: 2)],
+            fresh: [.message(id: "seq-9", role: .user, text: "positioned", at: Date(timeIntervalSince1970: 1))],
+        )
+        #expect(merged.map(\.id) == ["seq-9", "unknown"])
+    }
+
+    /// A turn built from seq numbers, which is all the ordering reads.
+    private func turn(
+        _ number: Int?,
+        prompts promptSeqs: [Int],
+        steps stepSeqs: [Int],
+        ended: String? = nil,
+    ) -> ConversationTurn {
+        ConversationTurn(
+            turn: number,
+            prompts: promptSeqs.map {
+                .message(
+                    id: "seq-\($0)",
+                    role: .user,
+                    text: "prompt \($0)",
+                    at: Date(timeIntervalSince1970: TimeInterval($0)),
+                )
+            },
+            steps: stepSeqs.map {
+                .message(
+                    id: "seq-\($0)",
+                    role: .assistant,
+                    text: "step \($0)",
+                    at: Date(timeIntervalSince1970: TimeInterval($0)),
+                )
+            },
+            startedAt: nil,
+            endedAt: nil,
+            endedReason: ended,
+        )
+    }
+
+    @Test("a prompt stranded at a page edge goes back to its turn")
+    func strandedPromptIsReclaimed() {
+        // The shape read off a real session. `turn/start` for turn 78 is at seq
+        // 9625 and the prompt that began it at 9628, so a page cut at 9629 holds
+        // the prompt and nothing that claims it -- the prompt became its own
+        // group, which then sorted to the end of the conversation, drawing a
+        // message sent at 09:57 underneath one sent at 12:01.
+        let stranded = turn(nil, prompts: [9628], steps: [])
+        let turn78 = turn(78, prompts: [], steps: [9630, 9631])
+        let turn79 = turn(79, prompts: [9800], steps: [9801])
+
+        let merged = mergeTurns(cached: [stranded, turn78], fresh: [turn79])
+
+        #expect(merged.map(\.turn) == [78, 79])
+        #expect(merged.first?.prompts.map(\.id) == ["seq-9628"])
+    }
+
+    @Test("a group with no turn number sorts by position, not to the end")
+    func unnumberedGroupSortsByPosition() {
+        // The old comparator sorted on `turn ?? Int.max`, so anything the log did
+        // not place was drawn after everything else no matter how old it was.
+        let early = turn(nil, prompts: [10], steps: [])
+        // Given its own prompt, so it is not a candidate for reclaiming and the
+        // ordering is what is under test.
+        let late = turn(5, prompts: [50], steps: [51])
+
+        let merged = mergeTurns(cached: [], fresh: [late, early])
+
+        #expect(merged.first?.prompts.map(\.id) == ["seq-10"])
+    }
+
+    @Test("two unnumbered groups do not collapse into one")
+    func unnumberedGroupsStayDistinct() {
+        // Every group without a number used to be identified as "unopened", and
+        // the merge is a dictionary keyed on that -- so all of them but the last
+        // were overwritten and their prompts disappeared.
+        let first = turn(nil, prompts: [10], steps: [])
+        let second = turn(nil, prompts: [20], steps: [])
+
+        let merged = mergeTurns(cached: [], fresh: [first, second])
+
+        #expect(merged.count == 2)
+        #expect(merged.flatMap(\.prompts).map(\.id) == ["seq-10", "seq-20"])
+    }
+
+    @Test("a turn the agent continued on its own is not a second turn")
+    func continuationsCollapse() {
+        // Read off a real session: long runs of consecutive `turn/start` with no
+        // `user/message` between them -- turn 2 into 3 into 4 into 5, later 29
+        // into 30 into 31 into 32. The screen drew each as its own "已完成" bar,
+        // so one instruction came back as two finished turns stacked under one
+        // message.
+        let asked = turn(2, prompts: [100], steps: [101], ended: "completed")
+        let carriedOn = turn(3, prompts: [], steps: [200, 201], ended: "completed")
+        let andOn = turn(4, prompts: [], steps: [300], ended: "completed")
+
+        let merged = mergeTurns(cached: [], fresh: [asked, carriedOn, andOn])
+
+        #expect(merged.count == 1, "the continuation is its own turn again")
+        #expect(merged.first?.prompts.map(\.id) == ["seq-100"])
+        #expect(merged.first?.steps.map(\.id) == ["seq-101", "seq-200", "seq-201", "seq-300"])
+    }
+
+    @Test("a turn with its own prompt is never absorbed")
+    func promptedTurnsSurvive() {
+        // The collapse keys on the *absence* of a prompt. Two instructions in a
+        // row are two turns, however quickly they follow each other.
+        let first = turn(7, prompts: [10], steps: [11], ended: "completed")
+        let second = turn(8, prompts: [20], steps: [21], ended: "completed")
+
+        let merged = mergeTurns(cached: [], fresh: [first, second])
+
+        #expect(merged.count == 2)
+        #expect(merged.map(\.turn) == [7, 8])
+    }
+
+    @Test("a continuation that failed makes the whole turn failed")
+    func continuationFailurePropagates() {
+        // "completed" then "error" is a failed turn: the operator needs to see
+        // that the work they asked for did not finish, not that the first part
+        // of it did.
+        let asked = turn(2, prompts: [100], steps: [101], ended: "completed")
+        let carriedOn = turn(3, prompts: [], steps: [200], ended: "error")
+
+        let merged = mergeTurns(cached: [], fresh: [asked, carriedOn])
+
+        #expect(merged.count == 1)
+        #expect(merged.first?.failed == true)
+    }
+
+    @Test("a failure is not cancelled out by a continuation that finished")
+    func continuationFailureIsNotOverwritten() {
+        // The other order, and the one that bit. A turn fails, the agent
+        // continues, the continuation completes. Taking the later reason made
+        // the whole thing report "completed", which folded the failure behind
+        // the summary bar -- so the one state an operator must see was the one
+        // the fold could hide.
+        let asked = turn(2, prompts: [100], steps: [101], ended: "error")
+        let carriedOn = turn(3, prompts: [], steps: [200], ended: "completed")
+
+        let merged = mergeTurns(cached: [], fresh: [asked, carriedOn])
+
+        #expect(merged.count == 1)
+        #expect(merged.first?.failed == true)
+    }
+
+    @Test("the usage frame survives a restart")
+    func statsRoundTrip() async throws {
+        // The figures above the composer are read from the cache before the
+        // network is asked, so a frame that does not survive being written is a
+        // model name and a context percentage that vanish on the next launch --
+        // reported as the figures appearing and disappearing between visits.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mizar-stats-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // A fresh cache object, as a relaunch would build.
+        let written = FileConversationCache(directory: directory)
+        await written.save(
+            CachedConversation(
+                sessionId: "session-1",
+                items: [],
+                throughSeq: 12,
+                stats: SessionStatsFrame(
+                    tokenUsage: TokenUsage(
+                        uncachedInputTokens: 12_480,
+                        outputTokens: 3_712,
+                        cacheReadTokens: 180_320,
+                        cacheWriteTokens: 4_096,
+                        billedInputTokens: 196_896,
+                    ),
+                    cacheHit: CacheHit(ratio: 0.92, displayPercent: "92"),
+                    context: ContextPressure(
+                        window: 128_000,
+                        pressureTokens: 41_000,
+                        projectedTokens: 44_500,
+                        percent: 35,
+                        breakdown: ContextBreakdown(systemTokens: 1_455, toolsTokens: 5_157, messageTokens: 34_388),
+                    ),
+                    stats: nil,
+                    model: ModelSelectionPair(
+                        lastUsed: ModelSelection(provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high"),
+                        next: nil,
+                    ),
+                    permissionPreset: "workspace-write",
+                    title: "Mock session",
+                ),
+            ),
+        )
+
+        let read = try #require(await FileConversationCache(directory: directory).load(sessionId: "session-1"))
+        #expect(read.stats?.context?.percent == 35)
+        #expect(read.stats?.model?.lastUsed?.model == "deepseek-flash")
+        #expect(read.stats?.model?.lastUsed?.reasoningEffort == "high")
+    }
+
     @Test("a session id that could escape the directory does not")
     func safeFileNames() async {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
