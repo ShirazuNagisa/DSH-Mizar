@@ -162,7 +162,9 @@ async function startListener(
   signal: AbortSignal,
 ): Promise<MizarListener> {
   const stateDir = resolveMizarHome()
-  const store = await MizarStore.open(stateDir)
+  // The store's survivable failures -- an audit log that stopped accepting
+  // lines, for instance -- are the operator's business, not the store's.
+  const store = await MizarStore.open(stateDir, (warning) => report(`state: ${warning}`))
 
   // With a tunnel up, the phone never needs to reach this machine directly, so
   // the listener goes to loopback and stops exporting itself onto whatever
@@ -343,7 +345,13 @@ async function startListener(
                 .then((count) => {
                   if (count > 0) report(`push: re-registered ${count} device(s) with the relay`)
                 })
-                .catch(() => {})
+                .catch((error: unknown) => {
+                  // Swallowing this is how push dies quietly: the relay keeps
+                  // its registrations in memory, so a reconnect that failed to
+                  // hand them over leaves every phone silent with nothing in
+                  // the log to say why.
+                  report(`push: could not re-register with the relay — ${describe(error)}`)
+                })
             }
           },
         })
@@ -490,8 +498,14 @@ export function apply(ctx: Context, config: MizarConfig): void {
   }
 
   report(
-    `mounted (bind=${config.bind.mode} port=${config.port} fallback=${String(config.portFallback)} tls=${config.tls.mode})`,
+    `mounted (bind=${config.bind.mode} port=${config.port} fallback=${String(config.portFallback)})`,
   )
+  if (config.tls.mode !== 'off') {
+    // The knob is part of the config schema and nothing reads it: the listener
+    // speaks plain HTTP, and termination is the reverse proxy's job. Saying so
+    // is the difference between "TLS is on" and "somebody set a field".
+    report(`tls: mode "${config.tls.mode}" has no effect — this listener does not implement TLS`)
+  }
 
   ctx.effect(() => {
     const controller = new AbortController()

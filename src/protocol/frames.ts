@@ -78,7 +78,14 @@ export type ErrorCode = (typeof ERROR_CODES)[number]
 /** The `hello` frame: the first frame a client must send on a socket. */
 export interface ClientHelloFrame {
   readonly v: typeof PROTOCOL_VERSION
-  /** Optional correlation id; a `hello` response repeats it when present. */
+  /**
+   * Correlation id, echoed by nothing.
+   *
+   * A `welcome` frame carries no `id`: the host answers a `hello` once, and the
+   * captured golden frame in `protocol/fixtures/welcome.json` is the record of
+   * that. This field is accepted because a client may send one, not because
+   * anything comes back with it.
+   */
   readonly id?: string
   readonly type: 'hello'
   /** The device token obtained from pairing, or an empty string on a LAN probe. */

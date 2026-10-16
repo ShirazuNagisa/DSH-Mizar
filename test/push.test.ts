@@ -183,6 +183,20 @@ describe('announcing an interaction', () => {
     expect(transport.messages[0]?.body).toBe('bash · session-9')
   })
 
+  it('names a sessionless request in the language the rest of it is written in', async () => {
+    // `languageOf` sends Traditional Chinese to English, so a zh-Hant phone gets
+    // an English title -- but the placeholder for "no session" asked a different
+    // question (`startsWith('zh')`) and answered in Chinese, giving one
+    // notification in two languages.
+    const transport = new RecordingTransport()
+    await notifier({ transport, locale: 'zh-Hant' }).approvalNeeded({
+      sessionId: null,
+      toolName: 'bash',
+    })
+    expect(transport.messages[0]?.title).toBe('Permission needed')
+    expect(transport.messages[0]?.body).toBe('bash · a session')
+  })
+
   it('skips the device that is looking, and still sends to the others', async () => {
     const transport = new RecordingTransport()
     const push = notifier({ transport })

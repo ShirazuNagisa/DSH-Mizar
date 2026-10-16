@@ -214,6 +214,12 @@ async function main() {
   check('pairing returns a device token', typeof token === 'string' && token.startsWith('mz_'), String(token))
   check('pairing returns the host identity', typeof paired.body?.hostId === 'string' && paired.body.hostId !== '')
   check('pairing echoes the protocol version', paired.body?.protocolVersion === 1)
+  // The device this run paired, by id. A dev home accumulates one per run, and
+  // every one of them is called "Smoke Test iPhone" -- so looking the device up
+  // by name later finds somebody else's, and a revocation test that revokes the
+  // wrong device passes while proving nothing.
+  const deviceId = paired.body?.deviceId
+  check('pairing returns the device id', typeof deviceId === 'string' && deviceId !== '', String(deviceId))
 
   const replay = await http('/mizar/v1/pair', {
     method: 'POST',
@@ -240,6 +246,17 @@ async function main() {
   const preAuthReply = await preAuth.next()
   check('a method before hello is refused', preAuthReply?.code === 'UNAUTHENTICATED', JSON.stringify(preAuthReply))
   preAuth.close()
+
+  // A device that has nothing stored: the app's own "not paired yet" state, and
+  // the answer that sends it to the pairing screen rather than to an error.
+  const unpaired = await connect()
+  unpaired.send({ v: 1, type: 'hello', id: 'h0', token: '' })
+  const unpairedReply = await unpaired.next()
+  check(
+    'a hello with no token answers PAIRING_REQUIRED',
+    unpairedReply?.code === 'PAIRING_REQUIRED',
+    JSON.stringify(unpairedReply),
+  )
 
   // ── authenticated socket ──────────────────────────────────────────────────
   console.log('\nwebsocket: authenticated session')
@@ -486,6 +503,10 @@ async function main() {
     }
     check('session.messages answers ok', log?.type === 'ok' && log.id === 'w9', JSON.stringify(log).slice(0, 250))
     check('session.messages reports the log cut', typeof log?.result?.asOfSeq === 'number', JSON.stringify(log?.result?.asOfSeq))
+    // The one frame the app decodes whose shape was never captured: the order of
+    // `records`, the meaning of `hasMore`, and which records survive the summary
+    // were agreed between the two languages by reading each other's source.
+    record('session-messages', log)
     check(
       'the prompt is recorded exactly once despite the retry',
       recorded.filter((text) => text === 'smoke test').length === 1,
@@ -592,7 +613,7 @@ async function main() {
   // handshake: launch token -> root exchange -> signed cookie -> authenticated
   // request. Runs last because issuing a code here invalidates the one the
   // device-pairing section consumed.
-  await panelSection()
+  await panelSection({ deviceId, deviceToken: token })
 
   await flushFixtures()
 
@@ -600,8 +621,14 @@ async function main() {
   process.exit(failed === 0 ? 0 : 1)
 }
 
-/** Drive the Web panel's routes through the real browser authentication flow. */
-async function panelSection() {
+/** Drive the Web panel's routes through the real browser authentication flow.
+ *
+ * @param context - the device this run paired (id and token), so the revocation
+ *   checks are about that device rather than about whichever one shares its
+ *   name. Note that the launch `token` this function reads from the environment
+ *   is the browser's, not the device's.
+ */
+async function panelSection(context) {
   const webBase = process.env['MIZAR_WEB_BASE'] ?? ''
   const token = process.env['MIZAR_WEB_TOKEN'] ?? ''
   if (webBase === '' || token === '') {
@@ -629,7 +656,11 @@ async function panelSection() {
   check('the status carries the host identity', typeof view?.hostId === 'string' && view.hostId !== '')
   check('the status carries the bound authorities', Array.isArray(view?.authorities) && view.authorities.length > 0, JSON.stringify(view?.authorities))
   check('the status carries the bind decision', typeof view?.bind?.mode === 'string' && typeof view?.bind?.reason === 'string')
-  check('the status reports the device paired earlier', (view?.devices ?? []).some((d) => d.name === 'Smoke Test iPhone'), JSON.stringify(view?.devices?.map((d) => d.name)))
+  check(
+    'the status lists the device this run paired, and calls it live',
+    (view?.devices ?? []).some((d) => d.deviceId === context.deviceId && d.revoked === false),
+    JSON.stringify(view?.devices?.filter((d) => d.deviceId === context.deviceId)),
+  )
   check('the status never leaks a token hash', !JSON.stringify(view ?? {}).includes('tokenHash'))
 
   console.log('\nweb panel: pairing from the panel')
@@ -678,8 +709,10 @@ async function panelSection() {
   })
   check('revoking an unknown device reports 404', unknownDevice.status === 404, `got ${unknownDevice.status}`)
 
-  // Revoke the smoke device for real, then confirm the roster reflects it.
-  const target = (withCode?.devices ?? []).find((d) => d.name === 'Smoke Test iPhone' && !d.revoked)
+  // Revoke the device this run paired -- by id, because the dev home has one
+  // "Smoke Test iPhone" per run -- then confirm the roster reflects it.
+  const target = (withCode?.devices ?? []).find((d) => d.deviceId === context.deviceId)
+  check('the panel lists the device this run paired', target !== undefined, String(context.deviceId))
   if (target !== undefined) {
     const revoked = await fetch(`${webBase}/api/mizar.revoke`, {
       ...auth,
@@ -691,6 +724,19 @@ async function panelSection() {
     const after = await revoked.json().catch(() => null)
     const row = (after?.devices ?? []).find((d) => d.deviceId === target.deviceId)
     check('the revoked device is marked revoked', row?.revoked === true, JSON.stringify(row))
+
+    // The token still exists on the phone, so the answer it gets on its next
+    // connect is the one that tells it to forget that token and pair again.
+    // This is the last check in the run: it is the smoke's own device.
+    const dead = await connect()
+    dead.send({ v: 1, type: 'hello', id: 'h9', token: context.deviceToken })
+    const deadReply = await dead.next()
+    check(
+      'a revoked device is told DEVICE_REVOKED, not "unknown token"',
+      deadReply?.code === 'DEVICE_REVOKED',
+      JSON.stringify(deadReply),
+    )
+    check('the revoked socket is closed', (await dead.closed).code === 4401)
   }
 }
 

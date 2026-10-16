@@ -43,6 +43,8 @@ function context(options: {
   registryList?: readonly unknown[]
   /** Whether the follow stream refuses outright. */
   throwOnStream?: boolean
+  /** Whether closing the follow stream throws, as a carrier that died does. */
+  returnThrowsOnStream?: boolean
   onInvoke?: (request: Invocation) => unknown
 }): { ctx: Context; calls: Invocation[]; created: string[]; streams: () => number } {
   const calls: Invocation[] = []
@@ -74,7 +76,10 @@ function context(options: {
               },
               done: false,
             }),
-            return: async () => ({ value: undefined, done: true }),
+            return: async () => {
+              if (options.returnThrowsOnStream === true) throw new Error('the stream is already gone')
+              return { value: undefined, done: true }
+            },
           }),
         }
       },
@@ -248,6 +253,22 @@ describe('the workspace list the phone draws from', () => {
     // are the same empty array.
     const { ctx } = context({ registry: null, throwOnStream: true })
     await expect(listWorkspaces(ctx)).resolves.toEqual({ items: [], complete: false })
+  })
+
+  it('keeps the baseline when the stream refuses to be closed', async () => {
+    // The list was read; closing the carrier is best effort, exactly as it is
+    // for a history page (`followCursor` says so where it does the same job). A
+    // close that throws used to discard an answer the phone needed, leaving it
+    // on the directory grouping this method exists to replace.
+    const { ctx } = context({
+      registry: null,
+      returnThrowsOnStream: true,
+      workspaces: [{ workspaceId: 'ws-1', path: '/Users/you/projects/demo' }],
+    })
+
+    const listed = await listWorkspaces(ctx)
+    expect(listed.complete).toBe(true)
+    expect(listed.items.map((row) => row.workspaceId)).toEqual(['ws-1'])
   })
 
   it('treats a registry that throws as no answer, not as the stream\'s opinion', async () => {

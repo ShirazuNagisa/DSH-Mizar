@@ -3,8 +3,8 @@
   "type": "ok",
   "id": "m3",
   "result": {
-    "sessionId": "session-b2d4a92f-1429-4960-85a5-e0aed72df371",
-    "asOfSeq": 15,
+    "sessionId": "session-9c9f5bfd-258c-410f-b51f-c1cfca120c96",
+    "asOfSeq": 25,
     "stats": {
       "tokenUsage": {
         "uncachedInputTokens": 0,
@@ -17,17 +17,31 @@
         "ratio": null,
         "displayPercent": null
       },
-      "context": null,
+      "context": {
+        "window": 1000000,
+        "pressureTokens": null,
+        "projectedTokens": null,
+        "percent": null,
+        "breakdown": {
+          "systemTokens": 1456,
+          "toolsTokens": 5157,
+          "messageTokens": 1640
+        }
+      },
       "stats": {
-        "turns": 0,
-        "steps": 0,
+        "turns": 1,
+        "steps": 1,
         "llmMs": 0,
         "toolMs": 0,
         "ttftMs": null,
         "decodeTokensPerSecond": null
       },
       "model": {
-        "lastUsed": null,
+        "lastUsed": {
+          "provider": "deepseek-official",
+          "model": "deepseek-flash",
+          "reasoningEffort": "off"
+        },
         "next": {
           "provider": "deepseek-official",
           "model": "deepseek-flash",

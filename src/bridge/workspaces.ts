@@ -264,6 +264,7 @@ async function listFromStream(ctx: Context): Promise<WorkspaceRow[] | null> {
       signal: controller.signal,
     })
     const iterator = iterable[Symbol.asyncIterator]()
+    let rows: WorkspaceRow[] | null = null
     try {
       const first = await iterator.next()
       const frame = first.value as { type?: unknown; value?: unknown } | undefined
@@ -273,13 +274,23 @@ async function listFromStream(ctx: Context): Promise<WorkspaceRow[] | null> {
       if (frame === undefined || frame.type !== 'baseline') return null
       const baseline = frame.value as { items?: unknown } | undefined
       const raw = Array.isArray(baseline?.items) ? baseline.items : []
-      return narrowAll(raw, toRow)
+      rows = narrowAll(raw, toRow)
     } finally {
       // Closes the stream. Without it the subscription outlives the request,
       // and one of these per refresh is a leak that only shows up after an hour
       // of use.
-      await iterator.return?.()
+      //
+      // Best effort, like the history page's: a carrier that dies while being
+      // closed must not throw away a list that was read successfully -- the
+      // phone would keep the directory grouping this method exists to replace,
+      // and it would be reported as "this host cannot answer".
+      try {
+        await iterator.return?.()
+      } catch {
+        /* the list was read; the subscription is the carrier's problem now */
+      }
     }
+    return rows
   } catch {
     return null
   } finally {

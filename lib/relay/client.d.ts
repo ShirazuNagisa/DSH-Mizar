@@ -68,6 +68,24 @@ export interface RelaySocket {
  */
 export declare function saneCloseCode(code: number | undefined): number;
 /**
+ * Make a close reason safe to send.
+ *
+ * The sibling of {@link saneCloseCode}, for the same reason: `WebSocket.close()`
+ * throws a `RangeError` -- synchronously, out of the frame handler -- for a
+ * reason longer than 123 bytes. A conforming peer cannot produce one (a close
+ * frame carries at most 125 bytes), but a relay that is a version ahead, is
+ * misconfigured, or is not the one the operator thinks it is, can say anything:
+ * the frame arrives as JSON, and `parseRelayFrame` narrows the envelope only.
+ *
+ * The cut is made on a character boundary, because a reason truncated mid
+ * codepoint decodes to U+FFFD and re-encodes to three bytes, which can push the
+ * result back over the limit it was cut to.
+ *
+ * @param reason - the reason the relay reported.
+ * @returns a reason that is legal to send.
+ */
+export declare function saneCloseReason(reason: string | undefined): string;
+/**
  * Turn a relay URL into the WebSocket URL for the tunnel.
  *
  * @param url - `https://relay.example.com`, `wss://…`, or either with a path.

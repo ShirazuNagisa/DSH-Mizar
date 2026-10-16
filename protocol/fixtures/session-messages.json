@@ -1,0 +1,76 @@
+{
+  "v": 1,
+  "type": "ok",
+  "id": "w9",
+  "result": {
+    "sessionId": "session-edd15eac-6549-4d6a-99d5-fa9d8ad74fc6",
+    "asOfSeq": 24,
+    "records": [
+      {
+        "type": "event",
+        "event": {
+          "type": "turn/start",
+          "seq": 12,
+          "time": 1792175537323,
+          "data": {
+            "turn": 1
+          }
+        }
+      },
+      {
+        "type": "event",
+        "event": {
+          "type": "step/start",
+          "seq": 15,
+          "time": 1792175537383,
+          "data": {
+            "turn": 1,
+            "step": 1
+          }
+        }
+      },
+      {
+        "type": "event",
+        "event": {
+          "type": "user/message",
+          "seq": 17,
+          "time": 1792175537386,
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "text": "smoke test"
+              }
+            ],
+            "source": {
+              "kind": "user",
+              "rpcId": "smoke-prompt-1"
+            },
+            "role": "user",
+            "id": "076321ec-9284-411c-8b67-77f5b3857ecb"
+          },
+          "surfaceOp": "append"
+        }
+      },
+      {
+        "type": "event",
+        "event": {
+          "type": "turn/end",
+          "seq": 24,
+          "time": 1792175537394,
+          "data": {
+            "turn": 1,
+            "reason": {
+              "kind": "error",
+              "error": {
+                "message": "llm-deepseek: no API key for provider route \"deepseek-official\"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launching environment",
+                "code": "MISSING_CREDENTIAL"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "hasMore": false
+  }
+}

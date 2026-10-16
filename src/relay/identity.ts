@@ -18,7 +18,7 @@
  * @module dsh-mizar/relay/identity
  */
 import { randomBytes } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /** The file holding this install's tunnel secret. */
@@ -62,6 +62,11 @@ export async function loadOrCreateTunnelSecret(
     await mkdir(stateDir, { recursive: true })
     const stored: StoredIdentity = { tunnelSecret: secret, createdAt: new Date().toISOString() }
     await writeFile(path, `${JSON.stringify(stored, null, 2)}\n`, { mode: 0o600 })
+    // `mode` only applies when the file is created, and this path is reached
+    // with the file already present whenever it was unreadable -- a truncated
+    // one, say. Without this, a file that was 0644 stays 0644, and the comment
+    // above about it being owner-only would be a claim rather than a fact.
+    await chmod(path, 0o600).catch(() => {})
   } catch (error) {
     log(
       `relay: could not save this Mac's tunnel identity to ${path} ` +

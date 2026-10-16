@@ -11,7 +11,7 @@
 import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createInitialState,
   MizarStore,
@@ -215,6 +215,43 @@ describe('MizarStore', () => {
     await rm(join(dir, 'audit.jsonl'), { force: true })
     await mkdir(join(dir, 'audit.jsonl'))
     await expect(store.audit({ time: 0, event: 'state-created' })).resolves.toBeUndefined()
+  })
+
+  it('says so when the audit log stops accepting lines', async () => {
+    // Swallowing is right -- losing a log line must not fail a pairing that
+    // already happened -- but swallowing *silently* is not: the audit trail is
+    // the operator's only forensic record, and a trail that ended yesterday
+    // looks exactly like a host nothing has happened to.
+    const warnings: string[] = []
+    const store = await MizarStore.open(dir, (message) => warnings.push(message))
+    await rm(join(dir, 'audit.jsonl'), { force: true })
+    await mkdir(join(dir, 'audit.jsonl'))
+
+    await store.audit({ time: 0, event: 'device-paired' })
+
+    expect(warnings.some((message) => message.includes('audit'))).toBe(true)
+  })
+
+  it('refuses to start rather than overwrite state it could not move aside', async () => {
+    // The quarantine is the promise that a corrupt roster is recoverable by
+    // hand. If the move fails, writing fresh state over it destroys the only
+    // copy of every device record -- so this fails loudly instead, and the
+    // operator still has their file.
+    await writeFile(join(dir, 'state.json'), '{ this is not json', 'utf8')
+    const frozen = 1_700_000_000_000
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(frozen)
+      // A directory in the quarantine's way makes the rename fail while the
+      // directory itself stays writable.
+      await mkdir(`${join(dir, 'state.json')}.corrupt-${frozen}`)
+
+      await expect(MizarStore.open(dir)).rejects.toThrow(/moved aside|quarantine/i)
+      // The unusable file is still there, byte for byte.
+      expect(await readFile(join(dir, 'state.json'), 'utf8')).toBe('{ this is not json')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reports an empty audit log rather than failing', async () => {

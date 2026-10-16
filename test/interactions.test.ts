@@ -42,6 +42,31 @@ function question(id: string, multiSelect = false): QuestionItem {
   }
 }
 
+/**
+ * A signal-shaped double that reports how many listeners are attached.
+ *
+ * `AbortSignal` does not expose its listener count, and the leak this is used
+ * to catch is exactly that count, so it is counted here instead.
+ *
+ * @returns the signal, and a reader for the number of listeners on it.
+ */
+function countingSignal(): { signal: AbortSignal; attached: () => number } {
+  const target = new EventTarget()
+  let count = 0
+  const signal = {
+    aborted: false,
+    addEventListener: (...args: unknown[]) => {
+      count += 1
+      ;(target.addEventListener as unknown as (...rest: unknown[]) => void)(...args)
+    },
+    removeEventListener: (...args: unknown[]) => {
+      count -= 1
+      ;(target.removeEventListener as unknown as (...rest: unknown[]) => void)(...args)
+    },
+  } as unknown as AbortSignal
+  return { signal, attached: () => count }
+}
+
 /** Capture the listeners a context registers. */
 function fakeContext(): {
   ctx: Context
@@ -277,6 +302,28 @@ describe('InteractionBroker — questions', () => {
     controller.abort()
     await expect(pending).resolves.toEqual([])
   })
+
+  it('takes its abort listener off a signal it did not create', async () => {
+    // The signal belongs to the asking tool and outlives the batch, so a
+    // listener left on it accumulates one closure per question ever asked --
+    // which is both a leak and, past ten, a `MaxListenersExceededWarning` in
+    // the operator's log. Asserted through a signal double, because the count
+    // is not otherwise observable.
+    const broker = new InteractionBroker()
+    broker.setSender(() => {})
+    const { signal, attached } = countingSignal()
+
+    for (let index = 0; index < 25; index += 1) {
+      const handle = broker.beginQuestions(
+        { sessionId: 's1', callId: `c${index}`, questions: [question('q1')] },
+        signal,
+      )
+      broker.answerQuestion(`c${index}`, [{ id: 'q1', selected: ['yes'] }])
+      await handle.answers
+    }
+
+    expect(attached()).toBe(0)
+  })
 })
 
 describe('registerAnswerers', () => {
@@ -369,6 +416,45 @@ describe('registerAnswerers', () => {
     expect(outcome).toBe('allowed-once')
     // The phone's outstanding question is cleaned up.
     expect(broker.listApprovals()).toHaveLength(0)
+  })
+
+  it('releases the pending approval when the delegated chain rejects', async () => {
+    // A waterfall listener further down that throws is not an exotic case: it is
+    // what the desktop channel does when its socket is mid-teardown. The phone's
+    // card was left pending forever -- an entry that lives as long as the
+    // process, and a decision nobody can take.
+    const { ctx, registered } = fakeContext()
+    const broker = new InteractionBroker()
+    broker.setSender(() => {})
+    broker.setClientCount(1)
+    registerAnswerers(ctx, broker)
+
+    await expect(
+      invoke(registered, 'approval/request', { toolName: 'bash' }, () =>
+        Promise.reject(new Error('the desktop channel fell over')),
+      ),
+    ).rejects.toThrow('the desktop channel fell over')
+
+    expect(broker.listApprovals()).toHaveLength(0)
+  })
+
+  it('releases the pending question when the delegated chain rejects', async () => {
+    const { ctx, registered } = fakeContext()
+    const broker = new InteractionBroker()
+    broker.setSender(() => {})
+    broker.setClientCount(1)
+    registerAnswerers(ctx, broker)
+
+    await expect(
+      invoke(
+        registered,
+        'user-questions/request',
+        { wait: { callId: 'c1' }, questions: [{ id: 'q1', question: 'x' }] },
+        () => Promise.reject(new Error('the desktop channel fell over')),
+      ),
+    ).rejects.toThrow('the desktop channel fell over')
+
+    expect(broker.listQuestions()).toHaveLength(0)
   })
 
   it('delegates a question batch with no call id rather than claiming it', async () => {

@@ -18,7 +18,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { hostname } from 'node:os'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { createDeviceRecord, issueToken, revokeDevice, touchDevice, verifyToken } from '../auth/devices.js'
+import {
+  createDeviceRecord,
+  issueToken,
+  matchToken,
+  revokeDevice,
+  touchDevice,
+  verifyToken,
+} from '../auth/devices.js'
 import { issueCode, RateLimiter, redeemCode } from '../auth/pairing.js'
 import { MizarStore } from '../auth/store.js'
 import type { BindPlan } from '../net/interfaces.js'
@@ -582,7 +589,7 @@ export class MizarListener {
       // returns, what leaves here fits.
       if (bytes > MAX_FRAME_BYTES) {
         this.#options.log(
-          `mizar: refusing to send a ${Math.round(bytes / 1024)}KB "${frame.type}" frame — ` +
+          `refusing to send a ${Math.round(bytes / 1024)}KB "${frame.type}" frame — ` +
             'the transport would drop the connection instead',
         )
         if (frame.type === 'ok' && frame.id !== undefined) {
@@ -635,16 +642,41 @@ export class MizarListener {
             send(errorFrame('MALFORMED_FRAME', 'already authenticated', correlationId))
             return
           }
-          const device = verifyToken(this.#options.store.state.devices, frame.token)
-          if (device === null) {
+          // An empty token is a client that has nothing stored -- the frame type
+          // documents it as a LAN probe -- and the actionable answer is "pair",
+          // which is what the app's own PAIRING_REQUIRED branch does with it.
+          if (frame.token === '') {
             await this.#options.store.audit({
               time: Date.now(),
               event: 'client-rejected',
               remote,
-              detail: 'unknown or revoked token',
+              detail: 'no device token presented',
             })
-            send(errorFrame('UNAUTHENTICATED', 'unknown or revoked device token', correlationId))
-            socket.close(4401, 'unauthenticated')
+            send(errorFrame('PAIRING_REQUIRED', 'this client has no device token', correlationId))
+            socket.close(4401, 'pairing required')
+            return
+          }
+          const device = verifyToken(this.#options.store.state.devices, frame.token)
+          if (device === null) {
+            // Revoked and unknown are different answers: one means the operator
+            // removed this device and the app should forget its token, the other
+            // that the token was never ours. The distinction is not a leak --
+            // reaching it at all requires presenting the right token.
+            const revoked = matchToken(this.#options.store.state.devices, frame.token)?.revoked === true
+            await this.#options.store.audit({
+              time: Date.now(),
+              event: 'client-rejected',
+              remote,
+              detail: revoked ? 'a revoked device token' : 'unknown device token',
+            })
+            send(
+              errorFrame(
+                revoked ? 'DEVICE_REVOKED' : 'UNAUTHENTICATED',
+                revoked ? 'this device was revoked by the host' : 'unknown or revoked device token',
+                correlationId,
+              ),
+            )
+            socket.close(4401, revoked ? 'device revoked' : 'unauthenticated')
             return
           }
 

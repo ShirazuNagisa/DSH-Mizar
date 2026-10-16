@@ -50,6 +50,7 @@ describe('fixture set', () => {
         'model-catalog',
         'permissions-catalog',
         'session-list',
+        'session-messages',
         'session-stats',
         'welcome',
       ].sort(),
@@ -109,6 +110,53 @@ describe('session list', () => {
       expect(typeof item['updatedAt']).toBe('number')
       expect(typeof item['running']).toBe('boolean')
       expect(typeof item['blank']).toBe('boolean')
+    }
+  })
+})
+
+describe('session messages', () => {
+  it('carries a page in the order the log had, bounded by its own cut', () => {
+    // The shape that was never captured. Both languages read this frame's
+    // ordering and `hasMore` semantics out of the bridge's source, which is
+    // exactly how they drifted: the summary filter decides what travels, and
+    // nothing said whether the surviving records keep log order. They do.
+    const result = fixture('session-messages')['result'] as Record<string, unknown>
+    expect(typeof result['sessionId']).toBe('string')
+    expect(typeof result['asOfSeq']).toBe('number')
+    expect(typeof result['hasMore']).toBe('boolean')
+    const records = result['records'] as Record<string, unknown>[]
+    expect(Array.isArray(records)).toBe(true)
+    expect(records.length).toBeGreaterThan(0)
+
+    let previous = -1
+    for (const record of records) {
+      // The envelope the app decodes: `{type: 'event', event: {type, seq, …}}`.
+      expect(record['type']).toBe('event')
+      const event = record['event'] as Record<string, unknown>
+      expect(typeof event['type']).toBe('string')
+      expect(typeof event['seq']).toBe('number')
+      expect(typeof event['time']).toBe('number')
+      // Oldest first, and never past the page's own cut.
+      expect(event['seq'] as number).toBeGreaterThan(previous)
+      expect(event['seq'] as number).toBeLessThanOrEqual(result['asOfSeq'] as number)
+      previous = event['seq'] as number
+    }
+  })
+
+  it('carries only the record types a conversation screen draws', () => {
+    // `summaryRecords` is an allowlist, and this is the assertion that a host
+    // which starts emitting something new does not silently add its weight to
+    // every page: the fixture is captured, so a new event type in it fails here
+    // and the new shape gets looked at.
+    const result = fixture('session-messages')['result'] as Record<string, unknown>
+    const kept = new Set(['turn/start', 'turn/end', 'step/start', 'user/message', 'assistant/message'])
+    for (const record of result['records'] as Record<string, unknown>[]) {
+      const event = record['event'] as Record<string, unknown>
+      expect(kept.has(event['type'] as string), `unexpected record ${String(event['type'])}`).toBe(true)
+      // DSH's own injected context is 6 KB per turn and nobody wrote it.
+      const source = (event['data'] as { source?: { kind?: unknown } } | undefined)?.source
+      expect(source?.kind).not.toBe('runtime-context')
+      expect(source?.kind).not.toBe('skill-catalog')
     }
   })
 })

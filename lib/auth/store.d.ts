@@ -52,9 +52,12 @@ export declare class MizarStore {
     /**
      * Open the store, creating state on first run.
      * @param dir - the state directory, normally from {@link resolveMizarHome}.
+     * @param warn - sink for a failure that is survivable but must not be silent,
+     *   such as an audit log that has stopped accepting lines. Defaults to
+     *   dropping them, which is what a bare test store wants.
      * @returns the opened store.
      */
-    static open(dir: string): Promise<MizarStore>;
+    static open(dir: string, warn?: (message: string) => void): Promise<MizarStore>;
     /** The current state. Immutable; use {@link mutate} to change it. */
     get state(): MizarState;
     /** The decoded host secret. */
@@ -87,7 +90,9 @@ export declare class MizarStore {
      * Append one line to the audit log.
      *
      * Auditing never throws into the caller: losing a log line must not take down
-     * a pairing request that already succeeded.
+     * a pairing request that already succeeded. It is not silent either -- the
+     * audit trail is the operator's only forensic record, and a trail that stopped
+     * last week looks exactly like a host nothing has happened to.
      *
      * @param event - the event to record.
      */

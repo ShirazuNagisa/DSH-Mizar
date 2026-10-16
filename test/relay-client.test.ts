@@ -422,3 +422,162 @@ describe('a close code arriving from the relay', () => {
     await listener.close()
   })
 })
+
+/**
+ * The relay is a separate deployment with its own release cadence, so what it
+ * sends is input from a peer rather than a value this process produced. A frame
+ * whose fields are simply the wrong shape must be dropped, not acted on: these
+ * arrive inside the socket's `message` handler, where nothing catches.
+ */
+describe('frames from the relay are not trusted', () => {
+  /** A started client with one stream already open, and its scripted socket. */
+  async function openStream(): Promise<{
+    socket: ScriptedSocket
+    client: RelayClient
+    listener: FakeListener
+    id: string
+  }> {
+    const listener = await startListener()
+    const socket = new ScriptedSocket()
+    const client = new RelayClient({
+      url: 'https://relay.example.com',
+      token: 'a-token',
+      localPort: listener.port,
+      log: () => undefined,
+      socketFactory: () => socket,
+    })
+    client.start()
+    socket.deliver({ t: 'ws-open', id: 'r1', path: '/mizar/v1/ws', headers: {} })
+    await vi.waitFor(() => expect(socket.frames().some((f) => f['t'] === 'ws-open-ok')).toBe(true))
+    return { socket, client, listener, id: 'r1' }
+  }
+
+  it('drops a stream message whose data is not base64 text', async () => {
+    const { socket, client, listener, id } = await openStream()
+    try {
+      expect(() => socket.deliver({ t: 'ws-msg', id, data: 5, binary: false })).not.toThrow()
+      // One unusable frame is not a reason to lose the stream: the phone socket
+      // is still the operator's only way to answer an approval.
+      socket.deliver({
+        t: 'ws-msg',
+        id,
+        data: Buffer.from('after').toString('base64'),
+        binary: false,
+      })
+      await vi.waitFor(() =>
+        expect(
+          listener.sockets[0] !== undefined && listener.sockets[0].readyState === 1,
+        ).toBe(true),
+      )
+    } finally {
+      client.stop()
+      await listener.close()
+    }
+  })
+
+  it('closes the local socket for a reason it would refuse to send', async () => {
+    const { socket, client, listener, id } = await openStream()
+    try {
+      // 123 bytes is the most `ws` will put in a close frame. Handing it more
+      // makes `WebSocket.close()` throw a RangeError out of this handler, and
+      // the throw also means the local socket is never closed at all.
+      expect(() =>
+        socket.deliver({ t: 'ws-close', id, code: 1001, reason: 'x'.repeat(300) }),
+      ).not.toThrow()
+      await vi.waitFor(() => expect(listener.sockets[0]?.readyState).toBe(3))
+    } finally {
+      client.stop()
+      await listener.close()
+    }
+  })
+
+  it('answers a request whose body is not base64 text', async () => {
+    const listener = await startListener()
+    const socket = new ScriptedSocket()
+    const client = new RelayClient({
+      url: 'https://relay.example.com',
+      token: 'a-token',
+      localPort: listener.port,
+      log: () => undefined,
+      socketFactory: () => socket,
+    })
+    client.start()
+    try {
+      // `Buffer.from(5, 'base64')` throws before the request reaches the
+      // listener, and the promise is discarded by `void` -- so the relay is left
+      // holding a phone connection until its own timeout, and the throw becomes
+      // an unhandled rejection in the DSH process.
+      expect(() =>
+        socket.deliver({ t: 'req', id: 'r9', method: 'POST', path: '/x', headers: {}, body: 5 }),
+      ).not.toThrow()
+      await vi.waitFor(() =>
+        expect(socket.frames().some((f) => f['t'] === 'error' && f['id'] === 'r9')).toBe(true),
+      )
+    } finally {
+      client.stop()
+      await listener.close()
+    }
+  })
+
+  it('answers a request whose body field is missing', async () => {
+    const listener = await startListener()
+    const socket = new ScriptedSocket()
+    const client = new RelayClient({
+      url: 'https://relay.example.com',
+      token: 'a-token',
+      localPort: listener.port,
+      log: () => undefined,
+      socketFactory: () => socket,
+    })
+    client.start()
+    try {
+      // The declared frame says `body: string | null`, and `parseRelayFrame`
+      // checks the envelope and nothing else -- so `undefined` reaches the
+      // decoder, where only `null` was handled.
+      expect(() =>
+        socket.deliver({ t: 'req', id: 'r7', method: 'GET', path: '/mizar/v1/hello', headers: {} }),
+      ).not.toThrow()
+      await vi.waitFor(() =>
+        expect(socket.frames().some((f) => f['id'] === 'r7')).toBe(true),
+      )
+      expect(listener.requests.length).toBe(1)
+    } finally {
+      client.stop()
+      await listener.close()
+    }
+  })
+
+  it('cannot be pointed at a host other than the local listener', async () => {
+    // The relay is a separate deployment and the phone chooses the path, so this
+    // is the check that "the relay replays onto the Mac" cannot become "the Mac
+    // fetches whatever the phone names": the origin is fixed at construction and
+    // the path is only ever appended to it. A path that looks like a
+    // protocol-relative URL is the obvious attempt.
+    const listener = await startListener()
+    const socket = new ScriptedSocket()
+    const client = new RelayClient({
+      url: 'https://relay.example.com',
+      token: 'a-token',
+      localPort: listener.port,
+      log: () => undefined,
+      socketFactory: () => socket,
+    })
+    client.start()
+    try {
+      socket.deliver({
+        t: 'req',
+        id: 'r5',
+        method: 'GET',
+        path: '//evil.example.com/steal',
+        headers: { host: 'evil.example.com' },
+        body: null,
+      })
+      await vi.waitFor(() => expect(listener.requests.length).toBe(1))
+      // The listener saw it, on its own port, as a path.
+      expect(listener.requests[0]?.url).toBe('//evil.example.com/steal')
+    } finally {
+      client.stop()
+      await listener.close()
+    }
+  })
+})

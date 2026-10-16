@@ -79,7 +79,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 ### 服务端 → 客户端
 
 ```jsonc
-{ "v": 1, "type": "welcome", "id": "h1", "hostId": "…", "hostName": "…",
+{ "v": 1, "type": "welcome", "hostId": "…", "hostName": "…",
   "protocolVersion": 1, "home": "/Users/…", "deviceId": "…" }
 
 { "v": 1, "type": "ok", "id": "m1", "result": { … } }
@@ -87,6 +87,10 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 { "v": 1, "type": "error", "id": "m1", "code": "WRITER_HELD",
   "message": "…", "retryable": false }
 ```
+
+`v`、`type` 是每个帧都有的。**`welcome` 不带 `id`**，即使 `hello` 带了：主机只回答一次握手，
+没有要关联的东西。手机不能靠 `id` 认 `welcome`，只能靠 `type`（黄金帧 `welcome.json` 就是从
+真实主机上抓的，里面没有 `id`）。
 
 `event` 帧由服务端**主动推送**，见下方"事件"。
 
@@ -304,6 +308,11 @@ assistant/attempt
 MIZAR_WRITE_FIXTURES=1 scripts/dev.sh smoke   # 重新捕获
 ```
 
-当前 8 个黄金帧：`welcome` · `host-info` · `session-list` · `session-stats` ·
-`model-catalog` · `permissions-catalog` · `interactions-pending` · `error-frame`。
-它们同时被断言为**不含任何密钥**。
+当前 9 个黄金帧：`welcome` · `host-info` · `session-list` · `session-messages` ·
+`session-stats` · `model-catalog` · `permissions-catalog` · `interactions-pending` ·
+`error-frame`。它们同时被断言为**不含任何密钥**。
+
+`session-messages` 是最后补上的一个，也是最该补的：`records` 的顺序、`hasMore` 的含义、
+以及"哪些记录能活下来"三件事，此前两边都只能去读桥的源码，而两种语言读同一段源码正是上次
+漂移的方式。现在它是一份真实抓下来的页，两边的测试都断言它。
+

@@ -132,10 +132,51 @@ export function createDeviceRecord(
 }
 
 /**
- * Find the live device a token belongs to.
+ * A token's record, and whether that record has been revoked.
  *
- * Every record is compared, and the result is merged rather than returned early,
- * so a caller cannot time which record matched or how close a wrong token was.
+ * Both are needed because the two are different answers for the client:
+ * "this host has never seen you" sends the app back to pairing, while "you were
+ * removed on purpose" also makes it clear its stored token is dead.
+ */
+export interface TokenMatch {
+  readonly record: DeviceRecord
+  readonly revoked: boolean
+}
+
+/**
+ * Find the record a token belongs to, revoked or not.
+ *
+ * Every record is compared without an early exit, so a caller cannot time which
+ * record matched or how close a wrong token was. A live record wins over a
+ * revoked one when a token somehow appears twice, which is the order the roster
+ * itself is kept in.
+ *
+ * @param devices - the known device records.
+ * @param token - the token presented by the client.
+ * @returns the match, or `null` when no record holds this token.
+ */
+export function matchToken(
+  devices: readonly DeviceRecord[],
+  token: string,
+): TokenMatch | null {
+  const presented = Buffer.from(hashToken(token), 'utf8')
+  let match: TokenMatch | null = null
+
+  for (const device of devices) {
+    const stored = Buffer.from(device.tokenHash, 'utf8')
+    if (stored.length !== presented.length || !timingSafeEqual(stored, presented)) continue
+    if (device.revokedAt === undefined) {
+      if (match === null || match.revoked) match = { record: device, revoked: false }
+    } else if (match === null) {
+      match = { record: device, revoked: true }
+    }
+  }
+
+  return match
+}
+
+/**
+ * Find the live device a token belongs to.
  *
  * @param devices - the known device records.
  * @param token - the token presented by the client.
@@ -145,16 +186,8 @@ export function verifyToken(
   devices: readonly DeviceRecord[],
   token: string,
 ): DeviceRecord | null {
-  const presented = Buffer.from(hashToken(token), 'utf8')
-  let match: DeviceRecord | null = null
-
-  for (const device of devices) {
-    const stored = Buffer.from(device.tokenHash, 'utf8')
-    const equal = stored.length === presented.length && timingSafeEqual(stored, presented)
-    if (equal && device.revokedAt === undefined && match === null) match = device
-  }
-
-  return match
+  const match = matchToken(devices, token)
+  return match !== null && !match.revoked ? match.record : null
 }
 
 /**

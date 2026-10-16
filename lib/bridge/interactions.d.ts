@@ -173,6 +173,11 @@ export declare class InteractionBroker {
     /**
      * Ask the phone for answers to a question batch.
      *
+     * There is no window of its own: the asking tool's signal is what withdraws a
+     * batch, and a timer here would settle a question the operator can still
+     * answer. (A constant claiming otherwise used to live above this class and was
+     * read by nothing.)
+     *
      * @param input - the question batch, already narrowed from the Cordis event.
      * @param signal - aborts when the asking tool withdraws.
      * @returns the call id and its answer promise.
@@ -217,7 +222,5 @@ export declare function readQuestionRequest(request: unknown): {
  * @throws MethodError when the batch does not match.
  */
 export declare function assertAnswerBatch(questions: readonly QuestionItem[], answers: readonly QuestionAnswerItem[]): void;
-/** Exported for tests: how long the phone is offered a question. */
-export declare const QUESTION_WINDOW: number;
 /** Re-exported so the wiring module can build the Cordis listener signature. */
 export type { Context };

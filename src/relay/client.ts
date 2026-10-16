@@ -107,6 +107,38 @@ export function saneCloseCode(code: number | undefined): number {
   return 1000
 }
 
+/** Bytes `ws` will accept in a close frame's reason. */
+const MAX_CLOSE_REASON_BYTES = 123
+
+/**
+ * Make a close reason safe to send.
+ *
+ * The sibling of {@link saneCloseCode}, for the same reason: `WebSocket.close()`
+ * throws a `RangeError` -- synchronously, out of the frame handler -- for a
+ * reason longer than 123 bytes. A conforming peer cannot produce one (a close
+ * frame carries at most 125 bytes), but a relay that is a version ahead, is
+ * misconfigured, or is not the one the operator thinks it is, can say anything:
+ * the frame arrives as JSON, and `parseRelayFrame` narrows the envelope only.
+ *
+ * The cut is made on a character boundary, because a reason truncated mid
+ * codepoint decodes to U+FFFD and re-encodes to three bytes, which can push the
+ * result back over the limit it was cut to.
+ *
+ * @param reason - the reason the relay reported.
+ * @returns a reason that is legal to send.
+ */
+export function saneCloseReason(reason: string | undefined): string {
+  if (reason === undefined || reason === '') return ''
+  const bytes = Buffer.from(reason, 'utf8')
+  if (bytes.length <= MAX_CLOSE_REASON_BYTES) return reason
+
+  let end = MAX_CLOSE_REASON_BYTES
+  // Back up over continuation bytes (0b10xxxxxx) to the start of a character.
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1
+  const cut = bytes.subarray(0, end).toString('utf8')
+  return Buffer.byteLength(cut, 'utf8') > MAX_CLOSE_REASON_BYTES ? cut.slice(0, -1) : cut
+}
+
 /** Headers that describe one hop and must not be replayed onto the next. */
 const HOP_BY_HOP = new Set([
   'connection',
@@ -181,9 +213,11 @@ export function phoneBaseURL(url: string, publicUrl: string, room?: string | nul
 }
 
 /** Filter replay headers down to the ones that describe the request itself. */
-function forwardable(headers: Readonly<Record<string, string>>): Record<string, string> {
+function forwardable(headers: Readonly<Record<string, string>> | undefined): Record<string, string> {
   const out: Record<string, string> = {}
+  if (typeof headers !== 'object' || headers === null) return out
   for (const [name, value] of Object.entries(headers)) {
+    if (typeof value !== 'string') continue
     if (HOP_BY_HOP.has(name.toLowerCase())) continue
     out[name] = value
   }
@@ -319,7 +353,19 @@ export class RelayClient {
         this.#send({ t: 'pong', id: frame.id })
         return
       case 'req':
-        void this.#replayRequest(frame)
+        // Guarded rather than `void`ed: an exception out of a method that
+        // answers a phone request is an unhandled rejection in this process,
+        // which Node turns into a crash, and it would leave the relay holding a
+        // phone connection until its own timeout.
+        void this.#replayRequest(frame).catch((error: unknown) => {
+          this.#send({
+            t: 'error',
+            id: frame.id,
+            message: `the request could not be replayed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          })
+        })
         return
       case 'ws-open':
         this.#openStream(frame.id, frame.path, frame.headers)
@@ -330,11 +376,21 @@ export class RelayClient {
       case 'ws-close': {
         const stream = this.#streams.get(frame.id)
         this.#streams.delete(frame.id)
+        if (stream === undefined) return
         // The relay forwards whatever code the phone's socket reported, and a
         // `close` handler sees reserved ones -- 1005 and 1006 describe a close
         // that carried no code and must never be sent. `ws` throws a TypeError
-        // on them, which took the whole plugin down rather than one stream.
-        stream?.close(saneCloseCode(frame.code), frame.reason ?? 'closed by the phone')
+        // on those and a RangeError on an over-long reason, and either one used
+        // to escape this handler: the plugin went down, or the local socket was
+        // left open because the close it was asked for threw.
+        const reason =
+          typeof frame.reason === 'string' ? frame.reason : 'closed by the phone'
+        try {
+          stream.close(saneCloseCode(frame.code), saneCloseReason(reason))
+        } catch {
+          // Already gone in a way `ws` refuses to describe; the socket's own
+          // handlers have already heard about it.
+        }
         return
       }
       default:
@@ -351,10 +407,25 @@ export class RelayClient {
    * the reason -- is available immediately.
    */
   async #replayRequest(frame: Extract<RelayToHost, { t: 'req' }>): Promise<void> {
-    const body = frame.body === null ? undefined : Buffer.from(frame.body, 'base64')
     try {
-      const response = await fetch(`${this.#localOrigin}${frame.path}`, {
-        method: frame.method,
+      // A body of the wrong type is refused rather than ignored, and refused
+      // inside the guard: `parseRelayFrame` narrows the envelope and nothing
+      // else, so anything at all may arrive here. Treating a broken frame as
+      // "no body" would replay a POST that was meant to carry one, and the
+      // caller discards this promise -- which used to mean an unhandled
+      // rejection in the DSH process *and* a phone left waiting for an answer
+      // that was never coming.
+      if (frame.body !== undefined && frame.body !== null && typeof frame.body !== 'string') {
+        this.#send({
+          t: 'error',
+          id: frame.id,
+          message: 'the request body was not base64 text',
+        })
+        return
+      }
+      const body = typeof frame.body === 'string' ? Buffer.from(frame.body, 'base64') : undefined
+      const response = await fetch(`${this.#localOrigin}${String(frame.path)}`, {
+        method: typeof frame.method === 'string' ? frame.method : 'GET',
         headers: forwardable(frame.headers),
         ...(body === undefined ? {} : { body }),
         redirect: 'manual',

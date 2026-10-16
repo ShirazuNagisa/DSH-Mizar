@@ -87,9 +87,6 @@ export interface QuestionAnswerItem {
   readonly custom?: string
 }
 
-/** How long a phone question is offered before the host's own path takes over. */
-const QUESTION_WINDOW_MS = 10 * 60 * 1000
-
 /** A handle on one outstanding approval. */
 export interface ApprovalHandle {
   /** The id the phone answers with. */
@@ -421,6 +418,11 @@ export class InteractionBroker {
   /**
    * Ask the phone for answers to a question batch.
    *
+   * There is no window of its own: the asking tool's signal is what withdraws a
+   * batch, and a timer here would settle a question the operator can still
+   * answer. (A constant claiming otherwise used to live above this class and was
+   * read by nothing.)
+   *
    * @param input - the question batch, already narrowed from the Cordis event.
    * @param signal - aborts when the asking tool withdraws.
    * @returns the call id and its answer promise.
@@ -443,6 +445,8 @@ export class InteractionBroker {
       settle = resolve
     })
 
+    let onAbort: (() => void) | undefined
+
     const view: PendingQuestionView = {
       callId: input.callId,
       sessionId: input.sessionId,
@@ -453,7 +457,8 @@ export class InteractionBroker {
     this.#emit({ v: 1, type: 'event', event: 'question.request', data: view })
 
     const withdrawn = new Promise<Record<string, unknown>>((resolve) => {
-      signal?.addEventListener('abort', () => resolve({ answers: [] }), { once: true })
+      onAbort = () => resolve({ answers: [] })
+      signal?.addEventListener('abort', onAbort, { once: true })
     })
 
     const answers = Promise.race([promise, withdrawn])
@@ -462,6 +467,10 @@ export class InteractionBroker {
         return Array.isArray(list) ? (list as QuestionAnswerItem[]) : []
       })
       .finally(() => {
+        // Off the signal the caller owns, which outlives this batch: a listener
+        // left on it accumulates one closure per question ever asked, and past
+        // ten Node starts saying so in the operator's log.
+        if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
         this.#questions.delete(input.callId)
       })
 
@@ -610,9 +619,6 @@ export function assertAnswerBatch(
     }
   }
 }
-
-/** Exported for tests: how long the phone is offered a question. */
-export const QUESTION_WINDOW = QUESTION_WINDOW_MS
 
 /** Re-exported so the wiring module can build the Cordis listener signature. */
 export type { Context }

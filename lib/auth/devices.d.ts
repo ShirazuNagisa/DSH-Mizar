@@ -85,10 +85,31 @@ export declare function createDeviceRecord(issued: IssuedToken, details: {
     appVersion?: string;
 }, now?: number): DeviceRecord;
 /**
- * Find the live device a token belongs to.
+ * A token's record, and whether that record has been revoked.
  *
- * Every record is compared, and the result is merged rather than returned early,
- * so a caller cannot time which record matched or how close a wrong token was.
+ * Both are needed because the two are different answers for the client:
+ * "this host has never seen you" sends the app back to pairing, while "you were
+ * removed on purpose" also makes it clear its stored token is dead.
+ */
+export interface TokenMatch {
+    readonly record: DeviceRecord;
+    readonly revoked: boolean;
+}
+/**
+ * Find the record a token belongs to, revoked or not.
+ *
+ * Every record is compared without an early exit, so a caller cannot time which
+ * record matched or how close a wrong token was. A live record wins over a
+ * revoked one when a token somehow appears twice, which is the order the roster
+ * itself is kept in.
+ *
+ * @param devices - the known device records.
+ * @param token - the token presented by the client.
+ * @returns the match, or `null` when no record holds this token.
+ */
+export declare function matchToken(devices: readonly DeviceRecord[], token: string): TokenMatch | null;
+/**
+ * Find the live device a token belongs to.
  *
  * @param devices - the known device records.
  * @param token - the token presented by the client.

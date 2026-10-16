@@ -564,6 +564,39 @@ describe('the summary page', () => {
     expect(names(result.records)).toEqual(['step/start', 'user/message', 'step/start'])
   })
 
+  it('keeps a turn’s last message that has text, not merely its last message', async () => {
+    // A turn that narrated, then ran tools, then ended on a step whose message
+    // is tool calls: the model's answer is the earlier message. Taking the last
+    // record and *then* requiring text of it drops the answer entirely, so the
+    // turn renders with a prompt and no reply -- which is what the protocol
+    // calls "the last assistant/message **that has a body**".
+    const records = [
+      prompt(0, 'check the build'),
+      record('turn/start', 1, { turn: 1 }),
+      record('step/start', 2, { turn: 1, step: 1 }),
+      reply(3, 1, 'Let me check.'),
+      record('step/end', 4, { turn: 1, step: 1 }),
+      record('step/start', 5, { turn: 1, step: 2 }),
+      toolOnlyReply(6, 1),
+      record('turn/end', 7, { turn: 1, reason: { kind: 'complete' } }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 7, records }] })
+    const result = await sessionMessages(ctx, 's1')
+
+    const kept = result.records.filter((value) => nameOf(value) === 'assistant/message')
+    expect(kept).toHaveLength(1)
+    expect(textOf(kept[0] as unknown)).toBe('Let me check.')
+    expect(names(result.records)).toEqual([
+      'user/message',
+      'turn/start',
+      'step/start',
+      'assistant/message',
+      'step/start',
+      'turn/end',
+    ])
+  })
+
   it('keeps no assistant message for a turn whose last word had no text', async () => {
     // A step that only called tools: nothing to draw, so nothing to send.
     const records = [
@@ -578,6 +611,33 @@ describe('the summary page', () => {
     const result = await sessionMessages(ctx, 's1')
 
     expect(names(result.records)).toEqual(['user/message', 'turn/start', 'step/start', 'turn/end'])
+  })
+
+  it('drops injected context that arrives unwrapped as well', async () => {
+    // `eventOf` reads both shapes because the gateway has returned both. The
+    // injected-context filter read only the wrapper, so on a host that returns
+    // records unwrapped -- the shape the session log itself is written in --
+    // every page carried the runtime context and the skill catalogue again.
+    const wrapped = prompt(0, 'Current DSH file policy: workspace-write.', 'runtime-context')
+    const unwrapped = {
+      type: 'user/message',
+      seq: 1,
+      time: 1_700_000_000_001,
+      data: {
+        role: 'user',
+        content: [{ type: 'text', text: '<available_skills>…' }],
+        source: { kind: 'skill-catalog' },
+      },
+    }
+    const typed = prompt(2, 'hello from the phone')
+    const records = [wrapped, unwrapped, typed]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 2, records }] })
+    const result = await sessionMessages(ctx, 's1')
+
+    const users = result.records.filter((value) => nameOf(value) === 'user/message')
+    expect(users).toContain(typed)
+    expect(users).toHaveLength(1)
   })
 
   it('drops injected context but keeps a prompt written on the Mac', async () => {

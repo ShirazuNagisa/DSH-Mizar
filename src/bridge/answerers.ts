@@ -93,10 +93,20 @@ export function registerAnswerers(
           return { from: 'delegated' as const, outcome }
         })
 
-        const winner = await Promise.race([
-          handle.outcome.then((outcome) => ({ from: 'phone' as const, outcome })),
-          delegated,
-        ])
+        let winner: { from: 'phone' | 'delegated'; outcome: ApprovalOutcome }
+        try {
+          winner = await Promise.race([
+            handle.outcome.then((outcome) => ({ from: 'phone' as const, outcome })),
+            delegated,
+          ])
+        } catch (error) {
+          // A listener further down the waterfall threw. Nothing is going to
+          // answer this now, so the phone must stop showing it: left pending, it
+          // is a card for a decision nobody can take, held in the broker for the
+          // life of the process.
+          handle.abandon('unavailable')
+          throw error
+        }
 
         // Losing the race must not leave a card on the phone for a decision that
         // was already taken elsewhere.
@@ -139,7 +149,12 @@ export function registerAnswerers(
           return { from: 'delegated' as const, answer }
         })
 
-        const winner = await Promise.race([phone, delegated])
+        const winner = await Promise.race([phone, delegated]).catch((error: unknown) => {
+          // Same as the approval path: a throw from further down the waterfall
+          // must not leave the batch pending here for the life of the process.
+          handle.abandon()
+          throw error
+        })
         if (winner.from === 'delegated') handle.abandon()
         return winner.answer
       })()

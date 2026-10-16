@@ -248,10 +248,12 @@ function withinBudget(records: readonly unknown[]): unknown[] {
  * @returns whether to leave it out of the page.
  */
 function isInjectedContext(record: unknown): boolean {
-  const event = (record as { event?: { type?: unknown; data?: { source?: { kind?: unknown } } } })
-    ?.event
-  if (event?.type !== 'user/message') return false
-  const kind = event.data?.source?.kind
+  // Through `eventOf`, so an unwrapped record is read as itself. Reading only
+  // the wrapper meant a host that returns the log's own shape leaked the whole
+  // runtime context and skill catalogue back into every page.
+  const event = eventOf(record)
+  if (event?.['type'] !== 'user/message') return false
+  const kind = (event['data'] as { source?: { kind?: unknown } } | undefined)?.source?.kind
   return kind === 'runtime-context' || kind === 'skill-catalog'
 }
 
@@ -337,17 +339,22 @@ function summaryRecords(records: readonly unknown[]): unknown[] {
   /** Assistant messages that are their turn's last word, and have one. */
   const summaries = new Set<unknown>()
   const ended = new Set<unknown>()
-  const lastPerTurn = new Map<unknown, { record: unknown; text: string | null }>()
+  const lastPerTurn = new Map<unknown, unknown>()
   for (const record of records) {
     const event = eventOf(record)
     if (event?.['type'] === 'turn/end') {
       ended.add(turnOf(event))
     } else if (event?.['type'] === 'assistant/message') {
-      lastPerTurn.set(turnOf(event), { record, text: assistantText(event) })
+      // The last message *with text*, not merely the last message: a turn that
+      // narrated and then ended on a step whose message carries only tool calls
+      // has its answer in the earlier record. Recording the tool-only one and
+      // requiring text of it afterwards dropped the answer entirely, and the
+      // turn rendered as a prompt with no reply.
+      if (assistantText(event) !== null) lastPerTurn.set(turnOf(event), record)
     }
   }
   for (const [turn, last] of lastPerTurn) {
-    if (last.text !== null && ended.has(turn)) summaries.add(last.record)
+    if (ended.has(turn)) summaries.add(last)
   }
 
   return records.filter((record) => {
