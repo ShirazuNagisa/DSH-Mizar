@@ -728,41 +728,41 @@ final class AppFlowTests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Ask your agent…", "the composer never emptied")
     }
 
-    /// The selection bar is still there inside a conversation.
+    /// The selection bar is put away inside a conversation, and comes back.
     ///
-    /// It was not. Two reasons, and both are load-bearing:
+    /// It chooses between the two screens -- the conversations and the settings
+    /// -- and a conversation is not a third one: it is somewhere inside the
+    /// first. Leaving it up put a second row of controls under a composer that
+    /// already has two of its own.
     ///
-    ///   - On iPhone a conversation is a *pushed* detail of the split view, and
-    ///     a pushed detail hides the bar below it unless it says otherwise --
-    ///     the behaviour UIKit has had since `hidesBottomBarWhenPushed`.
-    ///   - On iOS 26 the bar was allowed to minimize itself while scrolling,
-    ///     and a conversation opens scrolled to its newest message.
-    ///
-    /// Either one leaves the selector on the session list and gone from the one
-    /// screen it exists for, because the point of it is to reach the settings
-    /// without going back first.
-    ///
-    /// Opened by tapping, not by `-mizarSelectSession`: the launch argument sets
-    /// the selection directly and skips the push, so a test that used it would
-    /// have passed the whole time this was broken.
-    func testTheSelectionBarSurvivesOpeningAConversation() {
+    /// Opened by tapping, not by `-mizarSelectSession`. The launch argument sets
+    /// the selection directly, so a test that used it would be measuring a
+    /// screen the operator cannot reach that way.
+    func testTheSelectionBarIsPutAwayInAConversation() {
         let app = launch(session: nil)
         expect(app.staticTexts["demo"], "the session list never arrived")
+        // There, where it belongs: this is the screen it chooses for.
+        XCTAssertEqual(app.tabBars.buttons.count, 2, "the selection bar is not on the session list")
+
         app.staticTexts["demo"].tap()
         let session = app.staticTexts["Mock session"]
         expect(session, "the session row never appeared")
         session.tap()
         expect(app.textFields["composer.field"], "the conversation never opened")
 
-        // Both tabs, and the second one works -- a bar that is drawn but cannot
-        // be used is not a selector.
+        XCTAssertEqual(app.tabBars.buttons.count, 0, "the selection bar is still in the conversation")
+
+        // And it comes back on the way out, rather than being gone for good.
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(
+            app.staticTexts["demo"].waitForExistence(timeout: Self.patience),
+            "the conversation did not close",
+        )
         XCTAssertEqual(
             app.tabBars.buttons.count,
             2,
-            "the selection bar is not in the conversation",
+            "the selection bar did not come back on the session list",
         )
-        app.tabBars.buttons.element(boundBy: 1).tap()
-        expect(app.staticTexts["settings.empty"], "the settings tab does not open from a conversation")
     }
 
 

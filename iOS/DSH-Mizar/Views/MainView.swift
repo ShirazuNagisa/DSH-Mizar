@@ -379,6 +379,8 @@ struct SessionDetailView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    /// Whether this screen is a whole screen rather than a pane of a split view.
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var stats: SessionStatsFrame?
     @State private var loading = true
     @State private var showingModelPicker = false
@@ -549,16 +551,21 @@ struct SessionDetailView: View {
         }
         .navigationTitle(stats?.title ?? String(localized: "Session"))
         .navigationBarTitleDisplayMode(.inline)
-        // Keeps the selection bar on screen while a conversation is open.
+        // The selection bar is put away while a conversation is open.
         //
-        // On iPhone this screen is a *pushed* detail of the split view, and a
-        // pushed detail hides the bar below it unless it says otherwise -- the
-        // behaviour UIKit has had since `hidesBottomBarWhenPushed`, which the
-        // system bar still follows. Without this line the bar is on the session
-        // list and gone the moment a session is opened, which is exactly where
-        // it is wanted: the point of it is to reach the settings without going
-        // back first.
-        .toolbar(.visible, for: .tabBar)
+        // It chooses between the two *screens* -- the conversations and the
+        // settings -- and a conversation is not a third one, it is somewhere
+        // inside the first. Leaving it up put a second row of controls under a
+        // composer that already has two of its own, over the bottom of a
+        // transcript that is read from the bottom, and the operator almost never
+        // wants the settings from here: they want back, which is what the
+        // navigation bar is for.
+        //
+        // Only in a compact width, though. On an iPad the split view shows the
+        // list and the conversation at the same time, so the listing is still on
+        // screen next to the conversation and putting the bar away would take it
+        // from a screen that is still there.
+        .toolbar(sizeClass == .compact ? .hidden : .automatic, for: .tabBar)
         .toolbar {
             // Only the permission selector stays up here. The model is in the
             // bar above the composer now, next to the context figure it is read
