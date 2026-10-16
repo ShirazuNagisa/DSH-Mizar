@@ -1,4 +1,4 @@
-import type { DeviceRecord } from './devices.js';
+import type { DevicePush, DeviceRecord } from './devices.js';
 import type { PairingSlot } from './pairing.js';
 /** Schema version of the state file. */
 export declare const STATE_VERSION = 1;
@@ -71,6 +71,18 @@ export declare class MizarStore {
      * @returns the state after the mutation.
      */
     mutate(produce: (state: MizarState) => MizarState): Promise<MizarState>;
+    /**
+     * Record, or clear, one device's push endpoint.
+     *
+     * Only ever touches the one device. A phone that registers its token must not
+     * be able to disturb another phone's pairing, and the roster is the record of
+     * who may connect at all.
+     *
+     * @param deviceId - the device to update.
+     * @param push - the endpoint, or `null` to forget it.
+     * @returns whether a device with that id is on the roster.
+     */
+    setDevicePush(deviceId: string, push: DevicePush | null): Promise<boolean>;
     /**
      * Append one line to the audit log.
      *

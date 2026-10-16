@@ -19,7 +19,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, unlink, appendFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { DeviceRecord } from './devices.js'
+import type { DevicePush, DeviceRecord } from './devices.js'
 import type { PairingSlot } from './pairing.js'
 
 /** Schema version of the state file. */
@@ -108,6 +108,32 @@ function createState(now: number = Date.now()): MizarState {
 }
 
 /**
+ * Narrow a device's stored push endpoint.
+ *
+ * Dropped rather than failing the device: a push token that cannot be parsed
+ * costs notifications, and failing the whole record would cost the pairing. The
+ * device re-registers on its next launch, and this file is the wrong place for a
+ * recoverable field to become a lockout.
+ *
+ * @param value - the candidate.
+ * @returns the endpoint, or `null` when it is unusable.
+ */
+function parsePush(value: unknown): DevicePush | null {
+  if (typeof value !== 'object' || value === null) return null
+  const record = value as Record<string, unknown>
+  if (typeof record['token'] !== 'string' || record['token'] === '') return null
+  if (typeof record['locale'] !== 'string') return null
+  if (typeof record['updatedAt'] !== 'number') return null
+  const environment = record['environment'] === 'sandbox' ? 'sandbox' : 'production'
+  return {
+    token: record['token'],
+    environment,
+    locale: record['locale'],
+    updatedAt: record['updatedAt'],
+  }
+}
+
+/**
  * Narrow an unknown device record.
  *
  * A malformed record is dropped rather than failing the load: one corrupt row
@@ -126,6 +152,7 @@ function parseDevice(value: unknown): DeviceRecord | null {
   for (const key of numbers) {
     if (typeof record[key] !== 'number' || !Number.isFinite(record[key] as number)) return null
   }
+  const push = parsePush(record['push'])
   return {
     deviceId: record['deviceId'] as string,
     name: record['name'] as string,
@@ -136,6 +163,7 @@ function parseDevice(value: unknown): DeviceRecord | null {
     createdAt: record['createdAt'] as number,
     lastSeenAt: record['lastSeenAt'] as number,
     ...(typeof record['revokedAt'] === 'number' ? { revokedAt: record['revokedAt'] } : {}),
+    ...(push === null ? {} : { push }),
   }
 }
 
@@ -329,6 +357,32 @@ export class MizarStore {
     // Keep the chain alive even when one mutation rejects.
     this.#queue = run.catch(() => {})
     return run
+  }
+
+  /**
+   * Record, or clear, one device's push endpoint.
+   *
+   * Only ever touches the one device. A phone that registers its token must not
+   * be able to disturb another phone's pairing, and the roster is the record of
+   * who may connect at all.
+   *
+   * @param deviceId - the device to update.
+   * @param push - the endpoint, or `null` to forget it.
+   * @returns whether a device with that id is on the roster.
+   */
+  async setDevicePush(deviceId: string, push: DevicePush | null): Promise<boolean> {
+    let found = false
+    await this.mutate((state) => {
+      if (!state.devices.some((device) => device.deviceId === deviceId)) return state
+      found = true
+      const devices = state.devices.map((device): DeviceRecord => {
+        if (device.deviceId !== deviceId) return device
+        const { push: _previous, ...rest } = device
+        return push === null ? rest : { ...rest, push }
+      })
+      return { ...state, devices }
+    })
+    return found
   }
 
   /**

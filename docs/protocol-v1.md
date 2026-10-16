@@ -121,7 +121,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 
 ## 方法表
 
-15 个方法。`payload` 里的键：
+19 个方法。`payload` 里的键：
 
 ### 主机与会话
 
@@ -153,6 +153,24 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `interactions.pending` | — | `{approvals[], questions[]}` |
 | `approval.answer` | `requestId`, `outcome` | `{accepted}` |
 | `question.answer` | `callId`, `answers[]` | `{accepted}` |
+
+### 通知
+
+| 方法 | payload | 返回 |
+|---|---|---|
+| `push.register` | `token`（APNs 十六进制设备令牌）, `environment`（`sandbox` \| `production`）, `locale?` | `{registered}` |
+| `push.presence` | `foreground`（bool） | `{accepted}` |
+| `push.unregister` | — | `{unregistered}` |
+
+设备 id **永远取自连接本身**，不取自 payload —— 否则任何一个已配对设备都能替别人的手机登记推送令牌。
+
+`environment` 必填，不给默认值：sandbox 签发的令牌发给 production 端点会被 Apple 以 `BadDeviceToken` 拒掉，而这条错误完全不会提到真正的原因。客户端自己知道答案，就别让服务端猜。
+
+`push.presence` 和 `push.register` 分开，是因为两者的频率差三个数量级：前者每次切换 App 都会调，后者一次启动一次。合起来意味着每次切前台都要往中继发一次 HTTP。
+
+前台状态是**按设备**生效的：正在看着的那台不发通知，别的设备照发。一开始是一个全局开关，结果一台 iPad 开着就让口袋里的 iPhone 什么都收不到 —— 而那条偏偏是最要紧的。
+
+三条都**在没有中继的组合里也照常应答**（`registered: false`），这样手机不需要知道自己连的是哪个版本的插件。
 
 `outcome` 只有 **`allowed-once`** 和 **`rejected`** 两个值。传别的值得到
 `MALFORMED_FRAME`，不是静默忽略。

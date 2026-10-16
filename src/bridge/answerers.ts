@@ -21,10 +21,35 @@ import {
   readQuestionRequest,
   type ApprovalOutcome,
   type QuestionAnswerItem,
+  type QuestionItem,
 } from './interactions.js'
 
 /** A promise that never settles; used to park a branch of a race. */
 const NEVER = new Promise<never>(() => {})
+
+/**
+ * Somewhere to announce an interaction that has just been asked for.
+ *
+ * Narrow on purpose: the answerers know about approvals and questions, and
+ * nothing about notifications, sockets or Apple. Everything past this interface
+ * lives in `push/`.
+ */
+export interface InteractionListener {
+  /**
+   * An agent is blocked on a permission prompt.
+   * @param input - the narrowed request.
+   */
+  approvalNeeded(input: { sessionId: string | null; toolName: string; reason?: string }): void
+  /**
+   * An agent is blocked on a question.
+   * @param input - the narrowed request.
+   */
+  questionAsked(input: {
+    sessionId: string | null
+    callId: string
+    questions: readonly QuestionItem[]
+  }): void
+}
 
 /**
  * Register both answerers on the plugin's context.
@@ -32,19 +57,31 @@ const NEVER = new Promise<never>(() => {})
  * @param ctx - the plugin context; listeners are effect-scoped to it and leave
  *   with the plugin.
  * @param broker - the interaction broker delivering questions to clients.
+ * @param notify - told about every request, whether or not a phone is connected.
+ *   Absent in compositions with no notification transport.
  */
-export function registerAnswerers(ctx: Context, broker: InteractionBroker): void {
+export function registerAnswerers(
+  ctx: Context,
+  broker: InteractionBroker,
+  notify?: InteractionListener,
+): void {
   // `approval/request` is a waterfall: return an outcome to claim, call `next()`
   // to delegate. Only `allowed-once` grants the action.
   ctx.on(
     'approval/request',
     ((request: unknown, next: () => Promise<ApprovalOutcome>) => {
       return (async (): Promise<ApprovalOutcome> => {
+        const input = readApprovalRequest(request)
+        // Announced **before** the client check, and that ordering is the whole
+        // point. A phone whose app is in the background has no socket here, so
+        // "nobody is connected" is not a reason to stay quiet -- it is the
+        // situation a notification exists for.
+        announce(notify, (listener) => listener.approvalNeeded(input))
+
         // With no phone connected there is nothing to ask, so stay a pure
         // pass-through and leave the existing channels exactly as they were.
         if (!broker.hasClients()) return await next()
 
-        const input = readApprovalRequest(request)
         const signal = (request as { signal?: AbortSignal } | null)?.signal
 
         const handle = broker.beginApproval(input, signal)
@@ -77,9 +114,15 @@ export function registerAnswerers(ctx: Context, broker: InteractionBroker): void
     'user-questions/request',
     ((request: unknown, next: () => Promise<Record<string, unknown>>) => {
       return (async (): Promise<Record<string, unknown>> => {
+        const input = readQuestionRequest(request)
+        // A batch with no call id could never be routed back, so there is
+        // nothing to announce either.
+        if (input !== null) {
+          announce(notify, (listener) => listener.questionAsked(input))
+        }
+
         if (!broker.hasClients()) return await next()
 
-        const input = readQuestionRequest(request)
         // A batch with no call id could never be routed back, so delegate rather
         // than claim something this layer cannot complete.
         if (input === null) return await next()
@@ -103,6 +146,29 @@ export function registerAnswerers(ctx: Context, broker: InteractionBroker): void
     }) as never,
     { prepend: true },
   )
+}
+
+/**
+ * Tell the listener about a request without letting it break the request.
+ *
+ * The announcement is best-effort by construction -- it is about state that is
+ * already recorded -- so a listener that throws must not be able to fail an
+ * approval. Swallowing here rather than inside each listener keeps that promise
+ * in one place.
+ *
+ * @param notify - the listener, when there is one.
+ * @param tell - what to tell it.
+ */
+function announce(
+  notify: InteractionListener | undefined,
+  tell: (listener: InteractionListener) => unknown,
+): void {
+  if (notify === undefined) return
+  try {
+    void Promise.resolve(tell(notify)).catch(() => {})
+  } catch {
+    // Deliberately swallowed; see above.
+  }
 }
 
 /**

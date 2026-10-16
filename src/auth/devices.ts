@@ -41,6 +41,36 @@ export interface DeviceRecord {
   readonly lastSeenAt: number
   /** When the device was revoked; absent while it is valid. */
   readonly revokedAt?: number
+  /**
+   * Where to send a notification for this device, once its app has asked.
+   *
+   * Kept on the device rather than in a store of its own, because that is what
+   * it is: a property of a paired phone. Revoking a device drops it with the
+   * record, and there is no second roster to keep in step with this one.
+   *
+   * Absent until the app registers, which it does on its own after the operator
+   * grants notification permission -- so a host whose phone never asked simply
+   * never grows this field.
+   */
+  readonly push?: DevicePush
+}
+
+/** A device's APNs endpoint. */
+export interface DevicePush {
+  /** The APNs device token, hex. */
+  readonly token: string
+  /**
+   * Which APNs environment issued it.
+   *
+   * Not inferable and not interchangeable: a token minted for the sandbox is
+   * rejected by the production endpoint with `BadDeviceToken`, which says
+   * nothing about why.
+   */
+  readonly environment: 'sandbox' | 'production'
+  /** The language the app is running in, so notifications match it. */
+  readonly locale: string
+  /** When the app last told this host where it is. */
+  readonly updatedAt: number
 }
 
 /** A freshly minted token and the record material derived from it. */

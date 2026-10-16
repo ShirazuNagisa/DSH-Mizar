@@ -20,9 +20,10 @@ import {
   type ClientApprovalOutcome,
   type QuestionAnswerItem,
 } from './interactions.js'
-import { MethodError, optionalObject, optionalString, requireString } from './method-error.js'
+import { MethodError, optionalBoolean, optionalObject, optionalString, requireString } from './method-error.js'
 import { modelCatalog, selectModel } from './models.js'
 import { permissionCatalog, setPermissionPreset } from './permissions.js'
+import type { PushBinding } from '../push/binding.js'
 import { listWorkspaces } from './workspaces.js'
 import {
   cancelSession,
@@ -124,17 +125,44 @@ function readAnswerBatch(payload: unknown): QuestionAnswerItem[] {
 }
 
 /**
+ * Read the APNs environment off a `push.register`.
+ *
+ * Required rather than defaulted. A token minted for the sandbox is rejected by
+ * the production endpoint with `BadDeviceToken`, which says nothing about the
+ * real mistake -- so guessing here turns a clear client bug into an unexplained
+ * silence, and the client always knows the answer.
+ *
+ * @param payload - the request payload.
+ * @returns the environment.
+ * @throws MethodError when it is missing or not one of the two.
+ */
+function readEnvironment(payload: unknown): 'sandbox' | 'production' {
+  const record = optionalObject(payload, 'push.register')
+  const value = record['environment']
+  if (value !== 'sandbox' && value !== 'production') {
+    throw new MethodError(
+      'MALFORMED_FRAME',
+      'push.register: payload."environment" must be "sandbox" or "production"',
+    )
+  }
+  return value
+}
+
+/**
  * Build the method table for one plugin mount.
  *
  * @param ctx - the plugin context, used for every DSH call.
  * @param facts - host identity reported to clients.
  * @param broker - the interaction broker holding pending approvals and questions.
+ * @param push - where a device's notification endpoint is recorded, when the host
+ *   has push at all. Absent in compositions without a relay.
  * @returns the table, keyed by wire method name.
  */
 export function createMethodTable(
   ctx: Context,
   facts: HostFacts,
   broker: InteractionBroker,
+  push?: PushBinding,
 ): Record<string, MethodHandler> {
   const table: Record<string, MethodHandler> = {
     /** Host identity and protocol facts. */
@@ -279,6 +307,52 @@ export function createMethodTable(
     'question.answer': async (payload) => {
       const callId = requireString(payload, 'callId', 'question.answer')
       return { accepted: deliverQuestionAnswers(broker, callId, readAnswerBatch(payload)) }
+    },
+
+    /**
+     * Record where this device can be reached by a notification.
+     *
+     * Called by the app once it has a token, which is after the operator grants
+     * notification permission -- so a phone that refused simply never calls it,
+     * and nothing needs to model refusal.
+     *
+     * Answers `registered: false` rather than failing when the device is not on
+     * the roster. That cannot happen through the listener (every method is behind
+     * authentication), and a client that met it would have nothing useful to do
+     * with an error.
+     */
+    'push.register': async (payload, context) => {
+      if (push === undefined) return { registered: false }
+      return {
+        registered: await push.register(context.deviceId, {
+          token: requireString(payload, 'token', 'push.register'),
+          environment: readEnvironment(payload),
+          locale: optionalString(payload, 'locale') ?? 'en',
+        }),
+      }
+    },
+
+    /**
+     * Say whether this device's app is on screen.
+     *
+     * Separate from `push.register` because it happens constantly -- every time
+     * the operator switches apps -- and the registration is what tells the relay
+     * where the device is. Folding them would put an HTTP request to the relay
+     * behind every app switch.
+     */
+    'push.presence': async (payload, context) => {
+      const foreground = optionalBoolean(payload, 'foreground')
+      if (foreground === undefined) {
+        throw new MethodError('MALFORMED_FRAME', 'push.presence: payload."foreground" must be a boolean')
+      }
+      push?.presence(context.deviceId, foreground)
+      return { accepted: true }
+    },
+
+    /** Forget this device's notification endpoint, here and at the relay. */
+    'push.unregister': async (_payload, context) => {
+      if (push === undefined) return { unregistered: false }
+      return { unregistered: await push.unregister(context.deviceId) }
     },
   }
 

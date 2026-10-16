@@ -14,15 +14,44 @@
  * @module dsh-mizar/bridge/answerers
  */
 import type { Context } from '../dsh.js';
-import { InteractionBroker, type QuestionAnswerItem } from './interactions.js';
+import { InteractionBroker, type QuestionAnswerItem, type QuestionItem } from './interactions.js';
+/**
+ * Somewhere to announce an interaction that has just been asked for.
+ *
+ * Narrow on purpose: the answerers know about approvals and questions, and
+ * nothing about notifications, sockets or Apple. Everything past this interface
+ * lives in `push/`.
+ */
+export interface InteractionListener {
+    /**
+     * An agent is blocked on a permission prompt.
+     * @param input - the narrowed request.
+     */
+    approvalNeeded(input: {
+        sessionId: string | null;
+        toolName: string;
+        reason?: string;
+    }): void;
+    /**
+     * An agent is blocked on a question.
+     * @param input - the narrowed request.
+     */
+    questionAsked(input: {
+        sessionId: string | null;
+        callId: string;
+        questions: readonly QuestionItem[];
+    }): void;
+}
 /**
  * Register both answerers on the plugin's context.
  *
  * @param ctx - the plugin context; listeners are effect-scoped to it and leave
  *   with the plugin.
  * @param broker - the interaction broker delivering questions to clients.
+ * @param notify - told about every request, whether or not a phone is connected.
+ *   Absent in compositions with no notification transport.
  */
-export declare function registerAnswerers(ctx: Context, broker: InteractionBroker): void;
+export declare function registerAnswerers(ctx: Context, broker: InteractionBroker, notify?: InteractionListener): void;
 /**
  * Validate an answer batch the phone sent for a batch it was already shown.
  *
