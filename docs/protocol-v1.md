@@ -129,6 +129,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 |---|---|---|
 | `host.info` | — | 主机身份与绑定情况 |
 | `session.list` | `{}` | `{items: [SessionRow]}` |
+| `workspace.list` | `{}` | `{items: [WorkspaceRow]}` —— DSH **当前**拥有的工作区。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话。手机按工作区分组时必须用它来过滤，否则删掉的工作区会一直留着。**读不到时返回空数组**，手机退回按目录分组。 |
 | `session.messages` | `sessionId`, `maxMessages?` | `{sessionId, asOfSeq, records[], hasMore}` |
 | `session.stats` | `sessionId` | `{sessionId, asOfSeq, stats}` |
 | `session.create` | `cwd?` \| `workspaceId?` \| `sessionId?`, `agentPreset?` | `{sessionId, agentPreset}` |

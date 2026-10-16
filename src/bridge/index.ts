@@ -23,6 +23,7 @@ import {
 import { MethodError, optionalObject, optionalString, requireString } from './method-error.js'
 import { modelCatalog, selectModel } from './models.js'
 import { permissionCatalog, setPermissionPreset } from './permissions.js'
+import { listWorkspaces } from './workspaces.js'
 import {
   cancelSession,
   createSession,
@@ -146,6 +147,16 @@ export function createMethodTable(
 
     /** Every session DSH would list, newest activity first. */
     'session.list': async () => listSessions(ctx),
+
+    /**
+     * The workspaces DSH has, by directory.
+     *
+     * Separate from the session list because they are separate things: a session
+     * outlives the workspace it was created in, so grouping sessions by their
+     * working directory draws a row for every directory that has ever held one,
+     * including the workspaces an operator has deleted.
+     */
+    'workspace.list': async () => listWorkspaces(ctx),
 
     /**
      * One session's usage frame. Works for a cold session: the projection read
