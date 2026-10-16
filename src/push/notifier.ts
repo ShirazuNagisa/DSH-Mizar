@@ -213,9 +213,10 @@ export class PushNotifier {
   /**
    * Re-register one device's token with the transport.
    * @param registration - the device and its token.
+   * @returns whether the transport accepted it.
    */
-  async register(registration: PushRegistration): Promise<void> {
-    await this.#options.transport.register(registration)
+  async register(registration: PushRegistration): Promise<boolean> {
+    return this.#options.transport.register(registration)
   }
 
   /**

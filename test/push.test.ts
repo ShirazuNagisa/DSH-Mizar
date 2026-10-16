@@ -44,9 +44,13 @@ class RecordingTransport implements PushTransport {
   /** Thrown by every method, when set. */
   failure: Error | null = null
 
-  async register(registration: PushRegistration): Promise<void> {
+  /** What the transport answers: a relay that refuses says so. */
+  accepts = true
+
+  async register(registration: PushRegistration): Promise<boolean> {
     if (this.failure !== null) throw this.failure
     this.registrations.push(registration)
+    return this.accepts
   }
 
   async unregister(deviceId: string): Promise<void> {
@@ -423,6 +427,18 @@ describe('the roster', () => {
     // Stored, so the relay can be told again after it restarts.
     expect(store.state.devices[0]?.push?.token).toBe('deadbeef')
     expect(store.state.devices[0]?.push?.environment).toBe('sandbox')
+    // And when the relay refuses the token -- an older relay answers 404 for
+    // this path -- the phone is told so. Answering "registered" regardless is
+    // how the operator ends up debugging a phone that was never going to be
+    // woken.
+    transport.accepts = false
+    await expect(
+      binding.register('phone-1', {
+        token: 'aa'.repeat(32),
+        environment: 'sandbox',
+        locale: 'zh-Hans',
+      }),
+    ).resolves.toBe(false)
   })
 
   it('refuses a device that is not on the roster', async () => {

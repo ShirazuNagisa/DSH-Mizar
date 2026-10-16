@@ -132,8 +132,9 @@ export declare class PushNotifier {
     /**
      * Re-register one device's token with the transport.
      * @param registration - the device and its token.
+     * @returns whether the transport accepted it.
      */
-    register(registration: PushRegistration): Promise<void>;
+    register(registration: PushRegistration): Promise<boolean>;
     /**
      * Announce that an agent is blocked on a permission prompt.
      *

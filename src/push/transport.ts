@@ -72,9 +72,16 @@ export interface PushMessage {
 export interface PushTransport {
   /**
    * Record a device's push endpoint.
+   *
+   * The answer is the point: a relay older than this plugin answers 404, and a
+   * relay that refused a token is a phone that will never be woken. Reporting
+   * "registered" either way is how the operator ends up debugging notifications
+   * that were never going to arrive.
+   *
    * @param registration - the device and its token.
+   * @returns whether the relay accepted it.
    */
-  register(registration: PushRegistration): Promise<void>
+  register(registration: PushRegistration): Promise<boolean>
   /**
    * Forget a device's push endpoint.
    * @param deviceId - the device to forget.
@@ -90,7 +97,9 @@ export interface PushTransport {
 
 /** A transport that drops everything. The default when no relay is configured. */
 export class NoopTransport implements PushTransport {
-  async register(): Promise<void> {}
+  async register(): Promise<boolean> {
+    return false
+  }
   async unregister(): Promise<void> {}
   async send(): Promise<number> {
     return 0
@@ -185,8 +194,8 @@ export class RelayTransport implements PushTransport {
     }
   }
 
-  async register(registration: PushRegistration): Promise<void> {
-    await this.#post('/push/v1/register', registration, 'register')
+  async register(registration: PushRegistration): Promise<boolean> {
+    return (await this.#post('/push/v1/register', registration, 'register')) !== null
   }
 
   async unregister(deviceId: string): Promise<void> {
