@@ -35,10 +35,34 @@ struct RootView: View {
                     // stored credential. One dropped request -- a phone changing
                     // networks is enough -- landed here, and the obvious button
                     // made it permanent.
-                    Button("Try again") {
-                        Task { await model.reconnect() }
+                    //
+                    // The label changes while it works. A retry against a phone
+                    // that has lost its network takes seconds, and a button that
+                    // looks identical before, during and after is a button that
+                    // reads as broken whatever it is doing.
+                    Button {
+                        Task {
+                            // The list is loaded here rather than inside
+                            // `reconnect`, because a refresh that fails calls
+                            // back into `reconnect` and doing that while the
+                            // reconnect flag is held deadlocked the app.
+                            if await model.reconnect(patient: true) {
+                                await model.refreshSessions()
+                            }
+                        }
+                    } label: {
+                        if model.reconnecting {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Trying…")
+                            }
+                        } else {
+                            Text("Try again")
+                        }
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(model.reconnecting)
+                    .accessibilityIdentifier("failure.retry")
                     if !model.hosts.isEmpty {
                         NavigationLink("Choose another Mac") {
                             HostListView()

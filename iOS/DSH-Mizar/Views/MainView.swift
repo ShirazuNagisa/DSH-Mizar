@@ -184,9 +184,28 @@ struct WorkspaceListView: View {
     private static let pageSize = 10
 
     /// Sessions the operator started, grouped by working directory.
+    ///
+    /// Two filters, both of which the list used to get wrong in the same
+    /// direction -- by showing rows DSH's own workspace list does not.
+    ///
+    /// `isSubagent` rather than `parentSessionId`: a delegated child is marked
+    /// by *either* fact, and matching on only one of them leaves the other kind
+    /// of child on the list.
+    ///
+    /// `blank` is a session nobody has typed into yet. It has no title, no
+    /// turns and no messages, so as a row it reads as ``<dir> · session-`` with
+    /// a timestamp -- indistinguishable from a real conversation and impossible
+    /// to act on. Measured against a live host, one workspace held eight rows of
+    /// which five were subagents and two were blank; DSH's own list showed the
+    /// remaining one, and this one showed three.
+    ///
+    /// The selected session is exempt: a session created from the phone starts
+    /// blank, and hiding it the moment it is created would make the row the
+    /// operator just tapped vanish under their finger.
     private var workspaces: [(path: String, sessions: [SessionRow])] {
         var byPath: [String: [SessionRow]] = [:]
-        for session in model.sessions where session.parentSessionId == nil {
+        for session in model.sessions
+        where !session.isSubagent && (!session.blank || session.sessionId == model.selectedSessionId) {
             byPath[session.cwd ?? "", default: []].append(session)
         }
         return byPath
@@ -350,14 +369,40 @@ struct SessionDetailView: View {
     let sessionId: String
 
     @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
     @State private var stats: SessionStatsFrame?
     @State private var loading = true
     @State private var showingModelPicker = false
+    @State private var showingContextDetail = false
+    @State private var showingCommands = false
     @State private var showingPermissionPicker = false
     @State private var items: [ConversationItem] = []
     /// The same conversation grouped into turns, when the host gave turn numbers.
     @State private var turns: [ConversationTurn] = []
     @State private var loadingConversation = true
+    /// Whether this appearance has already jumped to the newest message.
+    ///
+    /// Once per appearance, not once per load: scrolling to the bottom after a
+    /// page of *older* messages arrives would undo the scroll that asked for it.
+    @State private var didReachBottom = false
+    /// What has been typed, held here because the command button writes to it.
+    @State private var draft = ""
+    /// Whether the field has the keyboard. Owned here so a tap on the
+    /// conversation can put it away.
+    @FocusState private var composerFocused: Bool
+    /// How tall the floating composer is, measured rather than guessed, so the
+    /// scroll content reserves exactly the room it covers.
+    @State private var composerHeight: CGFloat = 130
+    /// Whether a load of this screen is already running.
+    @State private var reloading = false
+    /// Bumped when one full load of this screen has finished.
+    ///
+    /// The scroll is anchored on this rather than on the appearance of content,
+    /// so it lands against what is finally on screen rather than against the
+    /// cached copy the host's answer is about to replace.
+    @State private var loadGeneration = 0
+    /// Bumped when something was just sent, to move the view to it.
+    @State private var newMessageArrived = 0
     @State private var tab: Tab = .conversation
 
     /// Which half of the session is on screen.
@@ -381,85 +426,176 @@ struct SessionDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("View", selection: $tab) {
-                ForEach(Tab.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
-            .padding(.top, 8)
+            // No segmented control here any more. The conversation and the usage
+            // figures are the same subject seen two ways, and a control that
+            // swaps one for the other hides half of it; the numbers now sit in
+            // the row above the composer, where they are visible the whole time
+            // and cost no tap.
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        InteractionsView()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    InteractionsView()
-
-                    switch tab {
-                    case .conversation:
                         ConversationView(
                             items: items,
                             turns: turns,
                             loading: loadingConversation,
+                            failure: items.isEmpty ? model.conversationError : nil,
                             onLoadOlder: {
                                 let arrived = await model.loadOlder(sessionId: sessionId)
                                 // Re-read what is on screen; the page was folded
                                 // into the cache, and the cache is what the
                                 // screen draws from after a successful fetch.
-                                if arrived > 0, let cached = await model.cachedConversation(for: sessionId) {
-                                    items = cached.items
-                                    turns = cached.turns ?? []
-                                }
-                                return arrived
-                            },
-                        )
-                    case .usage:
-                        if loading {
-                            ProgressView().frame(maxWidth: .infinity)
-                        } else if let stats {
-                            UsageSection(stats: stats)
-                        } else {
-                            ContentUnavailableView(
-                                "No usage yet",
-                                systemImage: "chart.bar",
-                                description: Text("This session has not sent a request."),
+                                if let arrived, arrived > 0,
+                                       let cached = await model.cachedConversation(for: sessionId) {
+                                        items = cached.items
+                                        turns = cached.turns ?? []
+                                    }
+                                    return arrived
+                                },
                             )
-                        }
+                    }
+                    .padding()
+                }
+                // A conversation is read from the bottom. Opening one that starts
+                // at the top means re-reading the whole session to find the
+                // answer, and coming back to a session you were part-way through
+                // means scrolling past everything you already read.
+                .defaultScrollAnchor(.bottom)
+                // Dragging the conversation puts the keyboard away, which is what
+                // every messaging app does and what a thumb already expects.
+                .scrollDismissesKeyboard(.interactively)
+                .refreshable { await reload() }
+                .onChange(of: loadGeneration) { _, _ in
+                    // Anchored when the load has *finished*, not when the first
+                    // content appears.
+                    //
+                    // A cached conversation is put on screen immediately and the
+                    // host's copy replaces it a moment later. Anchoring on the
+                    // first of those parks the scroll view against one page's
+                    // worth of rows and then swaps the rows underneath it, which
+                    // leaves the list at an offset that matches neither -- the
+                    // "strange position" this was reported as, arriving only
+                    // sometimes because it depends on whether the cache was warm
+                    // and how much the two pages differ.
+                    reachBottom(proxy)
+                }
+                .onChange(of: newMessageArrived) { _, _ in
+                    // Unconditional: this one is a send, not an initial load.
+                    Task { @MainActor in
+                        await Task.yield()
+                        proxy.scrollTo(ConversationView.bottomAnchor, anchor: .bottom)
                     }
                 }
-                .padding()
-            }
-            // Dragging the conversation puts the keyboard away, which is what
-            // every messaging app does and what a thumb already expects.
-            .scrollDismissesKeyboard(.interactively)
-            .refreshable { await reload() }
+                // Tapping the conversation puts the keyboard away. Without this
+                // the only way out was the Return key or a drag -- and with a
+                // multi-line field Return inserts a newline rather than
+                // dismissing, so there was no way out at all but the swipe.
+                //
+                // On the conversation itself, not on the scroll view. As a
+                // `simultaneousGesture` on the container it swallowed the taps
+                // meant for the bar above the composer: the buttons ran, and the
+                // panels they open never appeared. A tap catcher behind the
+                // content has no opinion about anything drawn on top of it.
+                .background {
+                    Color.clear
+                        .contentShape(.rect)
+                        .onTapGesture { composerFocused = false }
+                }
+                // The composer floats over the conversation instead of sitting
+                // under it. Messages does the same, and the difference is not
+                // decoration: a bar that occupies its own row clips the message
+                // behind it at a hard edge, so a bubble halfway up the screen is
+                // sliced flat. Floating, the content runs underneath and reads
+                // through the glass.
+                .overlay(alignment: .bottom) {
+                    VStack(spacing: 0) {
+                        ComposerBar(
+                            sessionId: sessionId,
+                            stats: stats,
+                            draft: $draft,
+                            focused: $composerFocused,
+                            showingModel: $showingModelPicker,
+                            showingContext: $showingContextDetail,
+                            showingCommands: $showingCommands,
+                        )
 
-            ComposerView(sessionId: sessionId) { sent in
-                await refreshAfterSend(sent)
+                        ComposerView(
+                            sessionId: sessionId,
+                            text: $draft,
+                            onSent: { sent in
+                                await refreshAfterSend(sent)
+                            },
+                            focused: $composerFocused,
+                        )
+                    }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        composerHeight = height
+                    }
+                }
+                // Room to scroll the last message clear of the floating
+                // composer, so nothing is permanently underneath it.
+                .contentMargins(.bottom, composerHeight, for: .scrollContent)
             }
         }
         .navigationTitle(stats?.title ?? String(localized: "Session"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    showingModelPicker = true
-                } label: {
-                    Label(stats?.model?.lastUsed?.model ?? "Model", systemImage: "cpu")
-                }
-                .accessibilityIdentifier("session.model")
+            // Only the permission selector stays up here. The model is in the
+            // bar above the composer now, next to the context figure it is read
+            // with -- a bar that shows which model is answering and a button
+            // somewhere else that changes it is one decision in two places.
+            //
+            // The title is the session's, truncated by the navigation bar, which
+            // is what Messages does with a long contact name.
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showingPermissionPicker = true
                 } label: {
-                    Label(stats?.permissionPreset ?? "Permissions", systemImage: "lock.shield")
+                    Label(permissionLabel, systemImage: "lock.shield")
                 }
                 .accessibilityIdentifier("session.permissions")
             }
         }
-        .sheet(isPresented: $showingModelPicker) {
-            ModelPickerView(sessionId: sessionId)
-        }
         .sheet(isPresented: $showingPermissionPicker) {
             PermissionPickerView(sessionId: sessionId)
         }
-        .task(id: sessionId) { await reload() }
+        .task(id: sessionId) {
+            // Once per appearance. Coming back to a session should land at its
+            // newest message again; a pull-to-refresh should not, which is why
+            // this is reset here and not at the top of `reload()`.
+            didReachBottom = false
+            await reload()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Ask again when the operator comes back.
+            //
+            // Suspending the process cancels whatever was in flight, and this
+            // screen had no way to notice: it would sit there showing whatever
+            // the cancellation left behind -- usually nothing -- while the Mac
+            // was perfectly reachable. Every phone app is backgrounded
+            // constantly, so this is the ordinary path, not an edge one.
+            guard phase == .active, !reloading else { return }
+            Task { await reload() }
+        }
+    }
+
+    /// Move the conversation to its newest message, once per appearance.
+    ///
+    /// One shot rather than on every growth of the list: a page of *older*
+    /// messages grows it too, and jumping to the bottom then would undo the very
+    /// scroll that asked for them.
+    ///
+    /// - Parameter proxy: the scroll view to move.
+    private func reachBottom(_ proxy: ScrollViewProxy) {
+        guard !didReachBottom, !items.isEmpty else { return }
+        didReachBottom = true
+        Task { @MainActor in
+            // One turn of the runloop, so the lazy stack has laid the rows out
+            // and there is something to scroll to.
+            await Task.yield()
+            proxy.scrollTo(ConversationView.bottomAnchor, anchor: .bottom)
+        }
     }
 
     /// Reload the conversation after a send, allowing for the host's lag.
@@ -479,13 +615,49 @@ struct SessionDetailView: View {
                 if case .message(_, .user, let text, _) = item { return text == sent }
                 return false
             }
-            if arrived { return }
+            if arrived {
+                // What was just typed is at the bottom, and a sent message that
+                // lands below the fold reads as a send that did not happen. Every
+                // messaging app moves to it; this one used to leave the operator
+                // looking at whatever they had scrolled to.
+                newMessageArrived += 1
+                return
+            }
             try? await Task.sleep(for: .milliseconds(500))
         }
     }
 
+    /// The permission preset, as a word rather than a raw value.
+    private var permissionLabel: String {
+        guard let preset = stats?.permissionPreset else { return String(localized: "Permissions") }
+        switch preset {
+        case "read-only": return String(localized: "Read only")
+        case "workspace-write": return String(localized: "Workspace write")
+        case "danger-full-access": return String(localized: "Full access")
+        default: return preset
+        }
+    }
+
     /// Refresh everything the screen shows.
+    ///
+    /// Not re-entrant, and that is load-bearing rather than tidy. Three things
+    /// call this -- the screen appearing, the app returning to the foreground,
+    /// and a pull-to-refresh -- and they overlap freely. Two overlapping loads
+    /// interleave on one socket: the first one's failed request reconnects,
+    /// which replaces the connection the second one is using, whose request then
+    /// fails too and reconnects again.
+    ///
+    /// Measured from the host's side, that pair sustained itself: a fresh
+    /// WebSocket every few seconds, each one re-downloading the same 244 KB
+    /// page, `session.stats` printing twice for every `session.messages`, and no
+    /// answer ever settling on screen. Every request the Mac received was
+    /// answered correctly, which is why this looked like "cannot connect" while
+    /// the connection was in fact fine.
     private func reload() async {
+        guard !reloading else { return }
+        reloading = true
+        defer { reloading = false }
+
         loading = true
         loadingConversation = true
         // The phone's own copy first. It is instant, it is there when the
@@ -494,6 +666,13 @@ struct SessionDetailView: View {
             items = cached.items
             turns = cached.turns ?? []
             loadingConversation = false
+        }
+        // The last known figures, drawn before the network is asked. Without
+        // this the bar was blank until a read came back, and stayed blank
+        // whenever one did not -- the model name and the context percentage
+        // appeared and disappeared from one visit to the next.
+        if let known = await model.cachedStats(for: sessionId) {
+            stats = known
         }
         // Run together: the two reads are independent, and a conversation that
         // waits for a stats call would make the screen feel slower than it is.
@@ -512,5 +691,8 @@ struct SessionDetailView: View {
         loading = false
         loadingConversation = false
         await model.refreshInteractions()
+        // Last, so the scroll anchor runs against the content that is actually
+        // staying on screen.
+        loadGeneration += 1
     }
 }

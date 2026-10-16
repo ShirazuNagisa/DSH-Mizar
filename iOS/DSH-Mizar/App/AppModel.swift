@@ -559,10 +559,58 @@ final class AppModel {
     /// restarted. A phone changes networks constantly -- walking out of Wi-Fi
     /// range is enough -- so this is the common case, not an edge one.
     ///
+    /// Two callers want different things from it. A call that has just failed
+    /// wants one quick retry before it reports, so those paths get three fast
+    /// attempts. The failure screen's button is a person asking again, and there
+    /// the only honest answer is to keep trying while their network comes back:
+    /// three attempts inside a second is a formality, not a retry. The device log
+    /// from the phone that prompted this reads `-1009`, "not connected to the
+    /// internet" -- no number of sub-second retries outlasts that.
+    ///
+    /// - Parameter patient: whether to keep trying long enough to outlast a
+    ///   phone that has lost its network.
     /// - Returns: whether a connection is now open.
     @discardableResult
-    func reconnect() async -> Bool {
-        guard let host, !reconnecting else { return connection != nil }
+    func reconnect(patient: Bool = false) async -> Bool {
+        guard let host else { return connection != nil }
+        if reconnecting {
+            // Someone else is already bringing the socket back; wait for them.
+            //
+            // This used to `return connection != nil`, which reports "still
+            // down" rather than "wait" -- because the attempt already in flight
+            // clears `connection` at its top, so during the whole of a reconnect
+            // every concurrent caller was told there was no connection and threw.
+            //
+            // Two reads run together on the session screen, usage and the
+            // conversation, and they share one socket: one dropped request made
+            // them fail as a pair. That is the reported symptom exactly -- the
+            // Usage tab empty and the message list sitting at a strange offset,
+            // together, and only sometimes.
+            // Wait for the attempt in flight -- but never on itself, and never
+            // without end.
+            //
+            // This loop deadlocked the whole app. `reconnect` used to refresh
+            // the session list before releasing the flag, and that refresh can
+            // itself fail and call `reconnect`: the inner call arrived while the
+            // flag was still held, waited here for the outer one to finish, and
+            // the outer one was blocked waiting for the inner. Neither ever
+            // returned, `reconnecting` stayed true for the life of the process,
+            // and from then on every failed request waited here forever -- which
+            // is why every conversation sat on a spinner while the connection
+            // underneath was healthy and answering. The refresh no longer
+            // happens inside the lock; the deadline and the cancellation check
+            // are so that a future mistake of the same shape stalls a request
+            // instead of the app.
+            let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+            while reconnecting, ContinuousClock.now < deadline {
+                do {
+                    try await Task.sleep(for: .milliseconds(50))
+                } catch {
+                    break
+                }
+            }
+            return connection != nil
+        }
         reconnecting = true
         defer { reconnecting = false }
 
@@ -571,9 +619,11 @@ final class AppModel {
         await connection?.disconnect()
         connection = nil
 
-        for attempt in 0..<3 {
+        let attempts = patient ? 8 : 3
+        for attempt in 0..<attempts {
             if attempt > 0 {
-                try? await Task.sleep(for: .milliseconds(400 * attempt))
+                let pause = patient ? min(4_000, 400 << attempt) : 400 * attempt
+                try? await Task.sleep(for: .milliseconds(pause))
             }
             guard let next = makeConnection(for: host) else { continue }
             do {
@@ -581,10 +631,24 @@ final class AppModel {
                 connection = next
                 lastError = nil
                 startInteractionPoll()
+                // `phase` decides which screen is on. This never touched it, so
+                // a retry that *succeeded* left the operator looking at "Cannot
+                // reach the Mac" with a working connection behind it -- the
+                // button did its job and the screen never said so. That was the
+                // bug: "Try again does nothing" was true on the only screen
+                // where it could be seen.
+                phase = .ready
+                // The session list is *not* refreshed here. It used to be, and
+                // that call is what closed the deadlock above; every caller
+                // either refreshes for itself or is about to.
                 return true
             } catch {
                 let message = Self.describe(error, authority: host.authority ?? host.baseURL)
                 lastError = message.isEmpty ? nil : message
+                // Keep the screen's text current. A retry that fails for a new
+                // reason -- no internet rather than the Mac being unreachable --
+                // should say so instead of repeating the line from before.
+                if case .failed = phase, !message.isEmpty { phase = .failed(message) }
             }
         }
         return false
@@ -597,15 +661,19 @@ final class AppModel {
     /// already has -- and when it has none, there is nothing to page from.
     ///
     /// - Parameter sessionId: the session to extend.
-    /// - Returns: how many new items arrived, for a caller that wants to stop.
+    /// - Returns: how many new items arrived, `0` when the host was asked and
+    ///   has nothing older, or `nil` when the question could not be asked at
+    ///   all. The caller must not treat `nil` as the end of the conversation:
+    ///   every early exit here is a condition that can clear on its own.
     @discardableResult
-    func loadOlder(sessionId: String) async -> Int {
-        guard connection != nil else { return 0 }
+    func loadOlder(sessionId: String) async -> Int? {
+        guard connection != nil else { return nil }
         guard let cached = await conversations.load(sessionId: sessionId),
               let before = cached.oldestSeq
-        else { return 0 }
+        else { return nil }
         // Nothing older to ask for. Without this the scroll-to-top would fire a
-        // request on every appearance for a page that cannot change.
+        // request on every appearance for a page that cannot change. This one is
+        // definitive: the host said so, not a transient failure of ours.
         guard cached.hasMore else { return 0 }
 
         do {
@@ -635,6 +703,7 @@ final class AppModel {
                     hasMore: result.hasMore,
                     turns: turns,
                     oldestSeq: [before, reached].compactMap { $0 }.min(),
+                    stats: cached.stats,
                 ),
             )
             lastError = nil
@@ -642,7 +711,7 @@ final class AppModel {
         } catch {
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             if !message.isEmpty { lastError = message }
-            return 0
+            return nil
         }
     }
 
@@ -661,7 +730,23 @@ final class AppModel {
     /// freshness of one screen, which is the lesson the two-megabyte page
     /// taught.
     func syncAllConversations() async {
-        guard connection != nil else { return }
+        // One at a time, and the flag is released on every exit.
+        //
+        // This has no other guard: the button that starts it is disabled while
+        // `isSyncing`, but `syncProgress` was only set after the session list
+        // came back, so a second tap in that window started a second full pass
+        // over every session. Measured on a real run, seven passes' worth of
+        // pages were fetched for one refresh -- about five megabytes each, over
+        // a relay, on a phone.
+        //
+        // The `defer` matters more than the guard. `syncProgress` was assigned
+        // nil at the end of the happy path only, so any early return or
+        // cancellation left `isSyncing` true for good, with the refresh button
+        // spinning and disabled and no way back.
+        guard connection != nil, syncProgress == nil else { return }
+        syncProgress = SyncProgress(current: "", completed: 0, total: sessions.count)
+        defer { syncProgress = nil }
+
         await refreshSessions()
         guard !sessions.isEmpty else { return }
 
@@ -673,7 +758,6 @@ final class AppModel {
             await syncConversation(for: session.sessionId)
             syncProgress?.completed = index + 1
         }
-        syncProgress = nil
     }
 
     /// Fetch one session's page and fold it into the cache.
@@ -714,15 +798,59 @@ final class AppModel {
                     // what is already stored, and paging from the wrong end would
                     // re-fetch what is already here.
                     oldestSeq: [previous, older].compactMap { $0 }.min(),
+                    // Carried forward: this write replaces the whole file, and
+                    // dropping the frame here would undo the cache above.
+                    stats: cached?.stats,
                 ),
             )
             lastError = nil
+            conversationError = nil
             return merged
         } catch {
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             if !message.isEmpty { lastError = message }
+            // A cancelled read leaves no message -- `describe` filters those out
+            // because they are not the operator's fault -- so the screen fell
+            // through to "this session has no messages", which is a claim about
+            // their session made from the absence of an answer. On a phone this
+            // is the ordinary case, not an edge one: switching apps suspends the
+            // process and cancels whatever was in flight.
+            conversationError = message.isEmpty
+                ? "The Mac did not answer. Pull down to try again."
+                : message
             return await conversations.load(sessionId: sessionId)?.items ?? []
         }
+    }
+
+    /// The last usage frame stored on this phone, if any.
+    /// - Parameter sessionId: the session.
+    /// - Returns: the frame, or `nil` when nothing is stored.
+    func cachedStats(for sessionId: String) async -> SessionStatsFrame? {
+        await conversations.load(sessionId: sessionId)?.stats
+    }
+
+    /// Keep a usage frame beside the session's conversation.
+    ///
+    /// Read-modify-write, because the file holds both: replacing it with just
+    /// the frame would throw the history away.
+    ///
+    /// - Parameters:
+    ///   - frame: what the host sent.
+    ///   - sessionId: the session it belongs to.
+    private func storeStats(_ frame: SessionStatsFrame, for sessionId: String) async {
+        let existing = await conversations.load(sessionId: sessionId)
+        await conversations.save(
+            CachedConversation(
+                sessionId: sessionId,
+                items: existing?.items ?? [],
+                throughSeq: existing?.throughSeq,
+                syncedAt: existing?.syncedAt ?? Date(),
+                hasMore: existing?.hasMore ?? false,
+                turns: existing?.turns,
+                oldestSeq: existing?.oldestSeq,
+                stats: frame,
+            ),
+        )
     }
 
     /// Read a session's recent log, as items a view can draw.
@@ -762,7 +890,10 @@ final class AppModel {
     /// - Parameter sessionId: the session to read.
     /// - Returns: the frame, or `nil` when it could not be read.
     func stats(for sessionId: String) async -> SessionStatsFrame? {
-        guard connection != nil else { return nil }
+        guard connection != nil else {
+            statsError = "Not connected to the Mac."
+            return nil
+        }
         do {
             let payload = JSONValue.object(["sessionId": .string(sessionId)])
             let result = try await call(
@@ -770,6 +901,15 @@ final class AppModel {
                 payload: payload,
                 as: SessionStatsResult.self,
             )
+            statsError = nil
+            if let frame = result.stats {
+                // Written down as well as returned. The figures above the
+                // composer are read from this, and a session screen that has to
+                // wait for the network before it can say which model is
+                // answering says nothing at all when the network does not come
+                // back -- which on a phone is the ordinary case.
+                await storeStats(frame, for: sessionId)
+            }
             return result.stats
         } catch {
             // Reported rather than swallowed. This returned `nil` for every
@@ -778,6 +918,7 @@ final class AppModel {
             // stayed unexplained through several rounds.
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             if !message.isEmpty { lastError = message }
+            statsError = message.isEmpty ? "The Mac did not answer." : message
             return nil
         }
     }
@@ -951,6 +1092,24 @@ final class AppModel {
             selectedSessionId = requested == "first" ? sessions.first?.sessionId : requested
         }
     }
+
+    /// Why the last usage read failed, when it did.
+    ///
+    /// Separate from ``lastError`` because the usage screen needs to tell two
+    /// things apart that both arrive as "no stats": a session that has never
+    /// sent a request, and a read that did not happen. It showed the first for
+    /// both, so a failure was reported to the operator as a fact about their
+    /// session -- "This session has not sent a request" -- which is untrue and
+    /// unfalsifiable from the screen. That is why "the usage query does not
+    /// work" could not be diagnosed: the app was asserting the answer.
+    private(set) var statsError: String?
+
+    /// Why the last conversation read produced nothing, when it failed.
+    ///
+    /// The companion of ``statsError`` and for the same reason: "we could not
+    /// ask" and "there is nothing there" are different answers, and the screen
+    /// was giving the second for both.
+    private(set) var conversationError: String?
 
     /// The hardware model, for the host's device roster.
     private static var deviceModel: String {

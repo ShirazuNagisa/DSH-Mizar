@@ -111,11 +111,36 @@ final class AppFlowTests: XCTestCase {
 
     func testOpeningASessionShowsTheComposer() {
         let app = launch()
-        expect(app.textFields["composer.field"], "the composer is missing")
-        expect(app.buttons["composer.stop"], "there is no way to stop a turn")
-        expect(app.buttons["composer.send"], "there is no way to send")
-        // Sending is refused until there is something to send.
-        XCTAssertFalse(app.buttons["composer.send"].isEnabled, "send is enabled while empty")
+        let field = app.textFields["composer.field"]
+        expect(field, "the composer is missing")
+
+        // One button, two jobs. The running session starts with an empty field,
+        // which is the stop case -- the rule DSH uses, and the rule this follows.
+        expect(app.buttons["composer.stop"], "a running turn with an empty field does not offer stop")
+
+        // Typing turns it into send, and it is refused while empty -- so the one
+        // button cannot be tapped into a no-op.
+        field.tap()
+        field.typeText("hello")
+        let send = app.buttons["composer.send"]
+        expect(send, "typing did not turn the button into send")
+        XCTAssertTrue(send.isEnabled, "send is disabled with text in the field")
+    }
+
+    /// The three figures above the field, each of which is a control.
+    func testTheComposerBarShowsTheModelContextAndCommands() {
+        let app = launch()
+        expect(app.buttons["composer.model"], "the model is not shown above the composer")
+        expect(app.buttons["composer.context"], "the context figure is not shown above the composer")
+        expect(app.buttons["composer.commands"], "the command button is not shown above the composer")
+
+        // The figure is the host's number, not a placeholder. Asserted on the
+        // button's label: setting one makes the button a single accessibility
+        // element, so its inner Text is not a queryable child.
+        XCTAssertTrue(
+            app.buttons["composer.context"].label.contains("35"),
+            "the context percentage is not the host's: \(app.buttons["composer.context"].label)",
+        )
     }
 
     /// Open every folded turn, so the steps inside can be asserted on.
@@ -153,20 +178,62 @@ final class AppFlowTests: XCTestCase {
         expect(app.staticTexts["The turn ended without a response"], "a failed turn was not surfaced")
     }
 
-    func testTheUsageTabShowsTheCounters() {
+    /// The context figure opens the breakdown it is computed from.
+    ///
+    /// This replaces a test for a Usage *tab*. The tab is gone: the figure lives
+    /// above the field now, so the detail is one tap from the conversation
+    /// instead of a screen swap away from it.
+    func testTheContextFigureOpensItsBreakdown() {
         let app = launch()
-        let usage = app.buttons["Usage"]
-        expect(usage, "the usage tab is missing")
-        usage.tap()
-        expect(app.staticTexts["Tokens"], "the token card is missing")
-        expect(app.staticTexts["12,480"], "the host's input count is not shown")
-        // The rows below the fold are not in the accessibility tree until they
-        // are scrolled into it, so asserting on them without this reads exactly
-        // like the value being wrong.
-        app.swipeUp()
-        expect(app.staticTexts["Cache hit"], "the cache hit rate is missing")
-        expect(app.staticTexts["92%"], "the cache hit rate is not the host's value")
-        expect(app.staticTexts["Context"], "the context card is missing")
+        let context = app.buttons["composer.context"]
+        expect(context, "the context figure is missing")
+        XCTAssertTrue(
+            context.label.contains("35"),
+            "the context percentage is not the host's: \(context.label)",
+        )
+        context.tap()
+
+        // The window and the composition come from the host's frame, so their
+        // being on screen is what proves the popover is wired to it.
+        expect(app.staticTexts["Window"], "the window size is not in the breakdown")
+        expect(app.staticTexts["Pressure"], "the pressure figure is not in the breakdown")
+        expect(app.staticTexts["Messages"], "the token breakdown is not in the popover")
+    }
+
+    /// The command button puts a command in the field rather than sending it.
+    func testTheCommandButtonDraftsACommand() {
+        let app = launch()
+        let commands = app.buttons["composer.commands"]
+        expect(commands, "the command button is missing")
+        commands.tap()
+
+        let goal = app.buttons["command.goal"]
+        expect(goal, "the command list did not open")
+        goal.tap()
+
+        // Did the action run at all? The list closes only from inside the
+        // button, so a list still on screen means the tap never reached it --
+        // which is a different fault from a command that ran and was lost.
+        let closed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !goal.exists },
+            object: nil,
+        )
+        let outcome = XCTWaiter().wait(for: [closed], timeout: 5)
+        XCTAssertEqual(outcome, .completed, "the tap did not reach the command row")
+
+        // Drafted, not sent: a goal needs text after the slash, and firing it
+        // blank would send the agent an empty instruction.
+        let field = app.textFields["composer.field"]
+        expect(field, "the composer is missing")
+        // Polled rather than read once: the sheet leaves with an animation and
+        // the field is not updated until it has gone, so a single read races it
+        // and reports the placeholder as if nothing had been drafted.
+        let drafted = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in (field.value as? String) == "/goal " },
+            object: nil,
+        )
+        _ = XCTWaiter().wait(for: [drafted], timeout: 10)
+        XCTAssertEqual(field.value as? String, "/goal ", "the command was not drafted into the field")
     }
 
     // MARK: - Interactions
@@ -242,7 +309,13 @@ final class AppFlowTests: XCTestCase {
         // identically to the message being absent. A fixed number of swipes is a
         // guess about how long the conversation is.
         let composer = app.textFields["composer.field"]
-        let candidates = app.staticTexts.matching(identifier: "does this reach the agent")
+        // By label, not by identifier. `matching(identifier:)` reads the
+        // accessibility *identifier*, and a message bubble sets its text as the
+        // accessibility *label* -- so this query matched nothing, ever, and the
+        // failure said "0 elements carry the text" while the text was on screen.
+        let candidates = app.staticTexts.matching(
+            NSPredicate(format: "label == %@", "does this reach the agent"),
+        )
         var inConversation: XCUIElement?
         for _ in 0..<8 {
             inConversation = (0..<candidates.count)
@@ -262,7 +335,7 @@ final class AppFlowTests: XCTestCase {
 
     func testTheModelPickerListsTheHostsProviders() {
         let app = launch()
-        let opener = app.buttons["session.model"]
+        let opener = app.buttons["composer.model"]
         expect(opener, "there is no way to change the model")
         opener.tap()
 
@@ -282,7 +355,7 @@ final class AppFlowTests: XCTestCase {
 
     func testChoosingAModelRevealsItsReasoningLevels() {
         let app = launch()
-        app.buttons["session.model"].tap()
+        app.buttons["composer.model"].tap()
         let model = app.buttons["model.row.deepseek-flash"]
         expect(model, "the model row is missing")
         model.tap()
@@ -310,7 +383,14 @@ final class AppFlowTests: XCTestCase {
     func testInterfaceFollowsTheLanguageAndContentDoesNot() {
         let chinese = launch(language: "zh-Hans")
         expect(chinese.staticTexts["本轮没有产生回复"], "the failure card did not translate")
-        expect(chinese.buttons["对话"], "the interface did not follow Chinese")
+        // The composer's placeholder, which is interface copy. This used to
+        // assert on the "对话" segmented control; that control is gone, and the
+        // placeholder is the localised string nearest the same place on screen.
+        XCTAssertEqual(
+            chinese.textFields["composer.field"].value as? String,
+            "给 agent 发消息…",
+            "the interface did not follow Chinese",
+        )
         // Message content is data from the session, not interface copy.
         expect(
             chinese.staticTexts["Refactor the parser and run the tests."],
@@ -321,6 +401,10 @@ final class AppFlowTests: XCTestCase {
         let english = launch(language: "en")
         expandTurns(english)
         expect(english.staticTexts["The turn ended without a response"], "the failure card did not translate")
-        expect(english.buttons["Conversation"], "the interface did not follow English")
+        XCTAssertEqual(
+            english.textFields["composer.field"].value as? String,
+            "Ask your agent…",
+            "the interface did not follow English",
+        )
     }
 }

@@ -22,48 +22,115 @@ struct ConversationView: View {
     /// numbers, in which case the flat list is drawn instead.
     var turns: [ConversationTurn] = []
     let loading: Bool
+    /// Why the conversation is empty, when it is empty because the read failed.
+    var failure: String?
     /// Called when the top of the conversation comes into view, to fetch what
     /// came before.
-    var onLoadOlder: (() async -> Int)?
+    ///
+    /// `nil` means the question could not be asked right now -- no connection
+    /// yet, the cache not written yet, a page already in flight. `0` means the
+    /// host was asked and has nothing older. The distinction is the whole point:
+    /// the two were conflated, so a single badly-timed attempt ended the list
+    /// permanently.
+    var onLoadOlder: (() async -> Int?)?
 
     @State private var loadingOlder = false
     @State private var exhausted = false
+    /// Pages fetched automatically since this row came on screen.
+    ///
+    /// The sentinel sits at the very top of the log and older messages are
+    /// inserted *below* it, so it never leaves the screen and never re-appears.
+    /// That is what made loading flaky: `onAppear` fires once for the life of
+    /// the view, so the second page was never asked for unless the operator
+    /// happened to tap. Re-driving on `items.count` fixes that, and the counter
+    /// is what stops it from draining a fifty-page history in one go while the
+    /// operator is looking at the top of it.
+    @State private var automaticPages = 0
+    private static let automaticPageLimit = 3
+    /// Below the sentinel, and where the view scrolls on open.
+    static let bottomAnchor = "conversation.bottom"
+
+    /// Ask for the page before this one, once.
+    ///
+    /// `loadingOlder` is a real gate, not a hint: the sentinel, the tap and the
+    /// appearance hook can all fire while one request is in flight.
+    ///
+    /// - Parameters:
+    ///   - fetch: the parent's loader.
+    ///   - automatic: whether this was the view asking on its own.
+    private func fetchOlder(_ fetch: () async -> Int?, automatic: Bool = false) async {
+        guard !loadingOlder else { return }
+        if automatic, automaticPages >= Self.automaticPageLimit { return }
+        if automatic { automaticPages += 1 }
+        loadingOlder = true
+        let arrived = await fetch()
+        // Only a definite answer ends the list. `nil` leaves `exhausted` alone
+        // so the next appearance -- or the operator's tap -- asks again.
+        if arrived == 0 { exhausted = true }
+        loadingOlder = false
+    }
 
     var body: some View {
         // Lazy, not eager. A conversation can hold hundreds of items and every
         // one of them was being laid out whether or not it was on screen, which
         // is what the dropped frames were.
         LazyVStack(alignment: .leading, spacing: 10) {
-            // The top of the list is where older messages arrive. A spinner that
-            // appears as it scrolls into view is what asks for them -- there is
-            // no "reached the top" callback in SwiftUI, and the alternative is a
-            // button the operator has to find.
+            // The top of the list is where older messages arrive.
+            //
+            // Always a visible row, never a bare spinner. The shipped version was
+            // a spinner whose *appearance* was the only trigger, and when it
+            // returned without fetching it stayed mounted -- so the trigger had
+            // already fired and never fired again. The feature went quiet for the
+            // rest of the view's life with nothing on screen to say so, which is
+            // why loading worked sometimes and not others. A row that can be
+            // tapped cannot fail that way.
             if !exhausted, let onLoadOlder, !items.isEmpty {
-                HStack {
-                    Spacer()
-                    if loadingOlder {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Color.clear.frame(height: 1)
+                Button {
+                    Task { await fetchOlder(onLoadOlder) }
+                } label: {
+                    HStack {
+                        Spacer()
+                        if loadingOlder {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Load earlier messages")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    .frame(minHeight: 28)
+                    .contentShape(.rect)
                 }
+                .buttonStyle(.plain)
                 .accessibilityIdentifier("conversation.loadOlder")
-                .onAppear {
-                    guard !loadingOlder else { return }
-                    loadingOlder = true
-                    Task {
-                        let arrived = await onLoadOlder()
-                        // Nothing new means the beginning. Without this the
-                        // spinner reappears on every scroll and asks forever.
-                        if arrived == 0 { exhausted = true }
-                        loadingOlder = false
-                    }
+                // Keyed on the item count, not on appearance. Older messages
+                // arrive *below* this row, so the row never disappears and
+                // `onAppear` would fire exactly once -- which is the flakiness:
+                // one page loaded, the rest needed a tap nobody knew to make.
+                // Each page changes the count, so each page re-arms the ask.
+                .task(id: items.count) {
+                    await fetchOlder(onLoadOlder, automatic: true)
+                }
+                .onDisappear {
+                    // Scrolled away. Someone who comes back to the top is asking
+                    // again, and the automatic allowance should be theirs.
+                    automaticPages = 0
                 }
             }
 
             if loading && items.isEmpty {
                 ProgressView().frame(maxWidth: .infinity)
+            } else if items.isEmpty, let failure {
+                // Not "this session has no messages". That is a statement about
+                // the operator's session, and it was being made out of a request
+                // that never came back -- suspension cancels whatever is in
+                // flight, so on a phone this is ordinary.
+                ContentUnavailableView {
+                    Label("Could not load the conversation", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(failure)
+                }
             } else if items.isEmpty {
                 ContentUnavailableView(
                     "Nothing yet",
@@ -82,6 +149,13 @@ struct ConversationView: View {
                     TurnSection(turn: turn)
                 }
             }
+
+            // Where the view scrolls to on open. A conversation is read from the
+            // bottom, so anything else means opening a session lands you in the
+            // middle of an argument you then have to scroll out of.
+            Color.clear
+                .frame(height: 1)
+                .id(Self.bottomAnchor)
         }
     }
 }
@@ -99,17 +173,35 @@ private struct TurnSection: View {
             }
 
             if turn.isCollapsible {
-                // The turn's last word stays on screen whether the turn is open
-                // or folded. It is the answer, and an answer behind a tap is not
-                // an answer; the tap is for the eleven steps it took to get
-                // there.
-                let conclusion = turn.steps.last
-                if !open, let conclusion {
-                    ConversationRow(item: conclusion)
+                // Prompt, then the bar, then the turn's answer -- with the detail
+                // unfolding *between* the bar and the answer.
+                //
+                // This shape took three attempts to land on, and each wrong one
+                // is worth naming so it is not rebuilt:
+                //
+                //   first    the answer was drawn above the bar while folded and
+                //            folded into the disclosure when opened, so a tap
+                //            removed a bubble from directly above the bar and the
+                //            bar jumped upward under the operator's finger;
+                //   then     everything moved inside the disclosure, which kept
+                //            the bar still but hid the answer behind a tap --
+                //            the one thing a monitoring app must not do;
+                //   now      the bar sits under the prompt and does not move,
+                //            the steps open beneath it, and the answer stays on
+                //            screen below them either way.
+                //
+                // The answer is the last thing the model *said*, not the last
+                // thing the turn did: a turn usually ends on a tool call, and
+                // that is not a summary of anything.
+                let answer = turn.steps.last { item in
+                    if case .message(_, .assistant, _, _) = item { return true }
+                    return false
                 }
+                let details = answer.map { last in turn.steps.filter { $0.id != last.id } } ?? turn.steps
+
                 DisclosureGroup(isExpanded: $open) {
                     VStack(alignment: .leading, spacing: 10) {
-                        ForEach(turn.steps) { item in
+                        ForEach(details) { item in
                             ConversationRow(item: item)
                         }
                     }
@@ -118,6 +210,10 @@ private struct TurnSection: View {
                     TurnSummary(turn: turn)
                 }
                 .accessibilityIdentifier("turn.\(turn.id)")
+
+                if let answer {
+                    ConversationRow(item: answer)
+                }
             } else {
                 // A turn that produced one reply is not a crowd, and hiding a
                 // single answer behind a tap gains nothing.
@@ -142,7 +238,7 @@ private struct TurnSummary: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer()
-            Text("\(turn.steps.count) 条")
+            Text("\(turn.steps.count) steps")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
