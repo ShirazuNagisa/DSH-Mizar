@@ -55,6 +55,17 @@ describe('MizarPanel', () => {
     const html = renderToStaticMarkup(<MizarPanel />)
     expect(html).not.toContain('Cannot reach')
   })
+
+  it('offers a language switch', () => {
+    // Rendered, not merely exported: the whole point of the button is that it
+    // is on screen before anything else has loaded, since a reader who cannot
+    // read the panel needs it first.
+    const html = renderToStaticMarkup(<MizarPanel />)
+    expect(html).toContain('mizar-lang')
+    // Named after the language it switches to. There is no browser under
+    // vitest, so the panel is in English and the button offers Chinese.
+    expect(html).toContain('中文')
+  })
 })
 
 describe('MizarPanelIcon', () => {
