@@ -15,9 +15,10 @@
  *
  * @module dsh-mizar/test/panel-render
  */
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MizarPanel, MizarPanelIcon, PANEL_ID } from '../client/src/panel.js'
+import { setLocale } from '../client/src/i18n.js'
 import { PANEL_ROUTES } from '../src/panel/api.js'
 
 describe('panel routes', () => {
@@ -38,6 +39,15 @@ describe('panel routes', () => {
 })
 
 describe('MizarPanel', () => {
+  // The panel renders in whatever language the i18n module resolved at import
+  // time, and node 21+ gives it a `navigator` whose language is the machine's
+  // own locale -- so these assertions would be about the developer's machine
+  // rather than about the panel. Pinned here; locale *detection* is
+  // test/i18n.test.ts's subject, not this file's.
+  beforeEach(() => {
+    setLocale('en')
+  })
+
   it('renders without a DOM', () => {
     expect(() => renderToStaticMarkup(<MizarPanel />)).not.toThrow()
   })
@@ -62,8 +72,8 @@ describe('MizarPanel', () => {
     // read the panel needs it first.
     const html = renderToStaticMarkup(<MizarPanel />)
     expect(html).toContain('mizar-lang')
-    // Named after the language it switches to. There is no browser under
-    // vitest, so the panel is in English and the button offers Chinese.
+    // Named after the language it switches to. The panel is pinned to English
+    // above, so the button offers Chinese.
     expect(html).toContain('中文')
   })
 })

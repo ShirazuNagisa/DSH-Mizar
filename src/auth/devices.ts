@@ -55,18 +55,28 @@ export interface DeviceRecord {
   readonly push?: DevicePush
 }
 
-/** A device's APNs endpoint. */
+/** A device's push endpoint. */
 export interface DevicePush {
-  /** The APNs device token, hex. */
+  /** The device token: hex for APNs, an opaque registration token for FCM. */
   readonly token: string
   /**
-   * Which APNs environment issued it.
+   * Which push service the token belongs to.
+   *
+   * Stored rather than inferred from the token's shape, because a relay that
+   * guessed would send an Android token to Apple on the strength of it looking
+   * unusual. Defaulted to `'ios'` when a record predates the field, which is
+   * what every stored record does.
+   */
+  readonly platform: 'ios' | 'android'
+  /**
+   * Which APNs environment issued it, or `null` on Android.
    *
    * Not inferable and not interchangeable: a token minted for the sandbox is
    * rejected by the production endpoint with `BadDeviceToken`, which says
-   * nothing about why.
+   * nothing about why. FCM has one service, so an Android registration has no
+   * environment to record.
    */
-  readonly environment: 'sandbox' | 'production'
+  readonly environment: 'sandbox' | 'production' | null
   /** The language the app is running in, so notifications match it. */
   readonly locale: string
   /** When the app last told this host where it is. */

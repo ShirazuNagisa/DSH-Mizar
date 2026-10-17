@@ -7,7 +7,6 @@
  * component: `t` reads whatever `navigator` said when the module loaded, which
  * under vitest is nothing, and the interesting behaviour is the table itself.
  */
-import { describe, expect, it } from 'vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   getLocale,
@@ -55,10 +54,25 @@ describe('panel translation', () => {
     }
   })
 
-  it('defaults to English where there is no browser', () => {
+  it('defaults to English where there is no browser', async () => {
     // Vitest runs in node, so this is also the guard that importing the module
     // outside a browser does not throw.
-    expect(t('Host')).toBe('Host')
+    //
+    // Node 21+ defines a global `navigator` whose `language` is the machine's
+    // own locale, so "no browser" has to be arranged rather than assumed:
+    // otherwise this assertion is about whoever ran the suite, passing on an
+    // English machine and failing on a Chinese one. The locale is read once at
+    // import time, hence the fresh module.
+    vi.stubGlobal('navigator', undefined)
+    try {
+      vi.resetModules()
+      const fresh = await import('../client/src/i18n.js')
+      expect(fresh.getLocale()).toBe('en')
+      expect(fresh.t('Host')).toBe('Host')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.resetModules()
+    }
   })
 })
 
@@ -134,12 +148,16 @@ describe('language toggle', () => {
   it('goes back to following the browser when asked to', () => {
     // `null` clears the stored choice. There is no browser here, so following
     // it means English -- but the value is gone, which is the part that matters.
+    //
+    // `navigator` is stubbed away for the same reason as above: node 21+ has a
+    // global one carrying the machine's locale, and `detect()` reads it live.
     const store = new Map<string, string>([['dsh-mizar.locale', 'zh-Hans']])
     vi.stubGlobal('localStorage', {
       getItem: (key: string) => store.get(key) ?? null,
       setItem: (key: string, value: string) => void store.set(key, value),
       removeItem: (key: string) => void store.delete(key),
     })
+    vi.stubGlobal('navigator', undefined)
     try {
       setLocale(null)
       expect(store.has('dsh-mizar.locale')).toBe(false)

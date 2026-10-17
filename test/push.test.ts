@@ -18,7 +18,7 @@
  * @module dsh-mizar/test/push
  */
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -400,15 +400,122 @@ describe('the roster', () => {
     expect(
       await binding.register('phone-1', {
         token: 'deadbeef',
+        platform: 'ios',
         environment: 'sandbox',
         locale: 'zh-Hans',
       }),
     ).toBe(true)
     expect(transport.registrations).toHaveLength(1)
-    expect(transport.registrations[0]).toMatchObject({ deviceId: 'phone-1', token: 'deadbeef' })
+    expect(transport.registrations[0]).toMatchObject({
+      deviceId: 'phone-1',
+      token: 'deadbeef',
+      platform: 'ios',
+      environment: 'sandbox',
+    })
     // Stored, so the relay can be told again after it restarts.
     expect(store.state.devices[0]?.push?.token).toBe('deadbeef')
     expect(store.state.devices[0]?.push?.environment).toBe('sandbox')
+    expect(store.state.devices[0]?.push?.platform).toBe('ios')
+  })
+
+  it('carries an Android registration through, environment and all', async () => {
+    const store = await storeWithDevice('android-phone')
+    const transport = new RecordingTransport()
+    const lines: string[] = []
+    const binding = createPushBinding({
+      store,
+      notifier: notifier({ transport }),
+      transport,
+      log: (line) => lines.push(line),
+    })
+
+    // An FCM registration token, which is not hex, and `null` for the
+    // environment it does not have. Both facts have to survive the trip to the
+    // relay: the token shape is what decides the route, and an environment
+    // invented here would be a lie the status endpoint repeats.
+    const token = 'dGhpc2lzOm5vdC1oZXg_APA91b'
+    expect(
+      await binding.register('android-phone', {
+        token,
+        platform: 'android',
+        environment: null,
+        locale: 'zh-Hans',
+      }),
+    ).toBe(true)
+    expect(transport.registrations[0]).toEqual({
+      deviceId: 'android-phone',
+      token,
+      platform: 'android',
+      environment: null,
+      locale: 'zh-Hans',
+    })
+    expect(store.state.devices[0]?.push).toMatchObject({
+      token,
+      platform: 'android',
+      environment: null,
+    })
+    expect(lines.join('\n')).toContain('android')
+
+    // And a reconnect re-announces all of it, which is the path a relay restart
+    // depends on.
+    transport.registrations.length = 0
+    expect(await binding.republish()).toBe(1)
+    expect(transport.registrations[0]).toMatchObject({
+      platform: 'android',
+      environment: null,
+    })
+  })
+
+  it('loads a state file written before platform existed', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'mizar-push-'))
+    await writeFile(
+      join(dir, 'state.json'),
+      JSON.stringify({
+        version: 1,
+        hostSecret: 'A'.repeat(43),
+        hostId: '00000000-0000-0000-0000-000000000000',
+        createdAt: 1,
+        pairing: null,
+        devices: [
+          {
+            deviceId: 'phone-1',
+            name: 'iPhone',
+            tokenHash: 'hash',
+            tokenPrefix: 'mz_ab',
+            createdAt: 1,
+            lastSeenAt: 1,
+            push: { token: 'deadbeef', environment: 'sandbox', locale: 'en', updatedAt: 2 },
+          },
+        ],
+      }),
+      'utf8',
+    )
+    const store = await MizarStore.open(dir)
+
+    // Defaulted, not dropped. An existing record can only be an iOS one, and
+    // dropping the endpoint would silently stop notifying a phone that is still
+    // paired -- which the operator would only discover from a notification that
+    // never arrived.
+    expect(store.state.devices[0]?.push).toMatchObject({
+      platform: 'ios',
+      environment: 'sandbox',
+    })
+
+    // And it re-announces with the platform filled in, which is the path a
+    // plugin upgrade takes: the relay is told again on the next reconnect.
+    const transport = new RecordingTransport()
+    const binding = createPushBinding({
+      store,
+      notifier: notifier({ transport }),
+      transport,
+      log: () => {},
+    })
+    expect(await binding.republish()).toBe(1)
+    expect(transport.registrations[0]).toMatchObject({
+      deviceId: 'phone-1',
+      platform: 'ios',
+      environment: 'sandbox',
+    })
   })
 
   it('refuses a device that is not on the roster', async () => {
@@ -425,6 +532,7 @@ describe('the roster', () => {
     expect(
       await binding.register('somebody-else', {
         token: 'deadbeef',
+        platform: 'ios',
         environment: 'production',
         locale: 'en',
       }),
@@ -444,6 +552,7 @@ describe('the roster', () => {
     })
     await binding.register('phone-1', {
       token: 'deadbeef',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
     })
@@ -471,7 +580,7 @@ describe('the roster', () => {
           createdAt: 3,
           lastSeenAt: 3,
           revokedAt: 4,
-          push: { token: 'cafe', environment: 'production', locale: 'en', updatedAt: 4 },
+          push: { token: 'cafe', platform: 'ios', environment: 'production', locale: 'en', updatedAt: 4 },
         },
       ],
     }))
@@ -487,6 +596,7 @@ describe('the roster', () => {
     const binding = createPushBinding({ store, notifier: push, transport, log: () => {} })
     await binding.register('phone-1', {
       token: 'deadbeef',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
     })
@@ -509,6 +619,7 @@ describe('the roster', () => {
     const binding = createPushBinding({ store, notifier: push, transport, log: () => {} })
     await binding.register('phone-1', {
       token: 'deadbeef',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
     })
@@ -574,6 +685,7 @@ describe('the relay transport', () => {
     await transport.register({
       deviceId: 'phone-1',
       token: 'deadbeef',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'zh-Hans',
     })
@@ -597,7 +709,11 @@ describe('the relay transport', () => {
     // The same secret the tunnel presents, which is how the relay knows which
     // room is being spoken for.
     expect(received.every((entry) => entry.authorization === 'Bearer mac-secret')).toBe(true)
-    expect(received[0]?.body).toMatchObject({ deviceId: 'phone-1', environment: 'sandbox' })
+    expect(received[0]?.body).toMatchObject({
+      deviceId: 'phone-1',
+      platform: 'ios',
+      environment: 'sandbox',
+    })
   })
 
   it('reports a relay with no push API once, not once per notification', async () => {
@@ -661,6 +777,7 @@ describe('the relay transport', () => {
     await transport.register({
       deviceId: 'phone-1',
       token: 'aa',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
     })

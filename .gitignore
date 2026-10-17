@@ -4,6 +4,16 @@
 .devstate/
 .pnpm-store/
 
+# --- pnpm, for the Windows side of this checkout ---
+# The repository's own lockfile is npm's `package-lock.json`. pnpm is what this
+# machine has (the DSH runtime ships node and pnpm, and no npm), and these two files
+# are what it generates: the workspace file carries the linker setting the plugin's
+# optional dependencies need on Windows, and the lockfile is regenerable. Neither
+# belongs in the repository. `relay/` needs `pnpm install --ignore-workspace`
+# rather than a second workspace file of its own.
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
 # --- Node ---
 node_modules/
 *.log
@@ -26,3 +36,25 @@ iOS/DerivedData/
 xcuserdata/
 *.xcuserstate
 release/
+
+# --- Android ---
+# The SDK lives outside the checkout (see Android/local.properties, which is
+# machine-local), and Gradle's own home points into `.gradle-home/` so caches stay
+# with the project instead of in the user profile.
+.gradle-home/
+Android/local.properties
+Android/**/build/
+Android/.gradle/
+Android/.kotlin/
+# A Firebase project's config is per-operator and carries project identifiers;
+# without it the app still builds and runs, just with push inactive.
+Android/app/google-services.json
+*.apk
+*.aab
+
+# --- Reference copy supplied by the operator ---
+# A full second checkout of this repository (with its own `.git`, node_modules,
+# build caches, a signed .ipa and a packaged relay deployment), dropped in as
+# reference material. Read it if useful; never commit it, and never build from it:
+# the checkout it duplicates is the authoritative source.
+DSH-Mizar-ios/

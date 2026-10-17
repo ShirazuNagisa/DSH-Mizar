@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Simplified Chinese, taken from the iOS catalogue (`iOS/DSH-Mizar/zh-Hans.lproj`)
+  so the two platforms say the same thing. Strings the iOS app builds in code — the
+  connection diagnoses, the sync failures — are here too: the one message an
+  operator reads when nothing works is not a good place for a second language.
+-->
+<resources>
+    <string name="connecting">连接中…</string>
+    <string name="reconnecting">重新连接中…</string>
+    <string name="unpaired_title">还没有配对任何电脑</string>
+    <string name="unpaired_body">在电脑上打开 DSH，在侧边栏找到 DSH-Mizar 面板，扫描它显示的二维码。</string>
+    <string name="scan_code">扫描二维码</string>
+    <string name="enter_manually">或手动输入</string>
+    <string name="hide_manual">收起手动输入</string>
+    <string name="host_label">主机，例如 192.168.1.20:19390</string>
+    <string name="pairing_code">配对码</string>
+    <string name="device_name">这台设备</string>
+    <string name="pair">配对</string>
+    <string name="camera_needed">扫描配对码需要使用相机。</string>
+    <string name="allow_camera">允许使用相机</string>
+
+    <string name="cannot_reach">无法连接这台电脑</string>
+    <string name="cannot_reach_body">请确认电脑上 DSH 正在运行，且这台手机与它在同一个网络里。</string>
+    <string name="retry">重试</string>
+    <string name="pair_again">重新配对</string>
+    <string name="cannot_recognise">这台电脑不认得这台手机</string>
+    <string name="stored_sessions_kept">这些会话来自上次成功连接时的记录。</string>
+
+    <string name="session_count">%1$d 个会话</string>
+    <string name="refresh">刷新</string>
+    <string name="new_session">新建会话</string>
+    <string name="no_sessions">还没有会话。在电脑上新建一个，然后刷新。</string>
+    <string name="workspace_count">%1$d 个会话</string>
+    <string name="show_more">再显示 %1$d 个</string>
+    <string name="dismiss">知道了</string>
+    <string name="choose_mac">换一台电脑</string>
+    <string name="directory_label">/Users/you/projects/thing</string>
+    <string name="new_session_note">宿主会打开这个目录，并在其中新建一个会话。</string>
+    <string name="start_session">新建会话</string>
+
+    <string name="settings">设置</string>
+    <string name="settings_note">配对与本地历史都在这里。通知设置在 Android 应用的系统页面里。</string>
+    <string name="forget">忘记</string>
+    <string name="add_mac">添加一台电脑</string>
+
+    <string name="session">会话</string>
+    <string name="back">返回</string>
+    <string name="nothing_yet">还没有内容</string>
+    <string name="nothing_yet_body">这个会话没有消息。</string>
+    <string name="conversation_failed">无法加载对话</string>
+    <string name="load_earlier">加载更早的消息</string>
+    <string name="step_count">%1$d 个步骤</string>
+    <string name="running_for">正在处理，已用时 %1$s</string>
+    <string name="completed_in">已完成，用时 %1$s</string>
+    <string name="completed">已完成</string>
+    <string name="unfinished_after">未完成，已用时 %1$s</string>
+    <string name="unfinished">未完成</string>
+    <string name="turn_failed">本轮没有产生回复</string>
+    <string name="system_label">系统</string>
+
+    <string name="composer_hint">向你的 agent 提问…</string>
+    <string name="send">发送</string>
+    <string name="stop">停止</string>
+    <string name="model">模型</string>
+    <string name="context">上下文</string>
+    <string name="context_percent">上下文 %1$d%%</string>
+    <string name="context_unknown">上下文 —</string>
+    <string name="commands">命令</string>
+    <string name="command_goal">目标</string>
+    <string name="command_plan">计划</string>
+    <string name="command_compact">压缩</string>
+    <string name="command_model">模型</string>
+
+    <string name="wants_to_run">想要执行 %1$s</string>
+    <string name="reject">拒绝</string>
+    <string name="allow_once">允许一次</string>
+    <string name="approve_plan">批准计划</string>
+    <string name="send_answers">发送回答</string>
+    <string name="or_type_your_own">或自己输入回答</string>
+
+    <string name="permissions">权限</string>
+    <string name="permission_note">立即对这个会话生效。正在跑的一轮不会被打断。</string>
+    <string name="allow_full_access">允许完全访问</string>
+    <string name="no_context_figure">还没有上下文数据。</string>
+    <string name="window">窗口</string>
+    <string name="pressure">占用</string>
+    <string name="projected">预计</string>
+    <string name="percent_full">占用比例</string>
+    <string name="system">系统</string>
+    <string name="tools">工具</string>
+    <string name="messages">消息</string>
+    <string name="unavailable">不可用</string>
+    <string name="cancel">取消</string>
+</resources>

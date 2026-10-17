@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The interface.
+
+  Where the iOS catalogue exists, the English value here is that catalogue's *key*
+  verbatim, so the two platforms read the same and a translator can diff them.
+  Counts use plain positional formatting rather than `<plurals>` on purpose: the
+  iOS catalogue has no plural rules, and introducing them would make English say
+  "1 step" where every other string in this app — and the Chinese translation —
+  says "1 steps". Parity over grammar here, deliberately.
+-->
+<resources>
+    <string name="app_name">DSH-Mizar</string>
+
+    <!-- Launching, pairing, connecting -->
+    <string name="connecting">Connecting…</string>
+    <!-- Shown above the screen while a dropped socket is being dialled again. -->
+    <string name="reconnecting">Reconnecting…</string>
+    <string name="unpaired_title">No computer paired yet</string>
+    <string name="unpaired_body">Open DSH on your computer, find the DSH-Mizar panel in the sidebar, and scan the code it shows.</string>
+    <string name="scan_code">Scan the code</string>
+    <string name="enter_manually">Or enter it by hand</string>
+    <string name="hide_manual">Hide manual entry</string>
+    <string name="host_label">Host, for example 192.168.1.20:19390</string>
+    <string name="pairing_code">Pairing code</string>
+    <string name="device_name">This device</string>
+    <string name="pair">Pair</string>
+    <string name="camera_needed">The camera is needed to scan the pairing code.</string>
+    <string name="allow_camera">Allow camera</string>
+
+    <!-- Unreachable -->
+    <string name="cannot_reach">Cannot reach the computer</string>
+    <string name="cannot_reach_body">Make sure DSH is running on the computer and that this phone is on the same network.</string>
+    <string name="retry">Try again</string>
+    <string name="pair_again">Pair again</string>
+    <string name="cannot_recognise">This computer does not recognise this phone</string>
+    <string name="stored_sessions_kept">These sessions are from the last time this phone reached the computer.</string>
+
+    <!-- The session list -->
+    <string name="session_count">%1$d sessions</string>
+    <string name="refresh">Refresh</string>
+    <string name="new_session">New session</string>
+    <string name="no_sessions">No sessions yet. Start one on your computer, then refresh.</string>
+    <string name="workspace_count">%1$d sessions</string>
+    <string name="show_more">Show %1$d more</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="choose_mac">Choose another computer</string>
+    <string name="directory_label">/Users/you/projects/thing</string>
+    <string name="new_session_note">The host opens this directory and starts a session in it.</string>
+    <string name="start_session">Start session</string>
+
+    <!-- Settings -->
+    <string name="settings">Settings</string>
+    <string name="settings_note">Pairings and stored history live here. Notification settings are on Android\'s own app screen.</string>
+    <string name="forget">Forget</string>
+    <string name="add_mac">Add a computer</string>
+
+    <!-- One conversation -->
+    <string name="session">Session</string>
+    <string name="back">Back</string>
+    <string name="nothing_yet">Nothing yet</string>
+    <string name="nothing_yet_body">This session has no messages.</string>
+    <string name="conversation_failed">Could not load the conversation</string>
+    <string name="load_earlier">Load earlier messages</string>
+    <string name="step_count">%1$d steps</string>
+    <string name="running_for">Running for %1$s</string>
+    <string name="completed_in">Completed in %1$s</string>
+    <string name="completed">Completed</string>
+    <string name="unfinished_after">Unfinished after %1$s</string>
+    <string name="unfinished">Unfinished</string>
+    <string name="turn_failed">The turn ended without a response</string>
+    <string name="system_label">system</string>
+
+    <!-- The composer -->
+    <string name="composer_hint">Ask your agent…</string>
+    <string name="send">Send</string>
+    <string name="stop">Stop</string>
+    <string name="model">Model</string>
+    <string name="context">Context</string>
+    <string name="context_percent">Context %1$d%%</string>
+    <!-- The host reported no context figure: an em dash, never 0%. -->
+    <string name="context_unknown">Context —</string>
+    <string name="commands">Commands</string>
+    <string name="command_goal">Goal</string>
+    <string name="command_plan">Plan</string>
+    <string name="command_compact">Compact</string>
+    <string name="command_model">Model</string>
+
+    <!-- Interactions -->
+    <string name="wants_to_run">Wants to run %1$s</string>
+    <string name="reject">Reject</string>
+    <string name="allow_once">Allow once</string>
+    <string name="approve_plan">Approve plan</string>
+    <string name="send_answers">Send answers</string>
+    <string name="or_type_your_own">Or type your own answer</string>
+
+    <!-- Permissions and context -->
+    <string name="permissions">Permissions</string>
+    <string name="permission_note">Applies to this session immediately. A running turn is not interrupted.</string>
+    <string name="allow_full_access">Allow full access</string>
+    <string name="no_context_figure">No context figure yet.</string>
+    <string name="window">Window</string>
+    <string name="pressure">Pressure</string>
+    <string name="projected">Projected</string>
+    <string name="percent_full">Full</string>
+    <string name="system">System</string>
+    <string name="tools">Tools</string>
+    <string name="messages">Messages</string>
+    <string name="unavailable">Unavailable</string>
+    <string name="cancel">Cancel</string>
+</resources>

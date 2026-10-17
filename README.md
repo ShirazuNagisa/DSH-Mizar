@@ -16,6 +16,10 @@ dsh plugin --profile desktop add ShirazuNagisa/DSH-Mizar
 
 ## 二、装 App
 
+两个客户端说同一套协议，选一个装就行。
+
+### iPhone / iPad
+
 App 还没上 TestFlight，暂时要自己编译。
 
 ```sh
@@ -27,6 +31,18 @@ scripts/ios.sh run        # 装进模拟器
 
 **装到真机**：用 Xcode 打开 `iOS/DSH-Mizar.xcodeproj`，在 Signing 里选自己的开发者账号，
 然后选你的设备运行。
+
+### Android
+
+```sh
+cd Android
+./gradlew :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+推送（FCM）是可选的：把 Firebase 的 `google-services.json` 放进 `Android/app/` 并在中继上配好
+FCM 服务账号就会生效，不放也能正常用——只是没有后台通知。构建环境、镜像与已知的平台差异见
+[Android 客户端](docs/android.md)。
 
 ## 三、配对
 
@@ -81,4 +97,4 @@ DSH 启动日志里有 `[mizar] dsh-mizar <版本号> · state: … · devices: 
 
 ---
 
-开发、架构、协议、自建中继：[docs/](docs/)
+开发、架构、协议、自建中继：[docs/](docs/)；Android 端的构建与平台差异：[docs/android.md](docs/android.md)。

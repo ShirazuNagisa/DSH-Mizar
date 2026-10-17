@@ -2,10 +2,10 @@
  * Where a room's phones can be reached.
  *
  * The relay's half of push, and deliberately the smaller half. It knows which
- * tokens belong to which room and how to hand a notification to Apple; it does
- * **not** know what a session is, what an approval is, or when either deserves a
- * notification. That judgement stays on the Mac, in the plugin, where the
- * evidence is.
+ * tokens belong to which room, which service each token belongs to, and how to
+ * hand a notification to Apple or to Google; it does **not** know what a session
+ * is, what an approval is, or when either deserves a notification. That
+ * judgement stays on the Mac, in the plugin, where the evidence is.
  *
  * ### Why the room comes from the credential
  *
@@ -25,12 +25,26 @@
  * @module dsh-mizar-relay/push
  */
 import type { ApnsClient, ApnsEnvironment, ApnsNotification, ApnsResult } from './apns.js'
+import type { FcmClient, FcmNotification, FcmResult } from './fcm.js'
+
+/** Which push service a device's token belongs to. */
+export type PushPlatform = 'ios' | 'android'
 
 /** One device's push endpoint, as its app reported it. */
 export interface PushDevice {
   readonly deviceId: string
   readonly token: string
-  readonly environment: ApnsEnvironment
+  /** Which service the token belongs to, and therefore which client sends it. */
+  readonly platform: PushPlatform
+  /**
+   * Which APNs the token belongs to, for an iOS device.
+   *
+   * `null` for Android, which has one service and one environment: FCM is not
+   * run twice, so there is nothing for a phone to disagree with the relay
+   * about. Kept as a nullable field rather than a second record shape because
+   * everything else about a registration is the same on both platforms.
+   */
+  readonly environment: ApnsEnvironment | null
   readonly locale: string
   readonly registeredAt: number
 }
@@ -57,18 +71,39 @@ export interface PushRequest {
 
 /** What a notify call did. */
 export interface PushOutcome {
-  /** How many devices Apple accepted it for. */
+  /** How many devices the push service accepted it for. */
   readonly sent: number
-  /** How many it refused. */
+  /** How many it refused, or could not be sent to at all. */
   readonly failed: number
   /** How many tokens were retired and forgotten. */
   readonly dropped: number
-  /** Whether this relay has push configured at all. */
+  /** Whether this relay has push configured at all, for either platform. */
   readonly enabled: boolean
 }
 
-/** Longest accepted device token, in characters. */
-const MAX_TOKEN_LENGTH = 200
+/** Longest accepted iOS device token, in characters. APNs tokens are 32 bytes of hex. */
+const MAX_IOS_TOKEN_LENGTH = 200
+
+/** Longest accepted FCM registration token, in characters. They run to ~200 today. */
+const MAX_ANDROID_TOKEN_LENGTH = 400
+
+/**
+ * An APNs token is hex.
+ *
+ * Checking is not paranoia: a token with a slash in it would be interpolated
+ * straight into the APNs request path.
+ */
+const IOS_TOKEN = /^[0-9a-fA-F]+$/
+
+/**
+ * An FCM registration token is not hex.
+ *
+ * It is a long opaque string -- `dGh…:APA91b…` -- containing `:` `-` `_` and
+ * `.`, and it travels in a JSON body rather than a URL path. Bounded and
+ * filtered anyway: nothing about a plausible token needs any other character,
+ * and a body field is still a field somebody else chooses.
+ */
+const ANDROID_TOKEN = /^[A-Za-z0-9_:.\-]+$/
 
 /** Longest accepted device id, in characters. Bounded like a token, and for the same reason. */
 const MAX_DEVICE_ID_LENGTH = 200
@@ -78,6 +113,14 @@ const MAX_DEVICES_PER_ROOM = 16
 
 /**
  * Narrow a registration body.
+ *
+ * The platform decides what a token has to look like and what else is required:
+ * an iOS token is hex and must say which APNs it belongs to, while an Android
+ * registration token is neither hex nor environment-specific. `platform` being
+ * absent means iOS, because that is what every plugin sent before this field
+ * existed -- a relay that insisted on it would stop notifying iPhones on the
+ * day it was deployed, and the app that has to send the new field is the one
+ * that is hardest to update.
  *
  * @param value - the decoded JSON body.
  * @returns the device, or `null` when it is unusable.
@@ -90,13 +133,31 @@ export function readDevice(value: unknown): Omit<PushDevice, 'registeredAt'> | n
   if (typeof deviceId !== 'string' || deviceId === '' || deviceId.length > MAX_DEVICE_ID_LENGTH) {
     return null
   }
-  if (typeof token !== 'string' || token === '' || token.length > MAX_TOKEN_LENGTH) return null
-  // Tokens are hex. Checking is not paranoia: a token with a slash in it would
-  // be interpolated straight into the APNs request path.
-  if (!/^[0-9a-fA-F]+$/.test(token)) return null
+  if (typeof token !== 'string' || token === '') return null
+
+  const platform: PushPlatform = record['platform'] === 'android' ? 'android' : 'ios'
+  if (platform === 'android') {
+    if (token.length > MAX_ANDROID_TOKEN_LENGTH || !ANDROID_TOKEN.test(token)) return null
+    return {
+      deviceId,
+      token,
+      platform,
+      // iOS-only, and not defaulted here: a token has exactly one service, and
+      // storing an environment an Android device does not have would make the
+      // status endpoint say something untrue.
+      environment: null,
+      locale: typeof record['locale'] === 'string' ? record['locale'].slice(0, 32) : 'en',
+    }
+  }
+
+  if (token.length > MAX_IOS_TOKEN_LENGTH || !IOS_TOKEN.test(token)) return null
   return {
     deviceId,
     token,
+    platform,
+    // The safe direction for an unknown value: the production host refuses a
+    // sandbox token loudly, while the sandbox host silently accepts nothing a
+    // real device sent.
     environment: record['environment'] === 'sandbox' ? 'sandbox' : 'production',
     locale: typeof record['locale'] === 'string' ? record['locale'].slice(0, 32) : 'en',
   }
@@ -191,8 +252,8 @@ export class PushRegistry {
   /**
    * Forget every device holding one token.
    *
-   * Used when Apple retires a token: leaving it registered means every future
-   * notification pays a round trip to be told the same thing again.
+   * Used when a push service retires a token: leaving it registered means every
+   * future notification pays a round trip to be told the same thing again.
    *
    * @param room - the room.
    * @param token - the retired token.
@@ -248,7 +309,14 @@ export class PushRegistry {
  * the per-device accounting is unchanged: each send reports its own outcome and
  * the tallies are summed.
  *
- * @param options - the registry, the client and the log.
+ * Two services share that fan-out. A room holds iPhones and Androids at once,
+ * and a relay configured for only one of them must still deliver to the other:
+ * a device whose platform has no client is counted as failed and reported once,
+ * rather than being allowed to fail the whole notification -- an operator who
+ * has not set up FCM yet would otherwise stop reaching their iPhone the moment
+ * an Android phone was paired.
+ *
+ * @param options - the registry, the clients and the log.
  * @param room - the room to notify.
  * @param request - what to say.
  * @returns what happened.
@@ -256,48 +324,74 @@ export class PushRegistry {
 export async function deliver(
   options: {
     readonly registry: PushRegistry
-    readonly client: ApnsClient | null
+    readonly apns: ApnsClient | null
+    readonly fcm: FcmClient | null
     readonly log: (message: string) => void
   },
   room: string,
   request: PushRequest,
 ): Promise<PushOutcome> {
+  const enabled = options.apns !== null || options.fcm !== null
   const devices = options.registry.devices(room)
-  if (options.client === null) {
-    options.log(
-      `push: nothing to send with — ${devices.length} device(s) registered for room ${room} and no APNs key configured`,
-    )
-    return { sent: 0, failed: 0, dropped: 0, enabled: false }
-  }
-  if (devices.length === 0) return { sent: 0, failed: 0, dropped: 0, enabled: true }
+  if (devices.length === 0) return { sent: 0, failed: 0, dropped: 0, enabled }
 
   const excluded = new Set(request.exceptDeviceIds)
-  const client = options.client
   // Each task adds its own result the moment its send settles, and nothing
   // awaits between reading a counter and writing it -- so the tallies need no
   // more coordination than that, and they are the same three numbers the
   // sequential loop kept.
   const tally = { sent: 0, failed: 0, dropped: 0 }
+  /** Devices left behind because their platform has no client. Reported once each. */
+  const unrouted = new Map<PushPlatform, number>()
+
   await Promise.all(
     devices
       .filter((device) => !excluded.has(device.deviceId))
       .map(async (device): Promise<void> => {
-        const notification: ApnsNotification = {
-          deviceToken: device.token,
-          // Each device's own environment, because one room holds phones that
-          // disagree about which Apple minted their token.
-          environment: device.environment,
-          title: request.title,
-          body: request.body,
-          threadId: request.threadId,
-          collapseId: request.collapseId,
-          // An approval or a question is blocking a turn, and the operator waking
-          // up to it late is the same as not being told.
-          urgent: request.kind === 'approval' || request.kind === 'question' || request.timeSensitive,
-          sessionId: request.sessionId,
-          kind: request.kind,
+        // An approval or a question is blocking a turn, and the operator waking
+        // up to it late is the same as not being told.
+        const urgent =
+          request.kind === 'approval' || request.kind === 'question' || request.timeSensitive
+
+        let result: ApnsResult | FcmResult
+        if (device.platform === 'android') {
+          if (options.fcm === null) {
+            unrouted.set('android', (unrouted.get('android') ?? 0) + 1)
+            tally.failed += 1
+            return
+          }
+          const notification: FcmNotification = {
+            deviceToken: device.token,
+            title: request.title,
+            body: request.body,
+            collapseId: request.collapseId,
+            urgent,
+            sessionId: request.sessionId,
+            kind: request.kind,
+          }
+          result = await options.fcm.send(notification)
+        } else {
+          if (options.apns === null) {
+            unrouted.set('ios', (unrouted.get('ios') ?? 0) + 1)
+            tally.failed += 1
+            return
+          }
+          const notification: ApnsNotification = {
+            deviceToken: device.token,
+            // Each device's own environment, because one room holds phones that
+            // disagree about which Apple minted their token.
+            environment: device.environment ?? 'production',
+            title: request.title,
+            body: request.body,
+            threadId: request.threadId,
+            collapseId: request.collapseId,
+            urgent,
+            sessionId: request.sessionId,
+            kind: request.kind,
+          }
+          result = await options.apns.send(notification)
         }
-        const result: ApnsResult = await client.send(notification)
+
         if (result.delivered) {
           tally.sent += 1
           return
@@ -305,7 +399,7 @@ export async function deliver(
         if (result.unregistered) {
           tally.dropped += options.registry.forgetToken(room, device.token)
           options.log(
-            `push: retired token for ${device.deviceId} in room ${room} (${result.status} ${result.reason ?? ''})`.trim(),
+            `push: retired ${device.platform} token for ${device.deviceId} in room ${room} (${result.status} ${result.reason ?? ''})`.trim(),
           )
           return
         }
@@ -316,5 +410,14 @@ export async function deliver(
       }),
   )
 
-  return { ...tally, enabled: true }
+  // Once per platform per notification, not once per device: a relay that has
+  // no FCM credentials and sixteen Android phones must produce one line an
+  // operator can act on, not sixteen.
+  for (const [platform, count] of unrouted) {
+    options.log(
+      `push: ${count} ${platform} device(s) in room ${room} and no ${platform === 'android' ? 'FCM service account' : 'APNs key'} configured — nothing was sent to them`,
+    )
+  }
+
+  return { ...tally, enabled }
 }

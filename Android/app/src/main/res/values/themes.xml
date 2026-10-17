@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Compose draws everything, so the platform theme only has to get out of the way:
+  no action bar, and a background that matches what Compose paints before the
+  first frame lands. The dark variant lives in values-night.
+-->
+<resources>
+    <style name="Theme.DshMizar" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFBFE</item>
+        <item name="android:statusBarColor">#00000000</item>
+        <item name="android:navigationBarColor">#00000000</item>
+    </style>
+</resources>

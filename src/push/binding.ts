@@ -15,12 +15,21 @@
  */
 import type { MizarStore } from '../auth/store.js'
 import type { PushNotifier } from './notifier.js'
-import type { PushRegistration, PushTransport } from './transport.js'
+import type { PushPlatform, PushRegistration, PushTransport } from './transport.js'
 
 /** What a client may report about its push endpoint. */
 export interface PushRegistrationInput {
   readonly token: string
-  readonly environment: 'sandbox' | 'production'
+  /** Which service the token belongs to. */
+  readonly platform: PushPlatform
+  /**
+   * Which APNs environment the token was issued for.
+   *
+   * `null` on Android. The bridge is what enforces that: it reads this field
+   * only for iOS, so an Android client neither has to know about it nor can get
+   * it wrong.
+   */
+  readonly environment: 'sandbox' | 'production' | null
   readonly locale: string
 }
 
@@ -29,7 +38,7 @@ export interface PushBinding {
   /**
    * Record where to reach one device, and tell the relay.
    * @param deviceId - the authenticated device.
-   * @param input - its token and environment.
+   * @param input - its token, platform and environment.
    * @returns whether the device is on the roster.
    */
   register(deviceId: string, input: PushRegistrationInput): Promise<boolean>
@@ -78,6 +87,7 @@ export function createPushBinding(options: PushBindingOptions): PushBinding {
     return {
       deviceId,
       token: push.token,
+      platform: push.platform,
       environment: push.environment,
       locale: push.locale,
     }
@@ -87,6 +97,7 @@ export function createPushBinding(options: PushBindingOptions): PushBinding {
     async register(deviceId, input) {
       const known = await options.store.setDevicePush(deviceId, {
         token: input.token,
+        platform: input.platform,
         environment: input.environment,
         locale: input.locale,
         updatedAt: Date.now(),
@@ -101,13 +112,14 @@ export function createPushBinding(options: PushBindingOptions): PushBinding {
       await options.notifier.register({
         deviceId,
         token: input.token,
+        platform: input.platform,
         environment: input.environment,
         locale: input.locale,
       })
       // Only the first eight characters of the token, which is enough to tell
       // two registrations apart in a log and not enough to be one.
       options.log(
-        `push: ${deviceId} registered (${input.environment}, ${input.locale}) — ${input.token.slice(0, 8)}…`,
+        `push: ${deviceId} registered (${input.platform}, ${input.environment ?? 'no environment'}, ${input.locale}) — ${input.token.slice(0, 8)}…`,
       )
       return true
     },

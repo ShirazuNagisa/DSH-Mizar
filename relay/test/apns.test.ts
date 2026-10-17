@@ -335,6 +335,7 @@ describe('delivery', () => {
     registry.register('room-a', {
       deviceId: 'phone',
       token: 'aa',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'zh-Hans',
     })
@@ -352,7 +353,7 @@ describe('delivery', () => {
     clients.push(client)
 
     const outcome = await deliver(
-      { registry, client, log: () => {} },
+      { registry, apns: client, fcm: null, log: () => {} },
       'room-a',
       {
         kind: 'approval',
@@ -381,18 +382,20 @@ describe('delivery', () => {
     registry.register('room-a', {
       deviceId: 'phone-1',
       token: 'aa',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
     })
     registry.register('room-a', {
       deviceId: 'phone-2',
       token: 'bb',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
     })
     const client = fakeClient(apple, key.pem)
 
-    const outcome = await deliver({ registry, client, log: () => {} }, 'room-a', {
+    const outcome = await deliver({ registry, apns: client, fcm: null, log: () => {} }, 'room-a', {
       kind: 'turn-complete',
       title: 'Task complete',
       body: 'demo',
@@ -424,6 +427,7 @@ describe('delivery', () => {
     registry.register('room-a', {
       deviceId: 'desk-debug-build',
       token: 'aa',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
     })
@@ -435,7 +439,7 @@ describe('delivery', () => {
     })
     const client = fakeClient(apple, key.pem)
 
-    const outcome = await deliver({ registry, client, log: () => {} }, 'room-a', {
+    const outcome = await deliver({ registry, apns: client, fcm: null, log: () => {} }, 'room-a', {
       kind: 'turn-complete',
       title: 'Task complete',
       body: 'demo',
@@ -472,6 +476,7 @@ describe('delivery', () => {
     registry.register('room-a', {
       deviceId: 'phone',
       token: 'aa',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
     })
@@ -482,7 +487,7 @@ describe('delivery', () => {
     clients.push(client)
 
     const outcome = await deliver(
-      { registry, client, log: () => {} },
+      { registry, apns: client, fcm: null, log: () => {} },
       'room-a',
       {
         kind: 'turn-complete',
@@ -592,11 +597,12 @@ describe('delivery', () => {
     registry.register('room-a', {
       deviceId: 'phone',
       token: 'aa',
+      platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
     })
     const lines: string[] = []
-    const outcome = await deliver({ registry, client: null, log: (line) => lines.push(line) }, 'room-a', {
+    const outcome = await deliver({ registry, apns: null, fcm: null, log: (line) => lines.push(line) }, 'room-a', {
       kind: 'turn-complete',
       title: 't',
       body: 'b',
@@ -686,8 +692,8 @@ describe('a provider token Apple will not accept', () => {
 describe('the registry', () => {
   it('keeps rooms apart', () => {
     const registry = new PushRegistry()
-    registry.register('a', { deviceId: 'p1', token: 'aa', environment: 'sandbox', locale: 'en' })
-    registry.register('b', { deviceId: 'p2', token: 'bb', environment: 'sandbox', locale: 'en' })
+    registry.register('a', { deviceId: 'p1', token: 'aa', platform: 'ios', environment: 'sandbox', locale: 'en' })
+    registry.register('b', { deviceId: 'p2', token: 'bb', platform: 'ios', environment: 'sandbox', locale: 'en' })
     expect(registry.devices('a')).toHaveLength(1)
     expect(registry.devices('b')).toHaveLength(1)
     expect(registry.roomCount).toBe(2)
@@ -696,7 +702,7 @@ describe('the registry', () => {
 
   it('replaces a re-registered device rather than accumulating it', () => {
     const registry = new PushRegistry()
-    const device = { deviceId: 'p1', token: 'aa', environment: 'sandbox' as const, locale: 'en' }
+    const device = { deviceId: 'p1', token: 'aa', platform: 'ios' as const, environment: 'sandbox' as const, locale: 'en' }
     registry.register('a', device)
     registry.register('a', { ...device, token: 'bb' })
     expect(registry.devices('a')).toHaveLength(1)
@@ -710,25 +716,26 @@ describe('the registry', () => {
         registry.register('a', {
           deviceId: `p${index}`,
           token: 'aa',
+          platform: 'ios',
           environment: 'sandbox',
           locale: 'en',
         }),
       ).toBe(true)
     }
     expect(
-      registry.register('a', { deviceId: 'p99', token: 'aa', environment: 'sandbox', locale: 'en' }),
+      registry.register('a', { deviceId: 'p99', token: 'aa', platform: 'ios', environment: 'sandbox', locale: 'en' }),
     ).toBe(false)
     // Re-registering an existing device is not a new one.
     expect(
-      registry.register('a', { deviceId: 'p0', token: 'bb', environment: 'sandbox', locale: 'en' }),
+      registry.register('a', { deviceId: 'p0', token: 'bb', platform: 'ios', environment: 'sandbox', locale: 'en' }),
     ).toBe(true)
   })
 
   it('forgets every record holding a retired token', () => {
     const registry = new PushRegistry()
-    registry.register('a', { deviceId: 'p1', token: 'aa', environment: 'sandbox', locale: 'en' })
-    registry.register('a', { deviceId: 'p2', token: 'aa', environment: 'sandbox', locale: 'en' })
-    registry.register('a', { deviceId: 'p3', token: 'bb', environment: 'sandbox', locale: 'en' })
+    registry.register('a', { deviceId: 'p1', token: 'aa', platform: 'ios', environment: 'sandbox', locale: 'en' })
+    registry.register('a', { deviceId: 'p2', token: 'aa', platform: 'ios', environment: 'sandbox', locale: 'en' })
+    registry.register('a', { deviceId: 'p3', token: 'bb', platform: 'ios', environment: 'sandbox', locale: 'en' })
     expect(registry.forgetToken('a', 'aa')).toBe(2)
     expect(registry.devices('a').map((device) => device.deviceId)).toEqual(['p3'])
   })

@@ -15,11 +15,20 @@
  */
 import type { MizarStore } from '../auth/store.js';
 import type { PushNotifier } from './notifier.js';
-import type { PushTransport } from './transport.js';
+import type { PushPlatform, PushTransport } from './transport.js';
 /** What a client may report about its push endpoint. */
 export interface PushRegistrationInput {
     readonly token: string;
-    readonly environment: 'sandbox' | 'production';
+    /** Which service the token belongs to. */
+    readonly platform: PushPlatform;
+    /**
+     * Which APNs environment the token was issued for.
+     *
+     * `null` on Android. The bridge is what enforces that: it reads this field
+     * only for iOS, so an Android client neither has to know about it nor can get
+     * it wrong.
+     */
+    readonly environment: 'sandbox' | 'production' | null;
     readonly locale: string;
 }
 /** What the bridge calls. */
@@ -27,7 +36,7 @@ export interface PushBinding {
     /**
      * Record where to reach one device, and tell the relay.
      * @param deviceId - the authenticated device.
-     * @param input - its token and environment.
+     * @param input - its token, platform and environment.
      * @returns whether the device is on the roster.
      */
     register(deviceId: string, input: PushRegistrationInput): Promise<boolean>;

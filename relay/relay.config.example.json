@@ -15,5 +15,9 @@
     "teamId": "TEAM123456",
     "topic": "me.shirazu.dshmizar",
     "key": "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----\n"
+  },
+  "fcm": {
+    "serviceAccountFile": "/etc/mizar/firebase-service-account.json",
+    "channelId": "mizar"
   }
 }

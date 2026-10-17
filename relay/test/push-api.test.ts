@@ -3,30 +3,39 @@
  *
  * The unit tests cover signing and framing. What they cannot cover is the part
  * that is easy to get quietly wrong: whether the credential identifies the room,
- * whether a token registered by one Mac can be notified by another, and whether
- * a retired token stops being tried. All three are routing facts, and routing
+ * whether a token registered by one Mac can be notified by another, whether a
+ * retired token stops being tried, and whether one room's two platforms are
+ * routed to two different services. All four are routing facts, and routing
  * facts need a server.
  *
  * @module dsh-mizar-relay/test/push-api
  */
-import { createServer, type Http2Server } from 'node:http2'
+import { createServer, type Server } from 'node:http'
+import { createServer as createHttp2Server, type Http2Server } from 'node:http2'
 import { generateKeyPairSync } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { startRelay, type Relay } from '../src/index.js'
 import type { RelayConfig } from '../src/config.js'
+import type { FcmConfig } from '../src/fcm.js'
 import { deriveRoom } from '../src/room.js'
 
 const MAC_A = 'mac-a-tunnel-credential'
 const MAC_B = 'mac-b-tunnel-credential'
 const ROOM_A = deriveRoom(MAC_A)
 
+/** An FCM registration token, which is emphatically not hex. */
+const ANDROID_TOKEN = 'dGhpc2lzOm5vdC1oZXg_APA91b:APA91bF-abc_def'
+
 let relay: Relay | undefined
 let apple: Http2Server | undefined
+let google: Server | undefined
 /** Statuses the fake Apple answers with, consumed in order. */
 let answers: Array<{ status: number; body?: string }> = []
 let received: Array<{ path: string; body: string }> = []
 /** HTTP/2 connections the fake Apple has accepted. */
 let connections = 0
+/** What the fake Google received. */
+let googleReceived: Array<{ path: string; body: string }> = []
 
 afterEach(async () => {
   await relay?.close()
@@ -36,16 +45,22 @@ afterEach(async () => {
     await new Promise<void>((resolve) => closing.close(() => resolve()))
     apple = undefined
   }
+  if (google !== undefined) {
+    const closing = google
+    await new Promise<void>((resolve) => closing.close(() => resolve()))
+    google = undefined
+  }
   answers = []
   received = []
   connections = 0
+  googleReceived = []
 })
 
 /** Start a fake APNs and return the authority to point the relay at. */
 async function startFakeApple(): Promise<string> {
   received = []
   connections = 0
-  const server = createServer()
+  const server = createHttp2Server()
   server.on('session', () => {
     connections += 1
   })
@@ -72,8 +87,55 @@ async function startFakeApple(): Promise<string> {
   return `http://127.0.0.1:${port}`
 }
 
-/** Boot a relay whose APNs points at the fake. */
-async function boot(authority: string | null): Promise<string> {
+/**
+ * Start a fake Google and return the authority to point the relay at.
+ *
+ * One host answers both endpoints, because the client's `authority` override
+ * applies to both -- the same trick the APNs fake uses to collapse two hosts
+ * into one.
+ */
+async function startFakeGoogle(): Promise<string> {
+  googleReceived = []
+  const server = createServer((request, response) => {
+    let body = ''
+    request.setEncoding('utf8')
+    request.on('data', (chunk: string) => {
+      body += chunk
+    })
+    request.on('end', () => {
+      const path = request.url ?? ''
+      googleReceived.push({ path, body })
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(
+        path === '/token'
+          ? JSON.stringify({ access_token: 'ya29.test', expires_in: 3600 })
+          : JSON.stringify({ name: 'projects/mizar-test/messages/1' }),
+      )
+    })
+  })
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      resolve(typeof address === 'object' && address !== null ? address.port : 0)
+    })
+  })
+  google = server
+  return `http://127.0.0.1:${port}`
+}
+
+/** An FCM configuration pointed at a fake Google. */
+function fcmConfig(authority: string): FcmConfig {
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  return {
+    projectId: 'mizar-test',
+    clientEmail: 'relay@mizar-test.iam.gserviceaccount.com',
+    privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+    authority,
+  }
+}
+
+/** Boot a relay whose APNs and FCM point at the fakes. */
+async function boot(authority: string | null, fcm: FcmConfig | null = null): Promise<string> {
   const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' })
   const config: RelayConfig = {
     port: 0,
@@ -98,6 +160,7 @@ async function boot(authority: string | null): Promise<string> {
             production: false,
             authority,
           },
+    fcm,
   }
   relay = await startRelay(config, () => {})
   return `http://127.0.0.1:${relay.port}`
@@ -178,6 +241,59 @@ describe('registering a device', () => {
       environment: 'sandbox',
     })
     expect(reply.status).toBe(400)
+  })
+
+  it('accepts an Android token that is not hex, and only for Android', async () => {
+    const base = await boot(null)
+    // ~150 characters of `:` `-` `_` and dots: what FCM actually issues, and
+    // what the APNs hex rule rejected with a 400 before there was a platform.
+    const android = await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'android-phone',
+      token: ANDROID_TOKEN,
+      platform: 'android',
+    })
+    expect(android.status).toBe(200)
+
+    // The same token for iOS is still refused: a registration token sent to APNs
+    // would be interpolated into a URL path, and the hex rule is what stops that.
+    const ios = await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'iphone',
+      token: ANDROID_TOKEN,
+      platform: 'ios',
+      environment: 'sandbox',
+    })
+    expect(ios.status).toBe(400)
+
+    // And an Android token with a slash is refused whatever it claims to be.
+    const slash = await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'android-phone',
+      token: 'has/a/slash',
+      platform: 'android',
+    })
+    expect(slash.status).toBe(400)
+  })
+
+  it('treats a registration with no platform as iOS, which is what old plugins send', async () => {
+    const base = await boot(null)
+    // The plugin that does not know about `platform` is the one that cannot be
+    // updated as fast as this relay, so the field being absent has to keep
+    // working. Getting this wrong stops notifications to iPhones on deploy day.
+    const reply = await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'iphone',
+      token: 'deadbeef',
+      environment: 'sandbox',
+    })
+    expect(reply.status).toBe(200)
+
+    const status = await fetch(`${base}/push/v1/status`, {
+      headers: { authorization: `Bearer ${MAC_A}` },
+    })
+    const body = (await status.json()) as { devices: Array<Record<string, unknown>> }
+    expect(body.devices[0]).toMatchObject({
+      deviceId: 'iphone',
+      platform: 'ios',
+      environment: 'sandbox',
+    })
   })
 })
 
@@ -264,6 +380,135 @@ describe('notifying a room', () => {
     })
     const statusBody = (await status.json()) as { devices: unknown[] }
     expect(statusBody.devices).toHaveLength(2)
+  })
+
+  it('routes each platform to its own service, in the same room and the same call', async () => {
+    const authority = await startFakeApple()
+    const googleAuthority = await startFakeGoogle()
+    const base = await boot(authority, fcmConfig(googleAuthority))
+    // One room, two phones on two services: an iPhone paired to this Mac and an
+    // Android one. Before `platform` existed the second could not even register.
+    await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'iphone',
+      token: 'deadbeef',
+      environment: 'sandbox',
+    })
+    await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'android-phone',
+      token: ANDROID_TOKEN,
+      platform: 'android',
+    })
+
+    const reply = await post(base, '/push/v1/notify', MAC_A, notification)
+    expect(reply.status).toBe(200)
+    expect(reply.json).toMatchObject({ ok: true, sent: 2, failed: 0, dropped: 0, enabled: true })
+
+    // One framed APNs request addressed by token, and one FCM message with the
+    // registration token in its body.
+    expect(received.map((entry) => entry.path)).toEqual(['/3/device/deadbeef'])
+    const sends = googleReceived.filter((entry) => entry.path !== '/token')
+    expect(sends).toHaveLength(1)
+    expect(sends[0]?.path).toBe('/v1/projects/mizar-test/messages:send')
+    expect(JSON.parse(sends[0]?.body ?? '{}')).toMatchObject({
+      message: { token: ANDROID_TOKEN, notification: { title: '需要你的许可' } },
+    })
+    // A token is never in a URL: the Android one only ever appears in a body.
+    expect(googleReceived.every((entry) => !entry.path.includes(ANDROID_TOKEN))).toBe(true)
+  })
+
+  it('fails only the platform it has no client for, and delivers the other anyway', async () => {
+    const authority = await startFakeApple()
+    const base = await boot(authority)
+    // An Android phone paired to a relay whose operator has not set up FCM. The
+    // iPhone must keep being notified: a room that gains one Android device
+    // cannot lose its notifications.
+    await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'iphone',
+      token: 'deadbeef',
+      environment: 'sandbox',
+    })
+    await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'android-phone',
+      token: ANDROID_TOKEN,
+      platform: 'android',
+    })
+
+    const reply = await post(base, '/push/v1/notify', MAC_A, notification)
+    expect(reply.json).toMatchObject({ sent: 1, failed: 1, dropped: 0, enabled: true })
+    expect(received).toHaveLength(1)
+  })
+
+  it('does the same in the other direction, with only FCM configured', async () => {
+    const googleAuthority = await startFakeGoogle()
+    const base = await boot(null, fcmConfig(googleAuthority))
+    await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'iphone',
+      token: 'deadbeef',
+      environment: 'sandbox',
+    })
+    await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'android-phone',
+      token: ANDROID_TOKEN,
+      platform: 'android',
+    })
+
+    // No APNs key at all, so the iPhone is the one that cannot be reached -- and
+    // `enabled` is still true, because this relay can notify somebody.
+    const reply = await post(base, '/push/v1/notify', MAC_A, notification)
+    expect(reply.json).toMatchObject({ sent: 1, failed: 1, dropped: 0, enabled: true })
+    expect(googleReceived.filter((entry) => entry.path !== '/token')).toHaveLength(1)
+    // The registration is not thrown away over it: the operator may configure
+    // APNs tomorrow and the token is still the one that phone holds.
+    const status = await fetch(`${base}/push/v1/status`, {
+      headers: { authorization: `Bearer ${MAC_A}` },
+    })
+    expect(((await status.json()) as { devices: unknown[] }).devices).toHaveLength(2)
+  })
+
+  it('reports both flags on the health endpoint', async () => {
+    const authority = await startFakeApple()
+    const base = await boot(authority)
+    // `push` stays the either-or flag an operator's existing grep uses; `fcm` is
+    // the new half, and false here is the honest answer.
+    expect(await (await fetch(`${base}/healthz`)).json()).toMatchObject({
+      ok: true,
+      push: true,
+      fcm: false,
+    })
+  })
+
+  it('says fcm is on when it is the only thing configured', async () => {
+    const googleAuthority = await startFakeGoogle()
+    const base = await boot(null, fcmConfig(googleAuthority))
+    expect(await (await fetch(`${base}/healthz`)).json()).toMatchObject({
+      ok: true,
+      push: true,
+      fcm: true,
+    })
+  })
+
+  it('does not leak an Android token through the status endpoint either', async () => {
+    const googleAuthority = await startFakeGoogle()
+    const base = await boot(null, fcmConfig(googleAuthority))
+    await post(base, '/push/v1/register', MAC_A, {
+      deviceId: 'android-phone',
+      token: ANDROID_TOKEN,
+      platform: 'android',
+      locale: 'zh-Hans',
+    })
+
+    const status = await fetch(`${base}/push/v1/status`, {
+      headers: { authorization: `Bearer ${MAC_A}` },
+    })
+    const body = (await status.json()) as { devices: Array<Record<string, unknown>> }
+    expect(body.devices[0]).toMatchObject({
+      deviceId: 'android-phone',
+      platform: 'android',
+      // iOS-only, so `null` rather than a guessed default.
+      environment: null,
+      locale: 'zh-Hans',
+    })
+    expect(JSON.stringify(body)).not.toContain(ANDROID_TOKEN)
   })
 
   it('does not let one Mac notify another Mac\'s phones', async () => {

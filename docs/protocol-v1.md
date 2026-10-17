@@ -170,13 +170,15 @@ if (workspace !== undefined) await workspace.attachSession(sessionId)
 
 | 方法 | payload | 返回 |
 |---|---|---|
-| `push.register` | `token`（APNs 十六进制设备令牌）, `environment`（`sandbox` \| `production`）, `locale?` | `{registered}` |
+| `push.register` | `token`（iOS 的 APNs 十六进制设备令牌，或 Android 的 FCM 注册令牌）, `platform?`（`ios` \| `android`，缺省 `ios`）, `environment`（`sandbox` \| `production`，**仅 iOS 必填**）, `locale?` | `{registered}` |
 | `push.presence` | `foreground`（bool） | `{accepted}` |
 | `push.unregister` | — | `{unregistered}` |
 
 设备 id **永远取自连接本身**，不取自 payload —— 否则任何一个已配对设备都能替别人的手机登记推送令牌。
 
-`environment` 必填，不给默认值：sandbox 签发的令牌发给 production 端点会被 Apple 以 `BadDeviceToken` 拒掉，而这条错误完全不会提到真正的原因。客户端自己知道答案，就别让服务端猜。
+`environment` **只在 `platform` 为 `ios` 时必填**，且不给默认值：sandbox 签发的令牌发给 production 端点会被 Apple 以 `BadDeviceToken` 拒掉，而这条错误完全不会提到真正的原因。客户端自己知道答案，就别让服务端猜。Android 只有一个 FCM 服务，没有这个问题，所以 `platform: 'android'` 时不要求该字段（带了也会被忽略，不会报错）。
+
+`platform` 缺省为 `ios`，这是兼容性的关键：现有 iOS 客户端只发 `{token, environment, locale}`，不认识的字段一律没用，但**少一个字段不能导致注册失败**。只接受 `ios` 和 `android` 两个字面值，其它值（包括 `Android` 这种大小写错误）得到 `MALFORMED_FRAME`，而不是被当成 iOS 静默注册 —— 否则一个客户端 bug 会变成「推送为什么不来」的无声故障。
 
 `push.presence` 和 `push.register` 分开，是因为两者的频率差三个数量级：前者每次切换 App 都会调，后者一次启动一次。合起来意味着每次切前台都要往中继发一次 HTTP。
 

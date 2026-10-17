@@ -821,26 +821,75 @@ unavailable, logs it once, and keeps serving sessions. A relay that refuses to b
 notification key is missing would take the tunnel down with it, and the tunnel is the part that
 matters.
 
-### 10.3 Checking it
+### 10.3 Serving Android phones (FCM)
+
+An Android phone registers a **different kind of token**, and it is not hex: it is a long opaque
+string with `:` `-` and `_` in it. The relay learns which service a token belongs to from the
+`platform` each app sends with its registration — never from the token's shape — and sends each
+device to its own service. The two halves are configured separately and neither needs the other: a
+relay with only `apns` serves iPhones and reports `push: true, fcm: false`, one with only `fcm`
+serves Androids, and one with both serves a room that holds both.
+
+**1. Make a service account.** In the Firebase console: **Project settings → Service accounts →
+Generate new private key**. It downloads one JSON file, and that file is the credential — keep it
+out of the repository. Its `project_id`, `client_email` and `private_key` are the three things the
+relay needs; it mints a short-lived OAuth2 access token from them, so nothing else has to be
+rotated or pasted anywhere.
+
+**2. Configure it** — either point the relay at that file, or give it the fields:
+
+| file key | environment | meaning |
+|---|---|---|
+| `serviceAccount` | `MIZAR_FCM_SERVICE_ACCOUNT` | the whole service-account JSON, inline |
+| `serviceAccountFile` | `MIZAR_FCM_SERVICE_ACCOUNT_FILE` | or a path to the downloaded JSON |
+| `projectId` | `MIZAR_FCM_PROJECT_ID` | the Firebase project; overrides the service account |
+| `clientEmail` | `MIZAR_FCM_CLIENT_EMAIL` | the service account's address |
+| `privateKey` | `MIZAR_FCM_PRIVATE_KEY` | the PEM; `\n` is unescaped for you |
+| `channelId` | `MIZAR_FCM_CHANNEL_ID` | the Android notification channel the app created |
+| `authority` | `MIZAR_FCM_AUTHORITY` | tests only: overrides Google's two origins |
+
+The individual fields win over the service account, and the environment wins over both — the same
+rule the rest of this file follows. Set `channelId` if the app creates one: Android 8 and later
+**silently drop** a notification whose channel id does not exist, which looks exactly like a relay
+that is not sending at all.
+
+**`environment` is an iOS field.** FCM has one service, so an Android device has no APNs environment
+to report: the app sends `{token, platform: 'android', locale}` and the relay records none for it
+(`"environment": null` in the status answer below). `platform` is optional and means `ios` when
+absent, which is what every app build that predates the field sends — an iPhone keeps registering
+unchanged, and `MIZAR_APNS_ENV` keeps its old meaning of doing nothing.
+
+**A relay that cannot reach a platform still serves the other one.** A room with an Android phone and
+no `fcm` configured delivers to the iPhones and counts the Android device as failed, with one line in
+the log naming the missing credential — not one per device, and never a failed notification for the
+phones that could be reached.
+
+**A room's registrations still live in memory.** Nothing about FCM changes that: see 10.6. The Mac
+re-announces every token on every reconnect, so a relay restart — or a config change, which is also a
+restart — re-registers both platforms with nobody touching a phone.
+
+### 10.4 Checking it
 
 ```sh
 curl -s localhost:8787/healthz
-# {"ok":true,"rooms":1,"inFlight":0,"pushDevices":1,"push":true,"version":1}
+# {"ok":true,"rooms":1,"inFlight":0,"pushDevices":1,"push":true,"fcm":false,"version":1}
 ```
 
-`push: true` means a key is loaded; `pushDevices` counts the phones currently registered. And per
-room, with the Mac's own tunnel credential:
+`push: true` means a credential is loaded — it stays the either-or flag an existing grep already
+looks for, so it did not change meaning when FCM arrived — and `fcm` says whether the Google half is
+the one. With `push: true, fcm: false` it is the APNs half. `pushDevices` counts the phones currently
+registered. And per room, with the Mac's own tunnel credential:
 
 ```sh
 curl -s -H "Authorization: Bearer $TOKEN" localhost:8787/push/v1/status
-# {"ok":true,"devices":[{"deviceId":"…","environment":"sandbox","locale":"zh-Hans","registeredAt":…}],"enabled":true}
+# {"ok":true,"devices":[{"deviceId":"…","platform":"ios","environment":"sandbox","locale":"zh-Hans","registeredAt":…}],"enabled":true}
 ```
 
 Device tokens are deliberately **not** in that answer: a diagnostic that leaks credentials is not a
 diagnostic.
 
 The `environment` reported per device is the one its token belongs to, and it is what the relay
-routes that device's notifications through.
+routes that device's notifications through. It is `null` on Android, where there is nothing to route.
 
 A phone appears in `pushDevices` only after its app has been granted permission and told the Mac
 about it — which happens on the launch *after* the operator taps Allow. If the count is zero, the
@@ -848,7 +897,48 @@ permission was refused or the app has not been opened since. Revoking a device f
 it here as well, so a phone the operator has just removed stops being woken immediately rather than at
 the next relay restart.
 
-### 10.4 What gets sent
+**Verifying the Android leg.** `selftest.js` proves the tunnel and does not know about push, so this
+is the same pattern applied to FCM: a throwaway check run on the server, from the directory that
+holds `relay.config.json` (the bundle is ESM, so a `.js` file there is a module, exactly as
+`selftest.js` notes):
+
+```js
+// fcm-check.js — /www/server/nodejs/<version>/bin/node fcm-check.js
+import fs from 'node:fs'
+const config = JSON.parse(fs.readFileSync('relay.config.json', 'utf8'))
+const base = `http://127.0.0.1:${config.port}`
+const auth = { authorization: `Bearer ${config.tokens[0]}`, 'content-type': 'application/json' }
+const post = async (path, body) =>
+  (await fetch(`${base}${path}`, { method: 'POST', headers: auth, body: JSON.stringify(body) })).json()
+const check = (what, ok, detail) =>
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${what}${ok ? '' : ` — ${detail}`}`)
+
+const health = await (await fetch(`${base}/healthz`)).json()
+check('a service account is loaded', health.fcm === true, JSON.stringify(health))
+
+// A token Google has never seen. It is refused as unregistered, which is the
+// answer that proves the assertion, the token exchange and the send all work.
+await post('/push/v1/register', { deviceId: 'fcm-check', token: 'fcm-check-token', platform: 'android' })
+const outcome = await post('/push/v1/notify', { kind: 'approval', title: 'fcm check', body: 'probe' })
+check('FCM answers for an unknown token', outcome.dropped === 1, JSON.stringify(outcome))
+await post('/push/v1/unregister', { deviceId: 'fcm-check' })
+```
+
+Read the relay's log for the line that came with it. `dropped: 1` is the answer you want, and means
+the whole path works — the assertion was signed, Google traded it for an access token, the message was
+sent and the answer was understood. The log line names which refusal it was: `404 UNREGISTERED` for a
+token of the right shape that belongs to nobody, `400 INVALID_ARGUMENT` for one Google cannot parse at
+all. A real phone token is then the only difference.
+
+The other answers mean something else, and none of them is a working deployment. `403
+SENDER_ID_MISMATCH` is the installed app having been built against a different Firebase project than
+the service account. `failed: 1` with `THIRD_PARTY_AUTH_ERROR` is Google refusing the access token it
+minted — usually a service account that is not authorised for Cloud Messaging in that project. A
+`429` or a `5xx` is Google being busy, and the token is kept for the next attempt. And `fcm: false` on
+the first check means the credential was not readable at all: the relay deliberately does not fail
+over that, so the config file is where to look.
+
+### 10.5 What gets sent
 
 Three things, and the list is deliberately short — a notification that arrives for everything is one
 nobody reads.
@@ -874,7 +964,7 @@ the plugin hands that down as a list of devices to leave out — so a second pho
 looked at still receives everything. (It was one global flag first, and an iPad left open on a session
 then silenced the iPhone in somebody's pocket — which is precisely the notification that matters.)
 
-### 10.5 Restarts, and why there is no database
+### 10.6 Restarts, and why there is no database
 
 Registrations live in memory. A room's tokens are a cache of what the Mac already knows, and the Mac
 re-announces all of them every time its tunnel reconnects — which is exactly what happens when this
@@ -882,4 +972,6 @@ process restarts. Persisting them here would be a second copy of a fact that has
 relay that came back with stale tokens would have nothing to correct them with.
 
 A token Apple reports as retired — `410 Unregistered`, or `BadDeviceToken` — is dropped on the spot.
-Retrying it forever turns a misconfiguration into a permanent stream of failed requests.
+So is one Google reports as `404 UNREGISTERED`, or as belonging to another project
+(`SENDER_ID_MISMATCH`). Retrying either forever turns a misconfiguration into a permanent stream of
+failed requests.

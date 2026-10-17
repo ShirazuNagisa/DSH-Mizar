@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Mizar transport is a cleartext WebSocket to an address the operator supplies
+  at pairing time: a LAN address or a relay URL. Android blocks cleartext by
+  default and cannot be told about a host in advance, so it is allowed here for
+  the same reason iOS sets NSAllowsArbitraryLoads (see iOS/DSH-Mizar-Info.plist).
+  The honest fix is TLS on the listener, which is a planned item on the host.
+  Until then the confidentiality comes from the network underneath: WireGuard in
+  the relay case, the local segment in the LAN case.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- Asked for when the operator taps "Scan the code", never at launch. -->
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.DshMizar"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.DshMizar"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- The QR payload doubles as a tappable link, as it does on iOS. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="pair"
+                    android:scheme="mizar" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Firebase Messaging's entry point: the system instantiates this for a message
+          and for a token rotation. Declared unconditionally, and safe that way: with no
+          google-services.json nothing initialises Firebase, so it is never called and
+          the rest of the app is unaffected.
+        -->
+        <service
+            android:name=".push.MizarMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Must match MIZAR_CHANNEL_ID in push/Push.kt: the relay names this channel in
+             every notification it sends, and a notification for a channel that does not
+             exist is silently dropped by the system. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="mizar-alerts" />
+    </application>
+
+</manifest>

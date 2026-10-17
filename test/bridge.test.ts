@@ -566,7 +566,10 @@ describe('method table', () => {
     expect(calls[0]).toEqual([
       'register',
       context.deviceId,
-      { token: 'deadbeef', environment: 'sandbox', locale: 'zh-Hans' },
+      // `platform` is added by the reader rather than by the client: an app
+      // build that predates the field is an iOS one, and defaulting here is what
+      // lets it keep registering unchanged.
+      { token: 'deadbeef', platform: 'ios', environment: 'sandbox', locale: 'zh-Hans' },
     ])
 
     expect(await table['push.presence']?.({ foreground: true }, context)).toEqual({ accepted: true })
@@ -592,6 +595,114 @@ describe('method table', () => {
     await expect(table['push.presence']?.({}, context)).rejects.toMatchObject({
       code: 'MALFORMED_FRAME',
     })
+    // And still required when the client says which platform it is: the rule is
+    // about iOS, and saying so explicitly does not change it.
+    await expect(
+      table['push.register']?.({ token: 'aa', platform: 'ios' }, context),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+  })
+
+  it('takes an Android registration with no environment, and one with', async () => {
+    const { ctx } = fakeContext({})
+    const calls: unknown[] = []
+    const push = {
+      register: async (deviceId: string, input: unknown) => {
+        calls.push(['register', deviceId, input])
+        return true
+      },
+      presence: () => {},
+      unregister: async () => true,
+      republish: async () => 0,
+    }
+    const table = createMethodTable(ctx, facts, new InteractionBroker(), push)
+
+    // An FCM registration token: not hex, and with no APNs environment to give.
+    // Before `platform` existed this payload could not be expressed at all, and
+    // the token itself was refused as malformed by the relay.
+    expect(
+      await table['push.register']?.(
+        { token: 'dGhpc2lzOm5vdC1oZXg_APA91b', platform: 'android' },
+        context,
+      ),
+    ).toEqual({ registered: true })
+    expect(calls[0]).toEqual([
+      'register',
+      context.deviceId,
+      { token: 'dGhpc2lzOm5vdC1oZXg_APA91b', platform: 'android', environment: null, locale: 'en' },
+    ])
+
+    // Android has one service, so a stray environment is dropped rather than
+    // refused: rejecting it would make one client version unable to register for
+    // a reason that cannot be true.
+    expect(
+      await table['push.register']?.(
+        { token: 'dGhpc2lzOm5vdC1oZXg_APA91b', platform: 'android', environment: 'sandbox' },
+        context,
+      ),
+    ).toEqual({ registered: true })
+    expect(calls[1]).toEqual([
+      'register',
+      context.deviceId,
+      { token: 'dGhpc2lzOm5vdC1oZXg_APA91b', platform: 'android', environment: null, locale: 'en' },
+    ])
+  })
+
+  it('defaults a registration with no platform to iOS, exactly as before', async () => {
+    const { ctx } = fakeContext({})
+    const calls: unknown[] = []
+    const table = createMethodTable(ctx, facts, new InteractionBroker(), {
+      register: async (deviceId: string, input: unknown) => {
+        calls.push(['register', deviceId, input])
+        return true
+      },
+      presence: () => {},
+      unregister: async () => true,
+      republish: async () => 0,
+    })
+
+    // What every shipped iOS build sends. Nothing about it may change: this is
+    // the payload the app in somebody's pocket is sending right now.
+    expect(
+      await table['push.register']?.(
+        { token: 'deadbeef', environment: 'sandbox', locale: 'zh-Hans' },
+        context,
+      ),
+    ).toEqual({ registered: true })
+    expect(calls[0]).toEqual([
+      'register',
+      context.deviceId,
+      {
+        token: 'deadbeef',
+        platform: 'ios',
+        environment: 'sandbox',
+        locale: 'zh-Hans',
+      },
+    ])
+  })
+
+  it('refuses a platform it does not know', async () => {
+    const { ctx } = fakeContext({})
+    const table = createMethodTable(ctx, facts, new InteractionBroker(), {
+      register: async () => true,
+      presence: () => {},
+      unregister: async () => true,
+      republish: async () => 0,
+    })
+    // Not treated as iOS: a client that says "windows", or "Android" with the
+    // wrong case, has a bug, and silently registering its token against APNs is
+    // how that bug becomes an unexplained silence.
+    await expect(
+      table['push.register']?.(
+        { token: 'deadbeef', platform: 'windows', environment: 'sandbox' },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+    await expect(
+      table['push.register']?.(
+        { token: 'deadbeef', platform: 'android ', environment: 'sandbox' },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
   })
 
   it('answers push calls cleanly when the host has no push at all', async () => {

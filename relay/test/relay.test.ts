@@ -26,6 +26,7 @@ const config = (overrides: Partial<RelayConfig> = {}): RelayConfig => ({
   tunnelIdleMs: 60_000,
   probePort: 0, // disabled: binding a UDP port per test is noise
   apns: null, // notifications are off unless a case turns them on
+  fcm: null, // and so is the Android half
   ...overrides,
 })
 

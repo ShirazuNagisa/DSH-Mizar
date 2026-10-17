@@ -10,6 +10,7 @@
  */
 import { readFileSync } from 'node:fs'
 import type { ApnsConfig } from './apns.js'
+import type { FcmConfig } from './fcm.js'
 
 /** How the relay is configured. */
 export interface RelayConfig {
@@ -67,6 +68,40 @@ export interface RelayConfig {
    * key on their server should not have to have one.
    */
   readonly apns: ApnsConfig | null
+  /**
+   * How to reach Google, or `null` when this relay does not notify Androids.
+   *
+   * Independent of {@link apns} in both directions: a relay may serve only
+   * iPhones, only Androids, or both, and neither key is required for the
+   * tunnel to work. See {@link readFcm}.
+   */
+  readonly fcm: FcmConfig | null
+}
+
+/**
+ * The `fcm` object as it appears in the config file.
+ *
+ * A superset of {@link FcmConfig}: the file may carry the whole service-account
+ * JSON, either inline or as a path to the downloaded file, which is the shape
+ * a Firebase console actually hands out. The individual fields are for a
+ * deployment that would rather keep them apart -- a container's secret store
+ * usually mounts them that way.
+ */
+export interface FcmFileConfig {
+  /** The service-account JSON, whole, inline. `\n` is unescaped for you. */
+  readonly serviceAccount?: string
+  /** Or a path to the downloaded service-account JSON. */
+  readonly serviceAccountFile?: string
+  /** The Firebase project id, when not read from the service account. */
+  readonly projectId?: string
+  /** The service account's address, when not read from the service account. */
+  readonly clientEmail?: string
+  /** The service account's private key PEM, when not read from the service account. */
+  readonly privateKey?: string
+  /** The Android notification channel the app created. */
+  readonly channelId?: string
+  /** Override Google's origins. Tests only. */
+  readonly authority?: string
 }
 
 /** Where the config file lives unless overridden. */
@@ -121,6 +156,7 @@ export function loadConfig(
     tunnelIdleMs: Number(pick(env['MIZAR_RELAY_TUNNEL_IDLE'], file.tunnelIdleMs, 90_000)),
     probePort: Number(pick(env['MIZAR_RELAY_PROBE_PORT'], file.probePort, 8788)),
     apns: readApns(env, file.apns ?? null),
+    fcm: readFcm(env, (file.fcm ?? null) as FcmFileConfig | null),
   }
 }
 
@@ -177,4 +213,95 @@ function readApns(
       ? { timeSensitive: true }
       : {}),
   }
+}
+
+/**
+ * Resolve the FCM half of the configuration.
+ *
+ * The service account is the awkward part: Firebase hands out a JSON file whose
+ * three interesting fields are exactly the three this client needs, so both
+ * shapes are accepted -- the file (inline or by path) with the fields read out
+ * of it, or the fields on their own, which wins when both are present. The `\n`
+ * unescaping is for the same place it is in {@link readApns}: a PEM pasted into
+ * an environment variable has its newlines written as two characters, and a key
+ * that is nearly right fails at signing time with a message about RSA keys
+ * rather than about the environment.
+ *
+ * Incomplete means `null`, not a startup failure. A relay that refuses to boot
+ * because a notification credential is missing takes the tunnel down with it,
+ * and the tunnel is the part that matters -- a missing or malformed service
+ * account shows up as `"fcm": false` on `/healthz` and one log line per room
+ * notified, rather than as a relay that is not running.
+ *
+ * @param env - the environment.
+ * @param file - the `fcm` object from the config file, when present.
+ * @returns the configuration, or `null` when this relay does not push to Android.
+ */
+function readFcm(env: NodeJS.ProcessEnv, file: FcmFileConfig | null): FcmConfig | null {
+  const pick = <T>(fromEnv: string | undefined, fromFile: T | undefined, fallback: T): T =>
+    fromEnv !== undefined && fromEnv !== '' ? (fromEnv as unknown as T) : (fromFile ?? fallback)
+
+  const inline = pick(env['MIZAR_FCM_SERVICE_ACCOUNT'], file?.serviceAccount, '')
+  const path = pick(env['MIZAR_FCM_SERVICE_ACCOUNT_FILE'], file?.serviceAccountFile, '')
+
+  let account: Record<string, unknown> = {}
+  if (inline !== '') {
+    const parsed = parseServiceAccount(inline)
+    if (parsed === null) return null
+    account = parsed
+  } else if (path !== '') {
+    let text: string
+    try {
+      text = readFileSync(path, 'utf8')
+    } catch {
+      // See the comment above: not configured, not a reason to stop the tunnel.
+      return null
+    }
+    const parsed = parseServiceAccount(text)
+    if (parsed === null) return null
+    account = parsed
+  }
+
+  const projectId = pick(env['MIZAR_FCM_PROJECT_ID'], file?.projectId, text(account, 'project_id'))
+  const clientEmail = pick(env['MIZAR_FCM_CLIENT_EMAIL'], file?.clientEmail, text(account, 'client_email'))
+  const privateKey = pick(
+    env['MIZAR_FCM_PRIVATE_KEY'],
+    file?.privateKey,
+    text(account, 'private_key'),
+  ).replace(/\\n/g, '\n')
+  const channelId = pick(env['MIZAR_FCM_CHANNEL_ID'], file?.channelId, '')
+  const authority = pick(env['MIZAR_FCM_AUTHORITY'], file?.authority, '')
+
+  if (projectId === '' || clientEmail === '' || privateKey === '') return null
+
+  return {
+    projectId,
+    clientEmail,
+    privateKey,
+    ...(channelId === '' ? {} : { channelId }),
+    ...(authority === '' ? {} : { authority }),
+  }
+}
+
+/**
+ * Parse a service-account JSON body.
+ *
+ * No unescaping here: `JSON.parse` already turns the `\n` inside the JSON's
+ * `private_key` string into a real newline, and the one place a doubly-escaped
+ * PEM still needs fixing is {@link readFcm}'s final `replace`, which sees the
+ * extracted key whichever way it arrived.
+ */
+function parseServiceAccount(body: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+/** One string field of a service account, or `''` when it is not a string. */
+function text(account: Record<string, unknown>, key: string): string {
+  const value = account[key]
+  return typeof value === 'string' ? value : ''
 }
