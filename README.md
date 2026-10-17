@@ -192,4 +192,4 @@ DSH 启动日志里有 `[mizar] dsh-mizar <版本号> · state: … · devices: 
 
 ---
 
-协议、架构决策、自建中继：[docs/](docs/)
+协议、架构决策、自建中继、研究记录：[docs/](docs/)
