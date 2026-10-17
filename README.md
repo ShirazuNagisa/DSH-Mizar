@@ -11,13 +11,52 @@
 
 ## 一、装插件
 
+插件在 npm 上叫 **`dsh-mizar`**。命令行和图形界面两种装法，装完都要**重启 DSH** ——
+插件只在启动时加载，不重启等于没装。
+
+### 方式 A：图形界面（不想开终端就用这个）
+
+1. 打开 DSH，左侧栏点 **插件（Plugins）**
+2. 安装输入框里填 **`dsh-mizar`**，点安装
+3. 重启 DSH
+
+安装框同时接受 **npm 包名**（`dsh-mizar`）、**GitHub 地址**（`ShirazuNagisa/DSH-Mizar`）、
+**本地 `.tgz`** 或**目录路径**；装之前它会先把包名、版本、描述报给你确认。
+
+### 方式 B：命令行
+
+```sh
+dsh plugin --profile desktop add dsh-mizar          # npm 正式版
+dsh plugin --profile desktop add dsh-mizar@0.8.2    # 锁定版本
+```
+
+尝鲜（还没发版的提交）用 GitHub 直装：
+
 ```sh
 dsh plugin --profile desktop add ShirazuNagisa/DSH-Mizar
 ```
 
-**然后重启 DSH。** 插件只在启动时加载，不重启等于没装。
+离线 / 内网就传一个 `.tgz` 过去：
+
+```sh
+dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.2.tgz
+```
 
 重启后侧边栏会出现 **DSH-Mizar** 面板。
+
+### 版本必须与 DSH 对齐
+
+DSH 会**精确比对**插件声明的 `@deepseek-ai/dsh-*` 与运行时版本，不匹配时安装会被拒绝：
+
+```
+Plugin dsh-mizar@0.8.2 is incompatible with dsh 0.2.1-rc.2
+```
+
+- 正常做法：升级到匹配的插件版本（DSH 每个 rc 发布后，插件跟一个 `+0.0.1`）；
+- 临时跑起来（**有风险**，只在确认没有 API 变更时用）：
+  ```sh
+  dsh plugin --profile desktop allow-version dsh-mizar@0.8.2 --dsh-version 0.2.1-rc.2 --accept-risk
+  ```
 
 ## 二、配对
 

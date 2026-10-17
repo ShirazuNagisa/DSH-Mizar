@@ -1,7 +1,7 @@
 {
   "name": "dsh-mizar",
   "version": "0.8.2",
-  "description": "Remote monitoring and guidance for DSH agents \u2014 host plugin backing the DSH-Mizar iOS app.",
+  "description": "Remote monitoring and guidance for DSH agents — host plugin backing the DSH-Mizar iOS app.",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -23,7 +23,8 @@
     "build:client": "node client/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm run typecheck && npm test"
   },
   "dsh": {
     "bundle": {
@@ -87,5 +88,18 @@
   "homepage": "https://github.com/ShirazuNagisa/DSH-Mizar#readme",
   "bugs": {
     "url": "https://github.com/ShirazuNagisa/DSH-Mizar/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "remote",
+    "iphone",
+    "ios",
+    "agent"
+  ],
+  "engines": {
+    "node": ">=22"
   }
 }
