@@ -11,38 +11,47 @@
 
 ## 一、装插件
 
-插件在 npm 上叫 **`dsh-mizar`**。命令行和图形界面两种装法，装完都要**重启 DSH** ——
-插件只在启动时加载，不重启等于没装。
+**推荐用 npm 装**:插件已发布到 npm,包名 **`dsh-mizar`**,与当前 DSH 运行时(0.2.1-rc.2)对齐。
+装完都要**重启 DSH** —— 插件只在启动时加载,不重启等于没装。
 
-### 方式 A：图形界面（不想开终端就用这个）
+### 推荐:图形界面(不碰终端)
 
-1. 打开 DSH，左侧栏点 **插件（Plugins）**
-2. 安装输入框里填 **`dsh-mizar`**，点安装
-3. 重启 DSH
+1. 打开 DSH,左侧栏点 **插件(Plugins)**
+2. 安装输入框里填 **`dsh-mizar`**,点安装
+3. 确认它弹出来的包名 / 版本 / 描述
+4. 重启 DSH
 
-安装框同时接受 **npm 包名**（`dsh-mizar`）、**GitHub 地址**（`ShirazuNagisa/DSH-Mizar`）、
-**本地 `.tgz`** 或**目录路径**；装之前它会先把包名、版本、描述报给你确认。
-
-### 方式 B：命令行
+### 推荐:命令行
 
 ```sh
-dsh plugin --profile desktop add dsh-mizar          # npm 正式版
-dsh plugin --profile desktop add dsh-mizar@0.8.2    # 锁定版本
+dsh plugin --profile desktop add dsh-mizar          # 跟随 npm 最新版
+dsh plugin --profile desktop add dsh-mizar@0.8.2    # 锁定某个版本
 ```
 
-尝鲜（还没发版的提交）用 GitHub 直装：
-
-```sh
-dsh plugin --profile desktop add ShirazuNagisa/DSH-Mizar
-```
-
-离线 / 内网就传一个 `.tgz` 过去：
-
-```sh
-dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.2.tgz
-```
+两种装法都会把依赖写成 `dsh-mizar@^x.y.z`。升级只要再跑一次 `add dsh-mizar@latest`。
 
 重启后侧边栏会出现 **DSH-Mizar** 面板。
+
+### 为什么是 npm,而不是 GitHub 直装
+
+| | **npm(推荐)** | GitHub 直装 |
+|---|---|---|
+| 版本 | 有版本号,可锁 `@0.8.2` | 跟随 `main` 最新提交,不可锁 |
+| 可追溯 | `npm view dsh-mizar versions`、`npm outdated` | 只有 commit hash |
+| 完整性 | registry **sha512 校验** | 无包完整性校验 |
+| 前提 | 只要能访问 registry | 需要 git + pnpm 的 git 支持 |
+| 适合 | **所有人** | 只适合尝鲜未发布的提交 |
+
+### 备选:GitHub / 本地 tarball
+
+```sh
+# 尝鲜:装 main 上还没发版的提交
+dsh plugin --profile desktop add ShirazuNagisa/DSH-Mizar
+
+# 离线 / 内网:在有网的机器上 npm pack,再把 .tgz 传过去
+npm pack dsh-mizar
+dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.2.tgz
+```
 
 ### 装不到最新版 / 镜像同步延迟
 
