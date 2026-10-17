@@ -31,6 +31,14 @@ export interface PushRegistrationInput {
    */
   readonly environment: 'sandbox' | 'production' | null
   readonly locale: string
+  /**
+   * The APNs push token of the Live Activity on screen, or `null` when none is.
+   *
+   * `null` clears the stored token rather than leaving it alone: the app omits
+   * the field once its activity is gone, and a token kept past that point is a
+   * credential for ending a countdown that no longer exists.
+   */
+  readonly liveActivityToken: string | null
 }
 
 /** What the bridge calls. */
@@ -90,6 +98,7 @@ export function createPushBinding(options: PushBindingOptions): PushBinding {
       platform: push.platform,
       environment: push.environment,
       locale: push.locale,
+      ...(push.liveActivityToken === undefined ? {} : { liveActivityToken: push.liveActivityToken }),
     }
   }
 
@@ -101,6 +110,9 @@ export function createPushBinding(options: PushBindingOptions): PushBinding {
         environment: input.environment,
         locale: input.locale,
         updatedAt: Date.now(),
+        // Omitted when there is none, which is how `setDevicePush` is told to
+        // clear it: this object is the whole record, not a patch.
+        ...(input.liveActivityToken === null ? {} : { liveActivityToken: input.liveActivityToken }),
       })
       if (!known) {
         // A device that is not on the roster cannot have got here: every method
@@ -115,13 +127,18 @@ export function createPushBinding(options: PushBindingOptions): PushBinding {
         platform: input.platform,
         environment: input.environment,
         locale: input.locale,
+        ...(input.liveActivityToken === null ? {} : { liveActivityToken: input.liveActivityToken }),
       })
+      // Whether a Live Activity token is held, never the token itself: it is a
+      // notification credential, and this log is what support requests quote.
+      const activity =
+        input.liveActivityToken === null ? 'live-activity token: none' : 'live-activity token: held'
       // Only the first eight characters of the token, which is enough to tell
       // two registrations apart in a log and not enough to be one.
       options.log(
         accepted
-          ? `push: ${deviceId} registered (${input.platform}, ${input.environment ?? 'no environment'}, ${input.locale}) — ${input.token.slice(0, 8)}…`
-          : `push: the relay did not take ${deviceId}'s token (${input.platform}, ${input.environment ?? 'no environment'}) — this phone will not be woken`,
+          ? `push: ${deviceId} registered (${input.platform}, ${input.environment ?? 'no environment'}, ${input.locale}) — ${input.token.slice(0, 8)}…, ${activity}`
+          : `push: the relay did not take ${deviceId}'s token (${input.platform}, ${input.environment ?? 'no environment'}) — this phone will not be woken, ${activity}`,
       )
       // The roster keeps the token either way: the relay may be an older build
       // today and accept it after an upgrade, and `republish` hands it over

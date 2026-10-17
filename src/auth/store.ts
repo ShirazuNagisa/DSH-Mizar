@@ -19,7 +19,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, unlink, appendFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { DevicePush, DeviceRecord } from './devices.js'
+import { isLiveActivityToken, type DevicePush, type DeviceRecord } from './devices.js'
 import type { PairingSlot } from './pairing.js'
 
 /** Schema version of the state file. */
@@ -115,6 +115,11 @@ function createState(now: number = Date.now()): MizarState {
  * device re-registers on its next launch, and this file is the wrong place for a
  * recoverable field to become a lockout.
  *
+ * The Live Activity token inside it gets the same treatment one level down: an
+ * unusable one costs the activity, not the endpoint, because a phone that can
+ * still be notified is worth more than one whose corrupt extra field made the
+ * whole registration vanish.
+ *
  * @param value - the candidate.
  * @returns the endpoint, or `null` when it is unusable.
  */
@@ -139,12 +144,19 @@ function parsePush(value: unknown): DevicePush | null {
         platform === 'ios'
         ? 'production'
         : null
+  // Validated on the way in and on the way back out, because this is the copy
+  // the relay is told again after a restart -- a token that rotted in the file
+  // would be re-announced as if it were still a Live Activity.
+  const liveActivityToken = isLiveActivityToken(record['liveActivityToken'])
+    ? record['liveActivityToken']
+    : undefined
   return {
     token: record['token'],
     platform,
     environment,
     locale: record['locale'],
     updatedAt: record['updatedAt'],
+    ...(liveActivityToken === undefined ? {} : { liveActivityToken }),
   }
 }
 

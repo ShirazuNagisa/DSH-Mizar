@@ -19,7 +19,16 @@
  *
  * @module dsh-mizar/protocol/frames
  */
-/** The protocol version this build speaks. */
+/**
+ * The protocol version this build speaks.
+ *
+ * **Adding an optional field to an existing payload is not a version bump**, and
+ * the Live Activity fields (the bridge's `push.register.liveActivityToken`, and
+ * the relay's `endLiveActivity`) are added that way: a peer that does not know a
+ * key leaves it alone, which is what lets a phone update before its host or the
+ * other way round. Changing what an existing field means, renaming one, or
+ * requiring a new one *is* a bump.
+ */
 export declare const PROTOCOL_VERSION = 1;
 /** Path of the authenticated WebSocket endpoint. */
 export declare const WS_PATH = "/mizar/v1/ws";

@@ -88,6 +88,19 @@ export interface PushNotifierOptions {
   readonly log: (message: string) => void
   /** How long a session must be quiet, in milliseconds. */
   readonly settleMs?: number
+  /**
+   * Whether any session the phone would show is still working.
+   *
+   * Asked only when a `turn-complete` notification is about to go out, to decide
+   * whether the relay should end the Live Activity with it. A Live Activity is
+   * the countdown for the work on screen, so while another visible session is
+   * still running ending it would take away the wrong screen.
+   *
+   * Absent when the host cannot answer, and then nothing is ever ended: a
+   * countdown that lingers is wrong, but one that disappears under a running
+   * session is wrong and loses the screen the operator was using.
+   */
+  readonly anySessionRunning?: () => Promise<boolean>
 }
 
 /** One pending announcement about a session that has stopped. */
@@ -167,6 +180,8 @@ export class PushNotifier {
   readonly #foreground = new Set<string>()
   /** Sessions that have stopped and are waiting out the quiet period. */
   readonly #settling = new Map<string, Settling>()
+  /** Whether the one "could not tell whether anything is running" line was logged. */
+  #warnedLiveActivity = false
 
   constructor(options: PushNotifierOptions) {
     this.#options = options
@@ -328,6 +343,11 @@ export class PushNotifier {
   async #announceSettled(sessionId: string, reason: string | null): Promise<void> {
     const session = await this.#describe(sessionId)
     const wording = turnWording(reason, session, languageOf(this.#options.locale()))
+    // Only a turn that finished can be the end of the work, and only when
+    // nothing the phone would show is still going. The app ends its own Live
+    // Activity while it is running; this is that same end for the case the app
+    // cannot cover -- one that arrives while the phone is suspended.
+    const endLiveActivity = await this.#nothingIsRunning()
     await this.#send({
       kind: 'turn-complete',
       title: wording.title,
@@ -338,7 +358,35 @@ export class PushNotifier {
       // the first rather than stacking under it.
       collapseId: `turn-${sessionId}`,
       timeSensitive: false,
+      ...(endLiveActivity ? { endLiveActivity: true } : {}),
     })
+  }
+
+  /**
+   * Whether it is safe to ask the relay to end the Live Activity.
+   *
+   * Defaults to `false` everywhere it cannot tell: no callback, or a callback
+   * that failed. Ending the countdown on a guess would remove the screen a
+   * still-running session owns, which is the one failure the feature must not
+   * have -- leaving it up is only a stale clock.
+   */
+  async #nothingIsRunning(): Promise<boolean> {
+    const check = this.#options.anySessionRunning
+    if (check === undefined) return false
+    try {
+      return (await check()) === false
+    } catch (error) {
+      // Once, not once per announcement: a gateway that is down would otherwise
+      // write a line for every session that finishes for as long as it is down.
+      if (!this.#warnedLiveActivity) {
+        this.#warnedLiveActivity = true
+        const detail = error instanceof Error ? error.message : String(error)
+        this.#options.log(
+          `push: could not tell whether any session is running — leaving the live activity up (${detail})`,
+        )
+      }
+      return false
+    }
   }
 
   /** Name a session, tolerating a host that will not say. */

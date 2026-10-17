@@ -47,6 +47,16 @@ export interface PushRegistration {
      * row that says which language it asked for is one less thing to guess.
      */
     readonly locale: string;
+    /**
+     * The APNs token of the Live Activity currently on screen, when there is one.
+     *
+     * Omitted when no activity is up. The relay keeps it so it can end the
+     * activity from the Mac side, which is the case the app cannot cover: a turn
+     * that finishes while the app is suspended has nobody on the phone to end the
+     * countdown. An older relay ignores the field, exactly as it ignores any other
+     * JSON key it does not know.
+     */
+    readonly liveActivityToken?: string;
 }
 /** One notification. */
 export interface PushMessage {
@@ -78,6 +88,19 @@ export interface PushMessage {
      * has to be there when the app goes away again.
      */
     readonly exceptDeviceIds: readonly string[];
+    /**
+     * Whether the relay should end the Live Activity alongside this notification.
+     *
+     * Only ever set on a `turn-complete` message, and only when the session that
+     * finished was the last one the phone would show still running: an end push
+     * tears the countdown down, so sending it while other work is still going
+     * would take away the screen the operator is waiting on.
+     *
+     * Omitted when false, rather than sent as `false`: an older relay then reads
+     * the body it always did. Only the relay can act on it, so this is a request,
+     * not a promise -- the phones that are asleep are exactly why it exists.
+     */
+    readonly endLiveActivity?: boolean;
 }
 /** Where notifications go. */
 export interface PushTransport {

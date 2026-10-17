@@ -12,6 +12,7 @@
  * @module dsh-mizar/bridge
  */
 import type { Context } from '../dsh.js'
+import { isLiveActivityToken } from '../auth/devices.js'
 import { deliverQuestionAnswers } from './answerers.js'
 import { toMethodError } from './errors.js'
 import {
@@ -125,7 +126,38 @@ function readAnswerBatch(payload: unknown): QuestionAnswerItem[] {
 }
 
 /**
- * Read a `push.register`'s platform and environment.
+ * Read the optional Live Activity token a registration carries.
+ *
+ * Absence is meaningful rather than "no change": the app only sends this while
+ * a Live Activity is up, so a registration without it says none is up now and
+ * the stored token must be cleared. That is why the answer is `string | null`
+ * rather than `string | undefined` -- the binding has to act on the absence.
+ *
+ * A present value is held, not just forwarded, because it has to outlive this
+ * launch: the relay is told again after a reconnect, and the app may be
+ * suspended long before the turn that ends the activity.
+ *
+ * @param record - the registration payload.
+ * @returns the token, or `null` when the app has no Live Activity up.
+ * @throws MethodError when a value is present but is not a usable token.
+ */
+function readLiveActivityToken(record: Record<string, unknown>): string | null {
+  const value = record['liveActivityToken']
+  // Absent, not null and not empty: those are present values that failed the
+  // contract, and a client sending one has a bug worth naming rather than
+  // silently having its activity token cleared.
+  if (value === undefined) return null
+  if (!isLiveActivityToken(value)) {
+    throw new MethodError(
+      'MALFORMED_FRAME',
+      'push.register: payload."liveActivityToken" must be 1-200 lowercase hex characters',
+    )
+  }
+  return value
+}
+
+/**
+ * Read a `push.register`'s platform, environment and Live Activity token.
  *
  * `platform` is optional and means iOS when absent, which is the one thing that
  * makes this change compatible: every app build that exists today sends
@@ -141,13 +173,18 @@ function readAnswerBatch(payload: unknown): QuestionAnswerItem[] {
  * is dropped rather than rejected: FCM has one service and the field is
  * meaningless there.
  *
+ * `liveActivityToken` is likewise iOS-only and optional. An Android client has
+ * no Live Activity to end, so a stray value is dropped rather than refused, for
+ * the same reason a stray environment is.
+ *
  * @param payload - the request payload.
- * @returns the platform, and the environment when there is one.
- * @throws MethodError when either is present but not one of the allowed values.
+ * @returns the platform, the environment and the activity token when there are any.
+ * @throws MethodError when a present field is not one of the allowed values.
  */
 function readRegistration(payload: unknown): {
   platform: 'ios' | 'android'
   environment: 'sandbox' | 'production' | null
+  liveActivityToken: string | null
 } {
   const record = optionalObject(payload, 'push.register')
   const platform = record['platform'] ?? 'ios'
@@ -163,7 +200,7 @@ function readRegistration(payload: unknown): {
     // nothing for an Android client to answer here -- and a client that sends
     // one anyway must still register, because refusing would make a version of
     // the app unable to pair for a reason that cannot be true.
-    return { platform, environment: null }
+    return { platform, environment: null, liveActivityToken: null }
   }
   if (value !== 'sandbox' && value !== 'production') {
     throw new MethodError(
@@ -171,7 +208,7 @@ function readRegistration(payload: unknown): {
       'push.register: payload."environment" must be "sandbox" or "production" for platform "ios"',
     )
   }
-  return { platform, environment: value }
+  return { platform, environment: value, liveActivityToken: readLiveActivityToken(record) }
 }
 
 /**
@@ -356,6 +393,11 @@ export function createMethodTable(
      * notification permission -- so a phone that refused simply never calls it,
      * and nothing needs to model refusal.
      *
+     * The optional `liveActivityToken` is the one field that is *cleared* by
+     * absence. The app sends it while a Live Activity is on screen and omits it
+     * afterwards, so a registration without it is the signal that the countdown
+     * is gone and the stored token must go with it.
+     *
      * Answers `registered: false` rather than failing when the device is not on
      * the roster. That cannot happen through the listener (every method is behind
      * authentication), and a client that met it would have nothing useful to do
@@ -374,6 +416,7 @@ export function createMethodTable(
           platform: registration.platform,
           environment: registration.environment,
           locale: optionalString(payload, 'locale') ?? 'en',
+          liveActivityToken: registration.liveActivityToken,
         }),
       }
     },

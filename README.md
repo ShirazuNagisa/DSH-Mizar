@@ -119,6 +119,11 @@ Plugin dsh-mizar@0.8.2 is incompatible with dsh 0.2.1-rc.2
 **一轮结束不会立刻推。** DSH 里一个指令常常连着跑好几个 turn，每个 turn 都推一次等于一个
 指令三条通知 —— 所以插件会等这个会话安静 15 秒才发。正在看着 App 的时候什么都不发。
 
+**锁屏上的 Live Activity 会跟着结束。** iPhone 把正在跑的会话画在锁屏 / 灵动岛上计时；
+App 被挂起时它自己没机会收尾。所以 App 会把这次活动的推送令牌随注册交给插件，插件存下来、
+转给中继；会话跑完、且手机上还看得到的会话一个都不在跑时，那条「跑完了」的通知会让中继
+顺手结束 Live Activity —— 任务结束后计时不会一直涨。
+
 推送要 Apple 的签名密钥，密钥只能放在服务器上（放在插件里就等于公开）。**用官方中继
 什么都不用做**；自建中继需要配 `apns`，见
 [Relay 仓库的部署文档第 10 节](https://github.com/ShirazuNagisa/DSH-Mizar-Relay/blob/main/docs/deployment.md#10-push-notifications)。

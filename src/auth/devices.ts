@@ -21,6 +21,27 @@ const TOKEN_BYTES = 32
 /** Longest accepted device name, in characters. */
 export const MAX_DEVICE_NAME = 64
 
+/** Longest accepted Live Activity push token, in characters. */
+export const MAX_LIVE_ACTIVITY_TOKEN = 200
+
+/** APNs issues lowercase hex tokens and nothing else. */
+const LIVE_ACTIVITY_TOKEN_PATTERN = new RegExp(`^[0-9a-f]{1,${MAX_LIVE_ACTIVITY_TOKEN}}$`)
+
+/**
+ * Whether a value is an APNs Live Activity push token.
+ *
+ * Lowercase hex, because that is what APNs issues and therefore what the app
+ * reports. The length bound is the wire contract's: wide enough for any token
+ * APNs has ever issued, narrow enough that a stored file cannot be made to hold
+ * an unbounded string.
+ *
+ * @param value - the candidate, normally straight from a client payload or from state.json.
+ * @returns whether it is usable.
+ */
+export function isLiveActivityToken(value: unknown): value is string {
+  return typeof value === 'string' && LIVE_ACTIVITY_TOKEN_PATTERN.test(value)
+}
+
 /** One paired device. */
 export interface DeviceRecord {
   /** Stable identity, generated at pairing time. */
@@ -79,6 +100,18 @@ export interface DevicePush {
   readonly environment: 'sandbox' | 'production' | null
   /** The language the app is running in, so notifications match it. */
   readonly locale: string
+  /**
+   * The APNs push token of the Live Activity currently on screen.
+   *
+   * Not the same token as {@link DevicePush.token}, and not interchangeable: a
+   * Live Activity is addressed by a per-activity token, so an end push sent to
+   * the app's device token would reach the app rather than the activity.
+   *
+   * Absent means no Live Activity is up. That is why registering without it has
+   * to *clear* the stored one rather than leave it alone: a token held past its
+   * activity is a credential for ending a countdown that no longer exists.
+   */
+  readonly liveActivityToken?: string
   /** When the app last told this host where it is. */
   readonly updatedAt: number
 }

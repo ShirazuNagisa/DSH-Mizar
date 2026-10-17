@@ -174,7 +174,7 @@ if (workspace !== undefined) await workspace.attachSession(sessionId)
 
 | 方法 | payload | 返回 |
 |---|---|---|
-| `push.register` | `token`（iOS 的 APNs 十六进制设备令牌，或 Android 的 FCM 注册令牌）, `platform?`（`ios` \| `android`，缺省 `ios`）, `environment`（`sandbox` \| `production`，**仅 iOS 必填**）, `locale?` | `{registered}` |
+| `push.register` | `token`（iOS 的 APNs 十六进制设备令牌，或 Android 的 FCM 注册令牌）, `platform?`（`ios` \| `android`，缺省 `ios`）, `environment`（`sandbox` \| `production`，**仅 iOS 必填**）, `locale?`, `liveActivityToken?`（iOS Live Activity 的 APNs 推送令牌，1–200 位小写十六进制；**不传 = 清掉已存的**） | `{registered}` |
 | `push.presence` | `foreground`（bool） | `{accepted}` |
 | `push.unregister` | — | `{unregistered}` |
 
@@ -183,6 +183,16 @@ if (workspace !== undefined) await workspace.attachSession(sessionId)
 `environment` **只在 `platform` 为 `ios` 时必填**，且不给默认值：sandbox 签发的令牌发给 production 端点会被 Apple 以 `BadDeviceToken` 拒掉，而这条错误完全不会提到真正的原因。客户端自己知道答案，就别让服务端猜。Android 只有一个 FCM 服务，没有这个问题，所以 `platform: 'android'` 时不要求该字段（带了也会被忽略，不会报错）。
 
 `platform` 缺省为 `ios`，这是兼容性的关键：现有 iOS 客户端只发 `{token, environment, locale}`，不认识的字段一律没用，但**少一个字段不能导致注册失败**。只接受 `ios` 和 `android` 两个字面值，其它值（包括 `Android` 这种大小写错误）得到 `MALFORMED_FRAME`，而不是被当成 iOS 静默注册 —— 否则一个客户端 bug 会变成「推送为什么不来」的无声故障。
+
+`liveActivityToken` 是 iOS 锁屏/灵动岛上 **Live Activity** 的 APNs 推送令牌，**1–200 位小写十六进制**。它和 `token` 不是同一个令牌，也不能互换：Live Activity 按活动级令牌寻址，往 App 的设备令牌发结束推送只会到达 App，结束不了那个计时。
+
+**这个字段的"不传"是有含义的**：不传表示"现在没有 Live Activity 在显示"，宿主会**清掉**已存的令牌，而不是保持原样。App 只在活动存在时带这个字段，活动结束后不再带，于是下一次注册就把旧令牌清掉了 —— 留着一个已经不在的活动令牌，等于留着一个结束不存在计时的凭据。令牌存在设备的 push 记录里，所以重启插件后重新注册（`republish`）仍然会把它带给中继。
+
+传了但格式不对（非小写十六进制、空串、超过 200 位、不是字符串）得到 `MALFORMED_FRAME`，不会被静默清掉或忽略：客户端以为自己登记成功、却在 App 挂起后才发现计时停不下来，是最难查的那类故障。`platform: 'android'` 时该字段和 `environment` 一样被丢弃 —— Android 没有 Live Activity 可结束。
+
+宿主把令牌转给中继。某个会话跑完、且**手机上还能看到行的会话一个都不在跑**时，中继那条通知里会多一个 `endLiveActivity: true`，由中继替 App 结束 Live Activity —— 这正是 App 被挂起、自己没机会收尾的那一刻。
+
+`liveActivityToken`（App ↔ 宿主）和 `endLiveActivity`（宿主 ↔ 中继）都是**新增的可选字段，不改变 `PROTOCOL_VERSION`**：JSON 解码方会忽略不认识的键，所以先升 App、先升插件、先升中继都能工作。改已有字段的含义、改名，或把新字段变成必填，才需要升版本。
 
 `push.presence` 和 `push.register` 分开，是因为两者的频率差三个数量级：前者每次切换 App 都会调，后者一次启动一次。合起来意味着每次切前台都要往中继发一次 HTTP。
 

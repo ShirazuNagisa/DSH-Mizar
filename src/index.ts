@@ -16,11 +16,15 @@ import type { Config as MizarConfig } from './config.js'
 import { registerAnswerers } from './bridge/answerers.js'
 import { createMethodTable } from './bridge/index.js'
 import { InteractionBroker } from './bridge/interactions.js'
-import { sessionStats } from './bridge/sessions.js'
+import { listSessions, sessionStats } from './bridge/sessions.js'
 import { registerPanelApi } from './panel/api.js'
 import { createPushBinding } from './push/binding.js'
 import { PushNotifier } from './push/notifier.js'
-import { isNotifiable, type ScopedSessionHeader } from './push/scope.js'
+import {
+  anyNotifiableSessionRunning,
+  isNotifiable,
+  type ScopedSessionHeader,
+} from './push/scope.js'
 import { NoopTransport, RelayTransport, type PushTransport } from './push/transport.js'
 import { MizarStore, resolveMizarHome } from './auth/store.js'
 import {
@@ -83,7 +87,7 @@ const systemLocale = (() => {
  * code in place and every symptom unchanged. One line at boot turns that from a
  * guess into a fact.
  */
-const MIZAR_VERSION = '0.8.2'
+const MIZAR_VERSION = '0.8.3'
 
 /**
  * Services this plugin must observe before it activates.
@@ -231,8 +235,35 @@ async function startListener(
       ? new NoopTransport()
       : new RelayTransport({ baseURL: relayBaseURL, token: tunnelToken, log: report })
 
+  // The question a finished turn has to answer before it may take the Live
+  // Activity down: is anything the phone would show still working? Read through
+  // the same list the app draws its rows from, and filtered by the same rule as
+  // the notification scope, so "idle" means idle on the phone rather than idle
+  // in some other sense.
+  //
+  // A gateway that cannot be read is not evidence that everything stopped: the
+  // failure direction is "still running", because a countdown that lingers is a
+  // wrong clock, while one that vanishes under a running session is a wrong
+  // screen. Reported once -- this runs per notification, and a down gateway
+  // would otherwise write a line every time one finished.
+  let warnedAboutSessionList = false
+  const anySessionRunning = async (): Promise<boolean> => {
+    try {
+      return anyNotifiableSessionRunning((await listSessions(ctx)).items)
+    } catch (error) {
+      if (!warnedAboutSessionList) {
+        warnedAboutSessionList = true
+        report(
+          `push: could not read the session list — leaving the live activity up (${describe(error)})`,
+        )
+      }
+      return true
+    }
+  }
+
   const notifier = new PushNotifier({
     transport: pushTransport,
+    anySessionRunning,
     describeSession: async (sessionId) => {
       try {
         const frame = await sessionStats(ctx, sessionId)

@@ -1,4 +1,4 @@
-import type { DevicePush, DeviceRecord } from './devices.js';
+import { type DevicePush, type DeviceRecord } from './devices.js';
 import type { PairingSlot } from './pairing.js';
 /** Schema version of the state file. */
 export declare const STATE_VERSION = 1;

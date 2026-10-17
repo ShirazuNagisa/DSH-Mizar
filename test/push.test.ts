@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createPushBinding } from '../src/push/binding.js'
 import { languageOf, PushNotifier, turnWording } from '../src/push/notifier.js'
-import { isNotifiable } from '../src/push/scope.js'
+import { anyNotifiableSessionRunning, isNotifiable } from '../src/push/scope.js'
 import {
   NoopTransport,
   RelayTransport,
@@ -72,6 +72,8 @@ function notifier(options: {
   title?: string | null
   settleMs?: number
   describeFails?: boolean
+  anySessionRunning?: () => Promise<boolean>
+  log?: (message: string) => void
 }): PushNotifier {
   return new PushNotifier({
     transport: options.transport,
@@ -80,8 +82,11 @@ function notifier(options: {
       return options.title === undefined ? 'Mock session' : options.title
     },
     locale: () => options.locale ?? 'en',
-    log: () => {},
+    log: options.log ?? (() => {}),
     ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
+    ...(options.anySessionRunning === undefined
+      ? {}
+      : { anySessionRunning: options.anySessionRunning }),
   })
 }
 
@@ -377,6 +382,110 @@ describe('announcing that a session stopped', () => {
   })
 })
 
+describe('ending the Live Activity', () => {
+  it('asks the relay to end it when the finished session was the last one working', async () => {
+    vi.useFakeTimers()
+    const transport = new RecordingTransport()
+    const push = notifier({ transport, settleMs: 10, anySessionRunning: async () => false })
+
+    push.turnEnded('s1', 'completed')
+    await vi.advanceTimersByTimeAsync(10)
+
+    // The whole point: the countdown on the lock screen has to stop when the
+    // work does, and the app that would normally end it is suspended.
+    expect(transport.messages[0]).toMatchObject({ kind: 'turn-complete', endLiveActivity: true })
+  })
+
+  it('leaves it up while another session is still working', async () => {
+    vi.useFakeTimers()
+    const transport = new RecordingTransport()
+    const push = notifier({ transport, settleMs: 10, anySessionRunning: async () => true })
+
+    push.turnEnded('s1', 'completed')
+    await vi.advanceTimersByTimeAsync(10)
+
+    // The phone is showing an island for the work that is still going. Ending
+    // it because one session finished would take away the countdown the
+    // operator is actually watching.
+    expect(transport.messages[0]?.endLiveActivity).toBeUndefined()
+    expect('endLiveActivity' in (transport.messages[0] ?? {})).toBe(false)
+  })
+
+  it('never ends it on an approval or a question', async () => {
+    const transport = new RecordingTransport()
+    let asked = 0
+    const push = notifier({
+      transport,
+      anySessionRunning: async () => {
+        asked += 1
+        return false
+      },
+    })
+
+    // Both mean an agent is blocked rather than finished, so ending a running
+    // countdown here would be a lie about what the phone is showing.
+    await push.approvalNeeded({ sessionId: 's1', toolName: 'bash' })
+    await push.questionAsked({
+      sessionId: 's1',
+      callId: 'call-1',
+      questions: [{ id: 'q1', question: 'Which one?', options: [], multiSelect: false, intent: null }],
+    })
+
+    expect(transport.messages).toHaveLength(2)
+    expect(transport.messages[0]?.endLiveActivity).toBeUndefined()
+    expect(transport.messages[1]?.endLiveActivity).toBeUndefined()
+    // And the check is not even asked: an interaction is not a settle, so
+    // there is nothing to decide.
+    expect(asked).toBe(0)
+  })
+
+  it('does not end it when nothing can say whether a session is running', async () => {
+    vi.useFakeTimers()
+    const transport = new RecordingTransport()
+    // The callback is optional: a host with no session service still notifies.
+    const push = notifier({ transport, settleMs: 10 })
+
+    push.turnEnded('s1', 'completed')
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(transport.messages).toHaveLength(1)
+    expect(transport.messages[0]?.endLiveActivity).toBeUndefined()
+  })
+
+  it('does not end it, and says so once, when the check itself fails', async () => {
+    vi.useFakeTimers()
+    const transport = new RecordingTransport()
+    const lines: string[] = []
+    let checks = 0
+    const push = notifier({
+      transport,
+      settleMs: 10,
+      log: (line) => lines.push(line),
+      anySessionRunning: async () => {
+        checks += 1
+        throw new Error('the gateway did not answer')
+      },
+    })
+
+    // A failed read of the session list is not evidence that everything has
+    // stopped. Leaving the island up is the safe direction: a stale countdown
+    // is wrong, but one that vanishes mid-work is wrong *and* loses the screen
+    // the operator was using to see it.
+    push.turnEnded('s1', 'completed')
+    await vi.advanceTimersByTimeAsync(10)
+    push.turnEnded('s1', 'completed')
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(checks).toBe(2)
+    expect(transport.messages).toHaveLength(2)
+    expect(transport.messages[0]?.endLiveActivity).toBeUndefined()
+    expect(transport.messages[1]?.endLiveActivity).toBeUndefined()
+    // Once, not once per announcement: a gateway that is down would otherwise
+    // write a line for every session that finishes.
+    expect(lines.filter((line) => line.includes('live activity'))).toHaveLength(1)
+  })
+})
+
 describe('the roster', () => {
   let dir = ''
   afterEach(async () => {
@@ -421,6 +530,7 @@ describe('the roster', () => {
         platform: 'ios',
         environment: 'sandbox',
         locale: 'zh-Hans',
+        liveActivityToken: null,
       }),
     ).toBe(true)
     expect(transport.registrations).toHaveLength(1)
@@ -445,6 +555,7 @@ describe('the roster', () => {
         platform: 'ios',
         environment: 'sandbox',
         locale: 'zh-Hans',
+        liveActivityToken: null,
       }),
     ).resolves.toBe(false)
   })
@@ -472,6 +583,7 @@ describe('the roster', () => {
         platform: 'android',
         environment: null,
         locale: 'zh-Hans',
+        liveActivityToken: null,
       }),
     ).toBe(true)
     expect(transport.registrations[0]).toEqual({
@@ -532,6 +644,9 @@ describe('the roster', () => {
       platform: 'ios',
       environment: 'sandbox',
     })
+    // A record from before Live Activities existed holds no activity token,
+    // which is exactly the state of a phone whose app cannot show one.
+    expect(store.state.devices[0]?.push?.liveActivityToken).toBeUndefined()
 
     // And it re-announces with the platform filled in, which is the path a
     // plugin upgrade takes: the relay is told again on the next reconnect.
@@ -548,6 +663,132 @@ describe('the roster', () => {
       platform: 'ios',
       environment: 'sandbox',
     })
+    expect(transport.registrations[0]).not.toHaveProperty('liveActivityToken')
+  })
+
+  it('stores a Live Activity token, clears it when none is up, and never logs it', async () => {
+    const store = await storeWithDevice()
+    const transport = new RecordingTransport()
+    const lines: string[] = []
+    const binding = createPushBinding({
+      store,
+      notifier: notifier({ transport }),
+      transport,
+      log: (line) => lines.push(line),
+    })
+
+    // The token outlives the process: the relay is told again on reconnect, and
+    // a token only held in memory would be lost at the exact moment a restart
+    // is what paused the app.
+    await binding.register('phone-1', {
+      token: 'deadbeef',
+      platform: 'ios',
+      environment: 'sandbox',
+      locale: 'en',
+      liveActivityToken: 'ab12cd34ef',
+    })
+    expect(store.state.devices[0]?.push?.liveActivityToken).toBe('ab12cd34ef')
+    expect(transport.registrations[0]?.liveActivityToken).toBe('ab12cd34ef')
+
+    // The log says whether one is held. It must not say which one: a Live
+    // Activity push token is a notification credential, and this log is read
+    // into support requests.
+    expect(lines.join('\n')).toContain('live-activity token: held')
+    expect(lines.join('\n')).not.toContain('ab12cd34ef')
+
+    // A later registration with no token says the Live Activity is down now:
+    // the stored one is cleared, so a reconnect cannot re-announce a token whose
+    // countdown is already gone.
+    transport.registrations.length = 0
+    await binding.register('phone-1', {
+      token: 'deadbeef',
+      platform: 'ios',
+      environment: 'sandbox',
+      locale: 'en',
+      liveActivityToken: null,
+    })
+    expect(store.state.devices[0]?.push?.liveActivityToken).toBeUndefined()
+    expect(transport.registrations[0]).not.toHaveProperty('liveActivityToken')
+    expect(lines[lines.length - 1]).toContain('live-activity token: none')
+    expect(lines[lines.length - 1]).not.toContain('live-activity token: held')
+
+    // And a reconnect re-announces what is actually stored -- which is nothing,
+    // after the clear.
+    transport.registrations.length = 0
+    expect(await binding.republish()).toBe(1)
+    expect(transport.registrations[0]).not.toHaveProperty('liveActivityToken')
+  })
+
+  it('keeps a Live Activity token across a relaunch, and drops only that field when corrupt', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'mizar-push-'))
+    const store = await MizarStore.open(dir)
+    await store.mutate((state) => ({
+      ...state,
+      devices: [
+        {
+          deviceId: 'phone-1',
+          name: 'iPhone',
+          tokenHash: 'hash',
+          tokenPrefix: 'mz_ab',
+          createdAt: 1,
+          lastSeenAt: 1,
+        },
+      ],
+    }))
+    await store.setDevicePush('phone-1', {
+      token: 'deadbeef',
+      platform: 'ios',
+      environment: 'sandbox',
+      locale: 'en',
+      updatedAt: 2,
+      liveActivityToken: 'ab12cd34ef',
+    })
+
+    // Reopened from disk: the token survives, which is the whole reason it is
+    // stored on the device record rather than kept with the live registration.
+    const reopened = await MizarStore.open(dir)
+    expect(reopened.state.devices[0]?.push?.liveActivityToken).toBe('ab12cd34ef')
+
+    // A corrupt token in the file costs the activity token and nothing else.
+    // Dropping the whole push record would cost notifications; failing the load
+    // would cost the pairing. The app re-registers on its next launch anyway.
+    dir = await mkdtemp(join(tmpdir(), 'mizar-push-'))
+    await writeFile(
+      join(dir, 'state.json'),
+      JSON.stringify({
+        version: 1,
+        hostSecret: 'A'.repeat(43),
+        hostId: '00000000-0000-0000-0000-000000000000',
+        createdAt: 1,
+        pairing: null,
+        devices: [
+          {
+            deviceId: 'phone-1',
+            name: 'iPhone',
+            tokenHash: 'hash',
+            tokenPrefix: 'mz_ab',
+            createdAt: 1,
+            lastSeenAt: 1,
+            push: {
+              token: 'deadbeef',
+              platform: 'ios',
+              environment: 'sandbox',
+              locale: 'en',
+              updatedAt: 2,
+              liveActivityToken: 'NOT-HEX',
+            },
+          },
+        ],
+      }),
+      'utf8',
+    )
+    const recovered = await MizarStore.open(dir)
+    expect(recovered.state.devices[0]?.push).toMatchObject({
+      token: 'deadbeef',
+      platform: 'ios',
+      environment: 'sandbox',
+    })
+    expect(recovered.state.devices[0]?.push?.liveActivityToken).toBeUndefined()
   })
 
   it('refuses a device that is not on the roster', async () => {
@@ -567,6 +808,7 @@ describe('the roster', () => {
         platform: 'ios',
         environment: 'production',
         locale: 'en',
+        liveActivityToken: null,
       }),
     ).toBe(false)
     expect(transport.registrations).toHaveLength(0)
@@ -587,6 +829,7 @@ describe('the roster', () => {
       platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
+      liveActivityToken: null,
     })
     transport.registrations.length = 0
 
@@ -631,6 +874,7 @@ describe('the roster', () => {
       platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
+      liveActivityToken: null,
     })
 
     // A device that was on screen when it unregistered must not keep
@@ -654,6 +898,7 @@ describe('the roster', () => {
       platform: 'ios',
       environment: 'sandbox',
       locale: 'en',
+      liveActivityToken: null,
     })
     transport.registrations.length = 0
 
@@ -746,6 +991,69 @@ describe('the relay transport', () => {
       platform: 'ios',
       environment: 'sandbox',
     })
+    // A registration from an app with no Live Activity sends no activity token,
+    // and the body must not grow one: an old relay reads exactly what it always
+    // did.
+    expect(received[0]?.body).not.toHaveProperty('liveActivityToken')
+  })
+
+  it('carries the Live Activity token and the end flag in the JSON bodies', async () => {
+    const base = await startRelay()
+    const transport = new RelayTransport({ baseURL: base, token: 'mac-secret', log: () => {} })
+
+    await transport.register({
+      deviceId: 'phone-1',
+      token: 'deadbeef',
+      platform: 'ios',
+      environment: 'sandbox',
+      locale: 'en',
+      liveActivityToken: 'ab12cd34ef',
+    })
+    await transport.send({
+      kind: 'turn-complete',
+      title: 't',
+      body: 'b',
+      sessionId: 's1',
+      threadId: 's1',
+      collapseId: 'c',
+      timeSensitive: false,
+      exceptDeviceIds: [],
+      endLiveActivity: true,
+    })
+
+    // Both fields are additive JSON: a relay that does not know them ignores
+    // them, which is what makes this deployable before the relay is updated.
+    expect(received[0]?.body).toMatchObject({
+      deviceId: 'phone-1',
+      liveActivityToken: 'ab12cd34ef',
+    })
+    expect(received[1]?.body).toMatchObject({
+      kind: 'turn-complete',
+      endLiveActivity: true,
+    })
+
+    // And neither is sent when there is nothing to say, rather than sent as
+    // false or null: "no token" and "do not end it" are the existing bodies,
+    // unchanged.
+    await transport.register({
+      deviceId: 'phone-1',
+      token: 'deadbeef',
+      platform: 'ios',
+      environment: 'sandbox',
+      locale: 'en',
+    })
+    await transport.send({
+      kind: 'approval',
+      title: 't',
+      body: 'b',
+      sessionId: 's1',
+      threadId: 's1',
+      collapseId: 'c',
+      timeSensitive: true,
+      exceptDeviceIds: [],
+    })
+    expect(received[2]?.body).not.toHaveProperty('liveActivityToken')
+    expect(received[3]?.body).not.toHaveProperty('endLiveActivity')
   })
 
   it('reports a relay with no push API once, not once per notification', async () => {
@@ -882,5 +1190,37 @@ describe('which sessions a notification may be about', () => {
     expect(isNotifiable({ origin: 'subagent', parentSession: 'session-1' })).toBe(false)
     // A header that is not there at all is not a session to be woken about.
     expect(isNotifiable(undefined)).toBe(false)
+  })
+
+  it('calls the Mac idle only when no session the phone draws a row for is running', () => {
+    // What decides whether a finished turn may end the Live Activity. The same
+    // "would the app show a row" rule as above, over the session list's rows:
+    // a hidden subagent still working does not mean the operator is waiting on
+    // work they can see.
+    const row = (overrides: {
+      running?: boolean
+      origin?: string | null
+      parentSessionId?: string | null
+    } = {}) => ({
+      running: true,
+      origin: null,
+      parentSessionId: null,
+      ...overrides,
+    })
+
+    expect(anyNotifiableSessionRunning([])).toBe(false)
+    expect(anyNotifiableSessionRunning([row({ running: false })])).toBe(false)
+    expect(anyNotifiableSessionRunning([row()])).toBe(true)
+    expect(anyNotifiableSessionRunning([row({ origin: 'subagent' })])).toBe(false)
+    expect(anyNotifiableSessionRunning([row({ parentSessionId: 'session-1' })])).toBe(false)
+    // The interesting case: the visible session has stopped but a hidden child
+    // is still running. The island belongs to the visible work, so it may end.
+    expect(
+      anyNotifiableSessionRunning([row({ running: false }), row({ origin: 'subagent' })]),
+    ).toBe(false)
+    // One visible session still working is enough to keep it up.
+    expect(
+      anyNotifiableSessionRunning([row({ running: false }), row()]),
+    ).toBe(true)
   })
 })

@@ -616,7 +616,13 @@ describe('method table', () => {
       // `platform` is added by the reader rather than by the client: an app
       // build that predates the field is an iOS one, and defaulting here is what
       // lets it keep registering unchanged.
-      { token: 'deadbeef', platform: 'ios', environment: 'sandbox', locale: 'zh-Hans' },
+      {
+        token: 'deadbeef',
+        platform: 'ios',
+        environment: 'sandbox',
+        locale: 'zh-Hans',
+        liveActivityToken: null,
+      },
     ])
 
     expect(await table['push.presence']?.({ foreground: true }, context)).toEqual({ accepted: true })
@@ -675,7 +681,13 @@ describe('method table', () => {
     expect(calls[0]).toEqual([
       'register',
       context.deviceId,
-      { token: 'dGhpc2lzOm5vdC1oZXg_APA91b', platform: 'android', environment: null, locale: 'en' },
+      {
+        token: 'dGhpc2lzOm5vdC1oZXg_APA91b',
+        platform: 'android',
+        environment: null,
+        locale: 'en',
+        liveActivityToken: null,
+      },
     ])
 
     // Android has one service, so a stray environment is dropped rather than
@@ -690,7 +702,13 @@ describe('method table', () => {
     expect(calls[1]).toEqual([
       'register',
       context.deviceId,
-      { token: 'dGhpc2lzOm5vdC1oZXg_APA91b', platform: 'android', environment: null, locale: 'en' },
+      {
+        token: 'dGhpc2lzOm5vdC1oZXg_APA91b',
+        platform: 'android',
+        environment: null,
+        locale: 'en',
+        liveActivityToken: null,
+      },
     ])
   })
 
@@ -723,8 +741,79 @@ describe('method table', () => {
         platform: 'ios',
         environment: 'sandbox',
         locale: 'zh-Hans',
+        liveActivityToken: null,
       },
     ])
+  })
+
+  it('carries a Live Activity token, and reads its absence as "none is up"', async () => {
+    const { ctx } = fakeContext({})
+    const calls: unknown[] = []
+    const table = createMethodTable(ctx, facts, new InteractionBroker(), {
+      register: async (deviceId: string, input: unknown) => {
+        calls.push(['register', deviceId, input])
+        return true
+      },
+      presence: () => {},
+      unregister: async () => true,
+      republish: async () => 0,
+    })
+
+    // An APNs Live Activity push token: lowercase hex, and the only thing that
+    // lets the relay end a countdown which would otherwise tick on after the app
+    // is suspended.
+    expect(
+      await table['push.register']?.(
+        { token: 'deadbeef', environment: 'sandbox', liveActivityToken: 'ab12cd34ef' },
+        context,
+      ),
+    ).toEqual({ registered: true })
+    expect((calls[0] as [string, string, Record<string, unknown>])[2]['liveActivityToken']).toBe(
+      'ab12cd34ef',
+    )
+
+    // Absent is not "nothing changed": it says no Live Activity is up now, so
+    // the stored one must be cleared. `null` is how the binding is told to clear.
+    await table['push.register']?.({ token: 'deadbeef', environment: 'sandbox' }, context)
+    expect((calls[1] as [string, string, Record<string, unknown>])[2]['liveActivityToken']).toBeNull()
+
+    // Android has no Live Activity at all. A stray value is dropped rather than
+    // refused, for the same reason a stray `environment` is: FCM has one service
+    // and nothing to give this field.
+    await table['push.register']?.(
+      { token: 'not-hex-fcm', platform: 'android', liveActivityToken: 'ab12cd34ef' },
+      context,
+    )
+    expect((calls[2] as [string, string, Record<string, unknown>])[2]['liveActivityToken']).toBeNull()
+  })
+
+  it('refuses a Live Activity token that is not lowercase hex of a sane length', async () => {
+    const { ctx } = fakeContext({})
+    const calls: unknown[] = []
+    const table = createMethodTable(ctx, facts, new InteractionBroker(), {
+      register: async (deviceId: string, input: unknown) => {
+        calls.push(['register', deviceId, input])
+        return true
+      },
+      presence: () => {},
+      unregister: async () => true,
+      republish: async () => 0,
+    })
+
+    // Not defaulted and not silently cleared: a client that meant to register a
+    // Live Activity token but got the format wrong would otherwise believe the
+    // countdown can be ended, and find out it cannot only once the app is
+    // suspended. Absence is the one way to say "none is up".
+    for (const value of ['', 'AB12CD', 'ab12zz', 'a'.repeat(201), 42, null]) {
+      await expect(
+        table['push.register']?.(
+          { token: 'deadbeef', environment: 'sandbox', liveActivityToken: value },
+          context,
+        ),
+        `liveActivityToken ${JSON.stringify(value)} was accepted`,
+      ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+    }
+    expect(calls).toHaveLength(0)
   })
 
   it('refuses a platform it does not know', async () => {

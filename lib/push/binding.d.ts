@@ -30,6 +30,14 @@ export interface PushRegistrationInput {
      */
     readonly environment: 'sandbox' | 'production' | null;
     readonly locale: string;
+    /**
+     * The APNs push token of the Live Activity on screen, or `null` when none is.
+     *
+     * `null` clears the stored token rather than leaving it alone: the app omits
+     * the field once its activity is gone, and a token kept past that point is a
+     * credential for ending a countdown that no longer exists.
+     */
+    readonly liveActivityToken: string | null;
 }
 /** What the bridge calls. */
 export interface PushBinding {

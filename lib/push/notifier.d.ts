@@ -62,6 +62,19 @@ export interface PushNotifierOptions {
     readonly log: (message: string) => void;
     /** How long a session must be quiet, in milliseconds. */
     readonly settleMs?: number;
+    /**
+     * Whether any session the phone would show is still working.
+     *
+     * Asked only when a `turn-complete` notification is about to go out, to decide
+     * whether the relay should end the Live Activity with it. A Live Activity is
+     * the countdown for the work on screen, so while another visible session is
+     * still running ending it would take away the wrong screen.
+     *
+     * Absent when the host cannot answer, and then nothing is ever ended: a
+     * countdown that lingers is wrong, but one that disappears under a running
+     * session is wrong and loses the screen the operator was using.
+     */
+    readonly anySessionRunning?: () => Promise<boolean>;
 }
 /**
  * Which language to write a notification in.
