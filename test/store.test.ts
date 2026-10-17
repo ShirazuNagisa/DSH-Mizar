@@ -37,16 +37,26 @@ function stateFile(overrides: Record<string, unknown> = {}): string {
 }
 
 describe('resolveMizarHome', () => {
+  // Expectations are built with `join`, not written out with forward slashes:
+  // the function under test joins with `node:path`, so a hard-coded
+  // `/custom/home/.mizar` is an assertion about the separator the *test runner*
+  // happens to use. On Windows the same call correctly answers
+  // `\custom\home\.mizar`, and the literal version failed for that reason and
+  // no other.
   it('prefers DSH_HOME when set', () => {
-    expect(resolveMizarHome({ DSH_HOME: '/custom/home' }, '/users/x')).toBe('/custom/home/.mizar')
+    expect(resolveMizarHome({ DSH_HOME: '/custom/home' }, '/users/x')).toBe(
+      join('/custom/home', '.mizar'),
+    )
   })
 
   it('falls back to ~/.dsh', () => {
-    expect(resolveMizarHome({}, '/users/x')).toBe('/users/x/.dsh/.mizar')
+    expect(resolveMizarHome({}, '/users/x')).toBe(join('/users/x', '.dsh', '.mizar'))
   })
 
   it('ignores a blank DSH_HOME rather than resolving to a relative path', () => {
-    expect(resolveMizarHome({ DSH_HOME: '   ' }, '/users/x')).toBe('/users/x/.dsh/.mizar')
+    expect(resolveMizarHome({ DSH_HOME: '   ' }, '/users/x')).toBe(
+      join('/users/x', '.dsh', '.mizar'),
+    )
   })
 })
 
@@ -106,6 +116,16 @@ describe('MizarStore', () => {
   it('writes the state file owner-only', async () => {
     await MizarStore.open(dir)
     const info = await stat(join(dir, 'state.json'))
+    if (process.platform === 'win32') {
+      // Node accepts `0o600` on Windows and the filesystem discards it, so the
+      // file reports the default `0o666`. What protects it there is the profile
+      // directory's ACL, which Node cannot read back -- see
+      // docs/windows-status.md, "文件权限模式在 Windows 上是空操作". Asserting
+      // `0o600` here would be asserting a POSIX mechanism on a platform that
+      // does not have it.
+      expect(info.isFile()).toBe(true)
+      return
+    }
     expect(info.mode & 0o777).toBe(0o600)
   })
 
