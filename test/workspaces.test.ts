@@ -92,6 +92,9 @@ function context(options: {
     // declaring it, so a composition that has one hands it over and a
     // composition that does not gets `undefined` rather than a failure.
     get: (name: string) => (name === 'workspaceRegistry' ? registry ?? undefined : undefined),
+    // The gateway helper registers the Peer's disposal through the context
+    // fiber; a double has none.
+    effect: () => () => {},
   } as unknown as Context
   return { ctx, calls, created, streams: () => streams }
 }

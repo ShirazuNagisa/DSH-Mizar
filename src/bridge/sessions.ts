@@ -33,6 +33,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { Context } from '../dsh.js'
+import { invokeRemote, streamRemote } from './invoke.js'
 import { MethodError } from './method-error.js'
 import { buildStatsFrame, STATS_KEYS, type SessionStatsFrame } from './stats.js'
 import { resolveWorkspaceId } from './workspaces.js'
@@ -135,7 +136,7 @@ function toRow(value: unknown): SessionRow | null {
  * @returns the rows.
  */
 export async function listSessions(ctx: Context): Promise<{ items: SessionRow[] }> {
-  const value = (await ctx.typertGateway.invoke({
+  const value = (await invokeRemote(ctx, {
     namespace: 'session',
     method: 'list',
     args: { _request: {} },
@@ -160,7 +161,7 @@ export async function listSessions(ctx: Context): Promise<{ items: SessionRow[] 
  * @returns the frame, or `null` stats when the session is unknown.
  */
 export async function sessionStats(ctx: Context, sessionId: string): Promise<SessionStatsResult> {
-  const value = (await ctx.typertGateway.invoke({
+  const value = (await invokeRemote(ctx, {
     namespace: 'session',
     method: 'projections',
     args: { request: { sessionId } },
@@ -437,7 +438,7 @@ async function followCursor(ctx: Context, sessionId: string): Promise<number | n
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), FOLLOW_TIMEOUT_MS)
   try {
-    const iterable = await ctx.typertGateway.stream({
+    const iterable = await streamRemote(ctx, {
       namespace: 'session',
       method: 'follow',
       args: { request: { address: { kind: 'session', sessionId } } },
@@ -496,7 +497,7 @@ const READ_TIMEOUT_MS = 30_000
  * @returns the cut, or `null` when the session is unknown.
  */
 async function projectionsCut(ctx: Context, sessionId: string): Promise<number | null> {
-  const value = (await ctx.typertGateway.invoke({
+  const value = (await invokeRemote(ctx, {
     namespace: 'session',
     method: 'projections',
     args: { request: { sessionId } },
@@ -542,7 +543,7 @@ export async function sessionMessages(
     return { sessionId, asOfSeq: null, records: [], hasMore: false }
   }
 
-  const value = (await ctx.typertGateway.invoke({
+  const value = (await invokeRemote(ctx, {
     namespace: 'session',
     method: 'page',
     args: {
@@ -646,7 +647,7 @@ export async function createSession(
       ? options.workspaceId
       : ((await resolveWorkspaceId(ctx, options.cwd)) ?? undefined)
 
-  const value = (await ctx.typertGateway.invoke({
+  const value = (await invokeRemote(ctx, {
     namespace: 'session',
     method: 'create',
     args: {
@@ -706,7 +707,7 @@ export async function promptSession(
 ): Promise<PromptResult> {
   const requestId = options.requestId ?? randomUUID()
 
-  await ctx.typertGateway.invoke({
+  await invokeRemote(ctx, {
     namespace: 'session',
     method: 'prompt',
     args: {
@@ -731,7 +732,7 @@ export async function promptSession(
  * @returns the acceptance.
  */
 export async function cancelSession(ctx: Context, sessionId: string): Promise<{ accepted: true }> {
-  await ctx.typertGateway.invoke({
+  await invokeRemote(ctx, {
     namespace: 'session',
     method: 'cancel',
     args: { request: { sessionId } },
@@ -747,7 +748,7 @@ export async function cancelSession(ctx: Context, sessionId: string): Promise<{ 
  * @param title - the new title.
  */
 export async function renameSession(ctx: Context, sessionId: string, title: string): Promise<void> {
-  await ctx.typertGateway.invoke({
+  await invokeRemote(ctx, {
     namespace: 'session',
     method: 'rename',
     args: { request: { sessionId, title } },

@@ -106,7 +106,12 @@ function fakeGateway(script: Script = {}): { ctx: Context; wire: Wire; closed: (
   }
 
   return {
-    ctx: { typertGateway: gateway } as unknown as Context,
+    ctx: {
+      typertGateway: gateway,
+      // The gateway helper registers the Peer's disposal through the context
+      // fiber; a double has none.
+      effect: () => () => {},
+    } as unknown as Context,
     wire: { invokes, streams, signals },
     closed: () => closed,
   }
@@ -275,6 +280,7 @@ describe('the page cut', () => {
         },
         invoke: async () => ({ records: [], hasMore: false }),
       },
+      effect: () => () => {},
     } as unknown as Context
 
     await sessionMessages(ctx, 's1')
@@ -365,6 +371,7 @@ describe('the page cut', () => {
           },
           invoke: async () => ({ asOfSeq: 9, values: {} }),
         },
+        effect: () => () => {},
       } as unknown as Context
 
       const pending = sessionMessages(ctx, 's1')

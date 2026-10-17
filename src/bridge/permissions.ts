@@ -21,6 +21,7 @@
  * @module dsh-mizar/bridge/permissions
  */
 import type { Context } from '../dsh.js'
+import { invokeRemote } from './invoke.js'
 import { MethodError } from './method-error.js'
 
 /** One selectable preset. */
@@ -72,7 +73,7 @@ function toOption(value: unknown): PermissionOption | null {
  * @returns the catalog, normalised.
  */
 export async function permissionCatalog(ctx: Context): Promise<PermissionCatalogView> {
-  const value = (await ctx.typertGateway.invoke({
+  const value = (await invokeRemote(ctx, {
     namespace: 'permissionPresets',
     method: 'catalog',
     args: {},
@@ -115,7 +116,7 @@ export async function setPermissionPreset(
   ctx: Context,
   options: { sessionId: string; preset: string },
 ): Promise<SetPermissionResult> {
-  const value = (await ctx.typertGateway.invoke({
+  const value = (await invokeRemote(ctx, {
     namespace: 'commands',
     method: 'execute',
     args: {

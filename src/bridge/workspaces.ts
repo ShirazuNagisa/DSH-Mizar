@@ -42,6 +42,7 @@
  */
 import type { Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import type { Context } from '../dsh.js'
+import { streamRemote } from './invoke.js'
 
 /** One workspace, as much of it as the phone needs. */
 export interface WorkspaceRow {
@@ -257,7 +258,7 @@ async function listFromStream(ctx: Context): Promise<WorkspaceRow[] | null> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), FOLLOW_TIMEOUT_MS)
   try {
-    const iterable = await ctx.typertGateway.stream({
+    const iterable = await streamRemote(ctx, {
       namespace: 'workspace',
       method: 'follow',
       args: {},

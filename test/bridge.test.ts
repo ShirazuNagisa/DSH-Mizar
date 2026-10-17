@@ -64,6 +64,10 @@ function fakeContext(result: unknown | ((request: Invocation) => unknown)): {
         return typeof result === 'function' ? (result as (r: Invocation) => unknown)(request) : result
       },
     },
+    // The gateway helper registers the Peer's disposal through the context
+    // fiber; a double has none, and the Peer is a process-lifetime singleton
+    // here anyway.
+    effect: () => () => {},
   } as unknown as Context
   return { ctx, calls }
 }
@@ -94,6 +98,7 @@ function streamContext(frames: unknown[], options: { throwOnStream?: boolean } =
         throw new Error('not used')
       },
     },
+    effect: () => () => {},
   } as unknown as Context
 }
 
@@ -542,6 +547,7 @@ describe('method table', () => {
           Object.assign(new Error('busy'), { code: 'session/writer-held' }),
         ),
       },
+      effect: () => () => {},
     } as unknown as Context
     const table = createMethodTable(ctx, facts, new InteractionBroker())
     await expect(
@@ -803,6 +809,7 @@ describe('error propagation end to end', () => {
           Object.assign(new Error('session is busy'), { code: 'session/writer-held' }),
         ),
       },
+      effect: () => () => {},
     } as unknown as Context
 
     // The bridge itself throws the upstream error; the method table's guard is

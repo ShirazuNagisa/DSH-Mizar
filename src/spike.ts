@@ -16,6 +16,7 @@
  * @module dsh-mizar/spike
  */
 import type { Context } from './dsh.js'
+import { invokeRemote, streamRemote } from './bridge/invoke.js'
 import { awaitEndpoints } from './ready.js'
 
 /** Strict endpoints the spike addresses, in `namespace/method` form. */
@@ -119,7 +120,7 @@ export async function runSpike(ctx: Context, workspace: string): Promise<void> {
 
   results.push(
     await probe('typertGateway.invoke session/create', async () => {
-      const value = (await ctx.typertGateway.invoke({
+      const value = (await invokeRemote(ctx, {
         namespace: 'session',
         method: 'create',
         args: { request: { cwd: workspace } },
@@ -133,7 +134,7 @@ export async function runSpike(ctx: Context, workspace: string): Promise<void> {
 
   results.push(
     await probe('typertGateway.invoke session/list', async () => {
-      const value = (await ctx.typertGateway.invoke({
+      const value = (await invokeRemote(ctx, {
         namespace: 'session',
         method: 'list',
         args: { _request: {} },
@@ -146,7 +147,7 @@ export async function runSpike(ctx: Context, workspace: string): Promise<void> {
 
   results.push(
     await probe('typertGateway.invoke session/modelCatalog', async () => {
-      const value = (await ctx.typertGateway.invoke({
+      const value = (await invokeRemote(ctx, {
         namespace: 'session',
         method: 'modelCatalog',
         args: {},
@@ -186,7 +187,7 @@ export async function runSpike(ctx: Context, workspace: string): Promise<void> {
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), 15_000)
         try {
-          const iterable = await ctx.typertGateway.stream({
+          const iterable = await streamRemote(ctx, {
             namespace: 'session',
             method: 'control',
             args: {},

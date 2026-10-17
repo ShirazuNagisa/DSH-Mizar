@@ -11,6 +11,7 @@
  * @module dsh-mizar/bridge/models
  */
 import type { Context } from '../dsh.js'
+import { invokeRemote } from './invoke.js'
 import { MethodError } from './method-error.js'
 
 /** One reasoning level a model accepts. */
@@ -111,7 +112,7 @@ function toModel(value: unknown): ModelOption | null {
  * @returns the catalog, normalised.
  */
 export async function modelCatalog(ctx: Context): Promise<ModelCatalogView> {
-  const value = (await ctx.typertGateway.invoke({
+  const value = (await invokeRemote(ctx, {
     namespace: 'session',
     method: 'modelCatalog',
     args: {},
@@ -188,7 +189,7 @@ export async function selectModel(
   ctx: Context,
   options: { sessionId: string; provider: string; model: string; reasoningEffort?: string },
 ): Promise<SelectModelResult> {
-  const value = (await ctx.typertGateway.invoke({
+  const value = (await invokeRemote(ctx, {
     namespace: 'session',
     method: 'selectModel',
     args: {
