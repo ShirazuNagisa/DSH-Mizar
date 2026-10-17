@@ -2,7 +2,6 @@
   "name": "dsh-mizar",
   "version": "0.8.2",
   "description": "Remote monitoring and guidance for DSH agents — host plugin backing the DSH-Mizar iOS app.",
-  "private": true,
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
