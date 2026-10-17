@@ -44,6 +44,19 @@ dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.2.tgz
 
 重启后侧边栏会出现 **DSH-Mizar** 面板。
 
+### 装不到最新版 / 镜像同步延迟
+
+插件发布在 npm 官方源(`registry.npmjs.org`)。国内镜像(如 `registry.npmmirror.com`)偶尔滞后,
+表现是 `pnpm` 抓到一个旧的或占位版本。两种情况:
+
+- **加 `--registry` 直连官方源**:
+  ```sh
+  dsh plugin --profile desktop add dsh-mizar@0.8.2 --registry=https://registry.npmjs.org
+  ```
+- 或者去 [npmmirror 同步页](https://npmmirror.com/sync/dsh-mizar) 点一次「同步」,等镜像更新。
+
+> GUI 的安装框走的是本机默认 registry;镜像没同步时,用上面的 CLI 命令更稳。
+
 ### 版本必须与 DSH 对齐
 
 DSH 会**精确比对**插件声明的 `@deepseek-ai/dsh-*` 与运行时版本，不匹配时安装会被拒绝：
@@ -99,6 +112,21 @@ Plugin dsh-mizar@0.8.2 is incompatible with dsh 0.2.1-rc.2
 
 推送要 Apple 的签名密钥，密钥只能放在服务器上（放在插件里就等于公开）。**用官方中继
 什么都不用做**；自建中继需要配 `apns`，见 [relay-deployment.md 第 10 节](docs/relay-deployment.md)。
+
+## 四·五、发布(维护者)
+
+```sh
+cd dsh
+npm publish --registry=https://registry.npmjs.org   # publishConfig 已钉好,不加也行
+```
+
+npm 11 起有两条容易卡住的规则:
+
+1. **发布必须 2FA**:`npm config set auth-type legacy` 让验证码在终端里提示(否则会跳浏览器,
+   并可能进入「暂存发布」流程,registry 上先出现一个 `0.0.0-stage` 占位版本);
+2. **暂存版本(`0.0.0-stage`)** 不进正式列表,发现它时用
+   `npm unpublish dsh-mizar@0.0.0-stage --registry=https://registry.npmjs.org` 清掉,
+   避免国内镜像只同步到占位版本。
 
 ## 五、开发
 
