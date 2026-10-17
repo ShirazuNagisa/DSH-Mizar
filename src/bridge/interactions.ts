@@ -30,6 +30,7 @@
  *
  * @module dsh-mizar/bridge/interactions
  */
+import { randomUUID } from 'node:crypto'
 import type { Context } from '../dsh.js'
 import { PROTOCOL_VERSION, type ServerFrame } from '../protocol/frames.js'
 import { MethodError } from './method-error.js'
@@ -523,8 +524,33 @@ export function readApprovalRequest(request: unknown): {
 
 /**
  * Narrow a raw `user-questions/request` event into the broker's input.
+ *
+ * ### The shapes this has to survive
+ *
+ * Measured on a real host, not guessed: the request that reaches this listener is
+ * flat and carries **no call id at all** —
+ *
+ * ```json
+ * { "questions": [ … ], "agent": { "id": "session-…" }, "signal": … }
+ * ```
+ *
+ * so an earlier version of this function, which demanded `wait.callId` (or a
+ * top-level `callId`), returned `null` for every real question. The answerer treats
+ * `null` as "nothing this layer can complete" and delegates, so the batch was never
+ * registered, `interactions.pending` stayed empty, and no client could ever show a
+ * question. Every test passed because the fixtures carried a call id the host does
+ * not send on this path.
+ *
+ * Three shapes are accepted, in this order of preference: the host's own id when it
+ * supplies one (which the *late* answer path keys on, so it must win when present),
+ * a nested `request.callId`, and finally an id minted here.
+ *
+ * A minted id is safe because the id is only an opaque string the client echoes
+ * back: the broker registers its handle under it and `question.answer` settles that
+ * same handle. It is prefixed so a log makes clear which ids came from the host.
+ *
  * @param request - the Cordis event payload.
- * @returns the narrowed input, or `null` when it carries no usable call id.
+ * @returns the narrowed input, or `null` when there is nothing answerable in it.
  */
 export function readQuestionRequest(request: unknown): {
   sessionId: string | null
@@ -532,21 +558,31 @@ export function readQuestionRequest(request: unknown): {
   questions: QuestionItem[]
 } | null {
   const record = (typeof request === 'object' && request !== null ? request : {}) as Record<string, unknown>
-  const agent = record['agent'] as { id?: unknown } | undefined
+  // Some paths nest the real request (`ask({ request, wait })`); accept that too
+  // rather than fall back to `null` for a shape that merely moved.
+  const inner = (
+    typeof record['request'] === 'object' && record['request'] !== null ? record['request'] : {}
+  ) as Record<string, unknown>
+
+  const agent = (record['agent'] ?? inner['agent']) as { id?: unknown } | undefined
   const sessionId = typeof agent?.id === 'string' ? agent.id : null
 
   const wait = record['wait'] as { callId?: unknown } | undefined
-  const callId =
-    typeof wait?.callId === 'string'
+  const supplied =
+    typeof wait?.callId === 'string' && wait.callId !== ''
       ? wait.callId
-      : typeof record['callId'] === 'string'
+      : typeof record['callId'] === 'string' && record['callId'] !== ''
         ? record['callId']
-        : undefined
-  // Without a call id the answer could never be routed back, and the late-answer
-  // path keys on it too, so there is nothing useful to do with the request.
-  if (callId === undefined) return null
+        : typeof inner['callId'] === 'string' && inner['callId'] !== ''
+          ? inner['callId']
+          : undefined
+  const callId = supplied ?? `mizar-${randomUUID()}`
 
-  const rawQuestions = Array.isArray(record['questions']) ? (record['questions'] as unknown[]) : []
+  const rawQuestions = Array.isArray(record['questions'])
+    ? (record['questions'] as unknown[])
+    : Array.isArray(inner['questions'])
+      ? (inner['questions'] as unknown[])
+      : []
   const questions: QuestionItem[] = rawQuestions
     .map((entry): QuestionItem | null => {
       if (typeof entry !== 'object' || entry === null) return null

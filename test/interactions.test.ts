@@ -121,8 +121,39 @@ describe('readQuestionRequest', () => {
     expect(input?.questions[0]?.options).toEqual([{ label: 'a' }])
   })
 
-  it('returns null when there is no call id, because nothing could be routed back', () => {
-    expect(readQuestionRequest({ ...base, wait: undefined })).toBeNull()
+  it('mints a call id when the host sends none, which is what a real host does', () => {
+    // Captured from a live host, not invented: the request that reaches this
+    // listener is flat and carries no call id anywhere. An earlier version demanded
+    // one, returned null, and the answerer delegated — so the batch never reached
+    // the broker and no client could show a question. Only the fixtures had a call
+    // id, which is why every test passed while the phone never saw one.
+    const input = readQuestionRequest({
+      questions: [{ id: 'approval_test', header: '确认', question: '要现在写吗？' }],
+      agent: { id: 'session-0adc3935' },
+      signal: undefined,
+    })
+    expect(input).not.toBeNull()
+    expect(input?.sessionId).toBe('session-0adc3935')
+    expect(input?.questions).toHaveLength(1)
+    expect(input?.callId).toBeTruthy()
+    // Prefixed, so a log makes clear which ids came from the host.
+    expect(input?.callId.startsWith('mizar-')).toBe(true)
+  })
+
+  it("prefers the host's own call id when it supplies one", () => {
+    // The late-answer path keys on the host's id, so a supplied id must win over a
+    // minted one.
+    expect(readQuestionRequest(base)?.callId).toBe('call-1')
+    // A nested `ask({ request, wait })` shape is accepted too.
+    expect(
+      readQuestionRequest({
+        request: { questions: [{ id: 'q1', question: 'x' }], agent: { id: 's1' } },
+        wait: { callId: 'call-2' },
+      })?.callId,
+    ).toBe('call-2')
+    expect(
+      readQuestionRequest({ request: { questions: [{ id: 'q1', question: 'x' }], callId: 'call-3' } })?.callId,
+    ).toBe('call-3')
   })
 
   it('returns null when there are no usable questions', () => {
@@ -457,20 +488,32 @@ describe('registerAnswerers', () => {
     expect(broker.listQuestions()).toHaveLength(0)
   })
 
-  it('delegates a question batch with no call id rather than claiming it', async () => {
+  it('claims a batch the host sent without a call id, so a client can answer it', async () => {
     const { ctx, registered } = fakeContext()
     const broker = new InteractionBroker()
     broker.setSender(() => {})
     broker.setClientCount(1)
     registerAnswerers(ctx, broker)
 
-    const outcome = await invoke(
+    // The live shape. This used to be delegated as unanswerable, which is exactly
+    // why the phone never saw a real question.
+    const pending = invoke(
       registered,
       'user-questions/request',
-      { questions: [{ id: 'q1', question: 'x' }] },
-      async () => ({ answers: [{ id: 'q1', selected: [] }] }),
+      { questions: [{ id: 'q1', question: 'x' }], agent: { id: 'session-1' }, signal: undefined },
+      // `next()` is still raced -- that is the design -- but it answers nothing
+      // here, which is what the terminal answerer does.
+      async () => ({}),
     )
-    expect(outcome).toEqual({ answers: [{ id: 'q1', selected: [] }] })
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    const [view] = broker.listQuestions()
+    expect(view?.sessionId).toBe('session-1')
+    expect(view?.callId).toBeTruthy()
+
+    broker.answerQuestion(view!.callId, [{ id: 'q1', selected: ['a'] }])
+    expect(await pending).toEqual({ answers: [{ id: 'q1', selected: ['a'] }] })
   })
 
   it('does not let an empty delegated answer preempt the phone', async () => {

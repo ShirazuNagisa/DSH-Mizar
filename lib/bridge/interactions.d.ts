@@ -1,35 +1,3 @@
-/**
- * Approval and question brokering.
- *
- * These are the two interactions that make remote *guidance* possible: an agent
- * that stops to ask permission, and an agent that stops to ask a question. Both
- * are Cordis **waterfall** events on the host, and both are already answered by
- * whatever else is composed — the desktop GUI, through the forwarded `$events`
- * source, and the built-in terminal answerer.
- *
- * ### Why this registers with `prepend: true`
- *
- * A waterfall runs its listeners outermost-first and stops at the first one that
- * does not call `next()`. Registration order is mount order, and this plugin
- * mounts *after* the API layer, so a plainly registered listener would only ever
- * run when nobody else claimed the request — which, with the desktop GUI open,
- * is never. The phone would silently never see an approval. Prepending puts the
- * phone in the race as a peer rather than as a last resort.
- *
- * ### Why `next()` is raced rather than awaited
- *
- * The waterfall's terminal `next()` returns the event's built-in behaviour,
- * which for both of these is "nobody is answering" — `unavailable` for an
- * approval. Racing that directly would resolve instantly and the phone could
- * never answer. So the delegated outcome is treated as *a claim only when it is
- * a real answer*, and `unavailable` is read as "the rest of the chain declined",
- * leaving the phone's question outstanding.
- *
- * The result is the documented multi-client semantic: every channel is asked at
- * once and the first real answer wins.
- *
- * @module dsh-mizar/bridge/interactions
- */
 import type { Context } from '../dsh.js';
 import { type ServerFrame } from '../protocol/frames.js';
 /** Outcomes a client may choose for an approval. */
@@ -202,8 +170,33 @@ export declare function readApprovalRequest(request: unknown): {
 };
 /**
  * Narrow a raw `user-questions/request` event into the broker's input.
+ *
+ * ### The shapes this has to survive
+ *
+ * Measured on a real host, not guessed: the request that reaches this listener is
+ * flat and carries **no call id at all** —
+ *
+ * ```json
+ * { "questions": [ … ], "agent": { "id": "session-…" }, "signal": … }
+ * ```
+ *
+ * so an earlier version of this function, which demanded `wait.callId` (or a
+ * top-level `callId`), returned `null` for every real question. The answerer treats
+ * `null` as "nothing this layer can complete" and delegates, so the batch was never
+ * registered, `interactions.pending` stayed empty, and no client could ever show a
+ * question. Every test passed because the fixtures carried a call id the host does
+ * not send on this path.
+ *
+ * Three shapes are accepted, in this order of preference: the host's own id when it
+ * supplies one (which the *late* answer path keys on, so it must win when present),
+ * a nested `request.callId`, and finally an id minted here.
+ *
+ * A minted id is safe because the id is only an opaque string the client echoes
+ * back: the broker registers its handle under it and `question.answer` settles that
+ * same handle. It is prefixed so a log makes clear which ids came from the host.
+ *
  * @param request - the Cordis event payload.
- * @returns the narrowed input, or `null` when it carries no usable call id.
+ * @returns the narrowed input, or `null` when there is nothing answerable in it.
  */
 export declare function readQuestionRequest(request: unknown): {
     sessionId: string | null;

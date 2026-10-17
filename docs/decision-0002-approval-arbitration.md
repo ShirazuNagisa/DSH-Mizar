@@ -106,3 +106,17 @@ reports it as `continued`. So a dropped question is not lost.
   being forwarded. DSH rejects a whole reply that does not name each question
   exactly once, so catching it locally avoids discarding an answer the operator
   already committed to.
+
+## 真实载荷形状（真机实测，2026-10-17）
+
+- `approval/request`：`{ agent, toolName, callId, reason, displayReason: { en, zh }, signal }` —— **带 `callId`**。
+- `user-questions/request`：`{ questions, agent, signal }` —— **扁平，且没有 `callId`，也没有 `wait`**。
+
+第二点是这次真机才发现的：`readQuestionRequest` 原先要求 `wait.callId`/`callId`，于是对真实载荷返回
+`null`，answerer 静默 `next()` 委托，桥接永不登记 —— mock 与 fixture 都带 callId，所以测试全绿而手机
+永远看不到真实提问。现在接受扁平形状，宿主没给 id 时由插件 mint 一个 `mizar-<uuid>`：这个 id 只是客户端
+回传用的不透明键，broker 按它登记句柄、`question.answer` 按它结算；宿主如果真的给了 `wait.callId`
+（计时/迟到路径）则优先用宿主的。
+
+还有一条与测试方式有关的规则：**客户端数掉到 0 就会把挂起提问结算为空**（fail-closed）。所以验收期间
+任何一端重启都会撤掉那条提问 —— 真机测试要全程保持至少一个客户端连着。
