@@ -120,7 +120,8 @@ Plugin dsh-mizar@0.8.2 is incompatible with dsh 0.2.1-rc.2
 指令三条通知 —— 所以插件会等这个会话安静 15 秒才发。正在看着 App 的时候什么都不发。
 
 推送要 Apple 的签名密钥，密钥只能放在服务器上（放在插件里就等于公开）。**用官方中继
-什么都不用做**；自建中继需要配 `apns`，见 [relay-deployment.md 第 10 节](docs/relay-deployment.md)。
+什么都不用做**；自建中继需要配 `apns`，见
+[Relay 仓库的部署文档第 10 节](https://github.com/ShirazuNagisa/DSH-Mizar-Relay/blob/main/docs/deployment.md#10-push-notifications)。
 
 ## 四·五、发布(维护者)
 
