@@ -16,14 +16,29 @@
  */
 /** What a notification is about. */
 export type PushKind = 'approval' | 'question' | 'turn-complete';
+/** Which push service a device's token belongs to. */
+export type PushPlatform = 'ios' | 'android';
 /** One device's push endpoint, as the phone reported it. */
 export interface PushRegistration {
     /** The paired device this token belongs to. */
     readonly deviceId: string;
-    /** The APNs device token, hex, as `didRegisterForRemoteNotificationsWithDeviceToken` gave it. */
+    /**
+     * The device token, as the phone's platform gave it.
+     *
+     * Hex for iOS, and not remotely hex for Android -- which is why the platform
+     * travels with it rather than being guessed from the token's shape.
+     */
     readonly token: string;
-    /** Which APNs environment the token was issued for. They are not interchangeable. */
-    readonly environment: 'sandbox' | 'production';
+    /** Which service this token belongs to, and therefore where it is sent. */
+    readonly platform: PushPlatform;
+    /**
+     * Which APNs environment the token was issued for. They are not
+     * interchangeable.
+     *
+     * `null` on Android, where there is one service rather than two, and the
+     * question does not arise.
+     */
+    readonly environment: 'sandbox' | 'production' | null;
     /**
      * The language the notification should be written in.
      *

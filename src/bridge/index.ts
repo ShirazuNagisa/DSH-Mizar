@@ -125,27 +125,53 @@ function readAnswerBatch(payload: unknown): QuestionAnswerItem[] {
 }
 
 /**
- * Read the APNs environment off a `push.register`.
+ * Read a `push.register`'s platform and environment.
  *
- * Required rather than defaulted. A token minted for the sandbox is rejected by
- * the production endpoint with `BadDeviceToken`, which says nothing about the
- * real mistake -- so guessing here turns a clear client bug into an unexplained
- * silence, and the client always knows the answer.
+ * `platform` is optional and means iOS when absent, which is the one thing that
+ * makes this change compatible: every app build that exists today sends
+ * `{token, environment, locale}` and none of them can be made to send a new
+ * field before the relay and the plugin know what to do with it.
+ *
+ * `environment` is required for iOS and ignored for Android. Required rather
+ * than defaulted, and for the reason it always was: a token minted for the
+ * sandbox is rejected by the production endpoint with `BadDeviceToken`, which
+ * says nothing about the real mistake -- so guessing here turns a clear client
+ * bug into an unexplained silence, and the client always knows the answer. An
+ * Android client has no answer to give, so it is not asked, and a stray value
+ * is dropped rather than rejected: FCM has one service and the field is
+ * meaningless there.
  *
  * @param payload - the request payload.
- * @returns the environment.
- * @throws MethodError when it is missing or not one of the two.
+ * @returns the platform, and the environment when there is one.
+ * @throws MethodError when either is present but not one of the allowed values.
  */
-function readEnvironment(payload: unknown): 'sandbox' | 'production' {
+function readRegistration(payload: unknown): {
+  platform: 'ios' | 'android'
+  environment: 'sandbox' | 'production' | null
+} {
   const record = optionalObject(payload, 'push.register')
+  const platform = record['platform'] ?? 'ios'
+  if (platform !== 'ios' && platform !== 'android') {
+    throw new MethodError(
+      'MALFORMED_FRAME',
+      'push.register: payload."platform" must be "ios" or "android"',
+    )
+  }
   const value = record['environment']
+  if (platform === 'android') {
+    // Dropped rather than passed on or refused. FCM has one service, so there is
+    // nothing for an Android client to answer here -- and a client that sends
+    // one anyway must still register, because refusing would make a version of
+    // the app unable to pair for a reason that cannot be true.
+    return { platform, environment: null }
+  }
   if (value !== 'sandbox' && value !== 'production') {
     throw new MethodError(
       'MALFORMED_FRAME',
-      'push.register: payload."environment" must be "sandbox" or "production"',
+      'push.register: payload."environment" must be "sandbox" or "production" for platform "ios"',
     )
   }
-  return value
+  return { platform, environment: value }
 }
 
 /**
@@ -337,10 +363,16 @@ export function createMethodTable(
      */
     'push.register': async (payload, context) => {
       if (push === undefined) return { registered: false }
+      // The token is read first so that a payload with nothing at all is
+      // answered with the same complaint it always was: whichever field is
+      // missing, the client gets a `MALFORMED_FRAME` naming it.
+      const token = requireString(payload, 'token', 'push.register')
+      const registration = readRegistration(payload)
       return {
         registered: await push.register(context.deviceId, {
-          token: requireString(payload, 'token', 'push.register'),
-          environment: readEnvironment(payload),
+          token,
+          platform: registration.platform,
+          environment: registration.environment,
           locale: optionalString(payload, 'locale') ?? 'en',
         }),
       }
