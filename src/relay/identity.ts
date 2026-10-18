@@ -1,8 +1,8 @@
 /**
- * This Mac's tunnel identity.
+ * This computer's tunnel identity.
  *
  * The relay serves everyone, so there is no shared token to hand out: a token
- * that identified one Mac would put every user in the same room, able to see
+ * that identified one computer would put every user in the same room, able to see
  * each other's sessions. Instead each install invents its own secret the first
  * time it runs, keeps it, and presents it to the relay. The relay derives a room
  * from it, so the room is a function of something only this machine knows.
@@ -12,7 +12,7 @@
  * in sync between two files.
  *
  * The secret is a capability, not an identity: anyone holding it can act as this
- * Mac on the relay. It is written 0600 in Mizar's own state directory, and it
+ * computer on the relay. It is written 0600 in Mizar's own state directory, and it
  * never leaves the machine except as a bearer token on the tunnel connection.
  *
  * @module dsh-mizar/relay/identity
@@ -69,7 +69,7 @@ export async function loadOrCreateTunnelSecret(
     await chmod(path, 0o600).catch(() => {})
   } catch (error) {
     log(
-      `relay: could not save this Mac's tunnel identity to ${path} ` +
+      `relay: could not save this computer's tunnel identity to ${path} ` +
         `(${error instanceof Error ? error.message : String(error)}) — ` +
         'it will work until DSH restarts, then the room changes and phones must re-pair',
     )

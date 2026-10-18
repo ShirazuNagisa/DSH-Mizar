@@ -37,7 +37,7 @@ describe('the tunnel identity', () => {
   })
 
   it('gives two installs different secrets', async () => {
-    // The whole reason there is no shared token: two Macs presenting the same
+    // The whole reason there is no shared token: two computers presenting the same
     // credential would be one room, and each would see the other's sessions.
     const [a, b] = await Promise.all([stateDir(), stateDir()])
     const [one, two] = await Promise.all([
@@ -122,7 +122,7 @@ describe('the page the phone receives', () => {
     const entries = [record('user'), record('runtime-context'), record('skill-catalog'), record('desktop')]
     // The two injections are the only names removed; `desktop` stands for any
     // source this build has not seen, and hiding those is what lost the history
-    // typed in the Mac's own window.
+    // typed in the computer's own window.
     const kept = entries.filter((entry) => {
       const kind = entry.event.data.source.kind
       return kind !== 'runtime-context' && kind !== 'skill-catalog'

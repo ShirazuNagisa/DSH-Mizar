@@ -1192,7 +1192,7 @@ describe('which sessions a notification may be about', () => {
     expect(isNotifiable(undefined)).toBe(false)
   })
 
-  it('calls the Mac idle only when no session the phone draws a row for is running', () => {
+  it('calls the computer idle only when no session the phone draws a row for is running', () => {
     // What decides whether a finished turn may end the Live Activity. The same
     // "would the app show a row" rule as above, over the session list's rows:
     // a hidden subagent still working does not mean the operator is waiting on

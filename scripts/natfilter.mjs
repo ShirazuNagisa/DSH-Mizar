@@ -15,7 +15,7 @@
  * different network and there is no way around that: the whole question is what
  * happens between two paths that cannot see each other yet.
  *
- *   Terminal 1 (the Mac, on Wi-Fi):   node scripts/natfilter.mjs
+ *   Terminal 1 (the computer, on Wi-Fi):   node scripts/natfilter.mjs
  *   Terminal 2 (anywhere else):       send one UDP datagram to the endpoint it prints
  *
  * The second machine must be on a *different* network -- a phone on cellular is
@@ -94,7 +94,7 @@ socket.on('message', (message, from) => {
   strangers += 1
   console.log(`\n  ✅ UNSOLICITED PACKET from ${from.address}:${from.port} (${message.length} bytes)`)
   console.log('     This NAT admits strangers. The QR-only design is viable on this')
-  console.log('     network, provided the Mac stays on it and off cellular.')
+  console.log('     network, provided the computer stays on it and off cellular.')
 })
 
 socket.on('error', (error) => {
@@ -133,7 +133,7 @@ setTimeout(() => {
   That is not proof of filtering -- it is also what happens if nothing was
   sent, or if the phone was on the same Wi-Fi. But if a datagram really was
   sent from another network and nothing arrived, this NAT filters by address,
-  and a design with no signalling server cannot open the path: the Mac does not
+  and a design with no signalling server cannot open the path: the computer does not
   know the phone's address, so it cannot send first to admit it.
 `)
   } else {

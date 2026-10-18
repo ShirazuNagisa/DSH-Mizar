@@ -12,7 +12,7 @@ both are already answered by other channels — the desktop GUI, through the
 forwarded `$events` source, and the built-in terminal answerer.
 
 The product requirement is that the phone is a **first-class** channel: the user
-is away from the Mac but the Mac's DSH is still running *with its GUI open*. If
+is away from the computer but the computer's DSH is still running *with its GUI open*. If
 the phone only ever got the requests the GUI declined, it would never see one.
 
 ## What the waterfall actually does

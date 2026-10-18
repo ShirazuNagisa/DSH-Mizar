@@ -1,7 +1,7 @@
 /**
- * The tunnel client: the Mac dialling out.
+ * The tunnel client: the computer dialling out.
  *
- * The contract this exists to satisfy is that a Mac behind a firewall which
+ * The contract this exists to satisfy is that a computer behind a firewall which
  * blocks all inbound traffic is still reachable, and the only way to do that is
  * to be the one who dials. So this connects *out* to the relay and holds the
  * connection open; the relay replays phone requests down it and this replays
@@ -185,12 +185,12 @@ export function tunnelURL(url: string): string | null {
 /**
  * The base URL a phone should be given, for a room.
  *
- * A Mac on the same LAN as its relay may dial a private address while a phone
+ * A computer on the same LAN as its relay may dial a private address while a phone
  * has to use the public one, so this prefers `publicUrl` when it is set. With
  * neither set there is nothing to give a phone, and returning `null` beats
  * inventing a URL that will not resolve.
  *
- * @param url - the relay URL the Mac dials.
+ * @param url - the relay URL the computer dials.
  * @param publicUrl - the operator's override, or empty.
  * @param room - the room, when it is known.
  * @returns the base URL, or `null`.
@@ -203,7 +203,7 @@ export function phoneBaseURL(url: string, publicUrl: string, room?: string | nul
   } catch {
     return null
   }
-  // A phone speaks https; the Mac may have been configured with wss or ws.
+  // A phone speaks https; the computer may have been configured with wss or ws.
   parsed.protocol =
     parsed.protocol === 'wss:' || parsed.protocol === 'https:' ? 'https:' : 'http:'
   parsed.hash = ''
@@ -307,13 +307,13 @@ export class RelayClient {
     })
   }
 
-  /** Exponential backoff with jitter, so many Macs do not return in lockstep. */
+  /** Exponential backoff with jitter, so many computers do not return in lockstep. */
   #backoff(): number {
     const base = this.#options.reconnectBaseMs ?? 1_000
     const cap = this.#options.reconnectMaxMs ?? 60_000
     const raw = Math.min(cap, base * 2 ** this.#attempt)
     this.#attempt += 1
-    // Full jitter. A relay restart would otherwise bring every Mac back at once.
+    // Full jitter. A relay restart would otherwise bring every computer back at once.
     return Math.round(raw / 2 + Math.random() * (raw / 2))
   }
 

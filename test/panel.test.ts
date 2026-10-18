@@ -256,7 +256,7 @@ describe('pairing URI with a relay', () => {
 
 describe('buildPanelStatus with a relay', () => {
   it('points the QR at the relay and leaves out a loopback authority', () => {
-    // A phone cannot reach 127.0.0.1 on the Mac. Offering it would make every
+    // A phone cannot reach 127.0.0.1 on the computer. Offering it would make every
     // scan spend its direct-connection timeout before trying the relay that
     // actually works.
     const status = buildPanelStatus(

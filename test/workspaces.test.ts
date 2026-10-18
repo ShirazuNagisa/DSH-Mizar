@@ -1,11 +1,11 @@
 /**
- * Creating a session so that the Mac can see it.
+ * Creating a session so that the computer can see it.
  *
  * DSH attaches a session to a workspace in exactly one place -- `session/create`,
  * and only when the request names a `workspaceId`. With a bare `cwd` it creates
  * the session and attaches nothing, and a workspace's session list is membership
  * rather than a directory scan. So the phone, which groups by working directory,
- * drew a session the Mac's workspace-organised sidebar could not.
+ * drew a session the computer's workspace-organised sidebar could not.
  *
  * Measured against a live host before this was fixed: `session.create` with a
  * `cwd` answered with a session id, and the host's workspace registry was still
@@ -120,7 +120,7 @@ describe('finding the workspace a directory belongs to', () => {
 
   it('creates one when DSH has none, which is what the desktop does', async () => {
     // A session has to live somewhere, and "somewhere DSH does not know about"
-    // is not a place the Mac can list it from.
+    // is not a place the computer can list it from.
     const { ctx, created } = context({ workspaces: [] })
     expect(await resolveWorkspaceId(ctx, '/Users/you/projects/fresh')).toBe(
       'ws-for-/Users/you/projects/fresh',
@@ -175,7 +175,7 @@ describe('creating a session', () => {
   it('still creates the session when no workspace can be had', async () => {
     // The old behaviour, kept as the floor: a directory that cannot be filed is
     // still a place to work, and refusing to create the session there would be a
-    // worse answer than creating one the Mac does not list.
+    // worse answer than creating one the computer does not list.
     const { ctx, calls } = context({ workspaces: [], registry: null })
     await createSession(ctx, { cwd: '/Users/you/projects/fresh' })
     expect(calls[0]?.args?.request).toEqual({ cwd: '/Users/you/projects/fresh' })
@@ -216,7 +216,7 @@ describe('creating a session', () => {
 
 describe('the workspace list the phone draws from', () => {
   it('comes from the registry when the composition has one', async () => {
-    // The registry is what the Mac's own sidebar is built from, so it is the
+    // The registry is what the computer's own sidebar is built from, so it is the
     // only answer that can be *the same* list. `list()` is a synchronous
     // projection of records already in memory: no round trip, no timeout.
     const { ctx, streams } = context({

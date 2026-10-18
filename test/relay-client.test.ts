@@ -240,7 +240,7 @@ describe('RelayClient', () => {
     expect(client.state.lastError).toBeNull()
   })
 
-  it('answers a ping so the relay knows the Mac is alive', () => {
+  it('answers a ping so the relay knows the computer is alive', () => {
     socket.deliver({ t: 'ping', id: 'p1' })
     expect(socket.last()).toEqual({ t: 'pong', id: 'p1' })
   })
@@ -339,7 +339,7 @@ describe('RelayClient', () => {
     expect(client.state.connected).toBe(false)
     expect(client.state.lastError).not.toBeNull()
     // The room is kept: the app's stored pairing should not change because the
-    // Mac's network blipped, and the relay gives the same room back.
+    // computer's network blipped, and the relay gives the same room back.
     expect(client.state.room).toBe('ROOM1')
   })
 
@@ -549,7 +549,7 @@ describe('frames from the relay are not trusted', () => {
 
   it('cannot be pointed at a host other than the local listener', async () => {
     // The relay is a separate deployment and the phone chooses the path, so this
-    // is the check that "the relay replays onto the Mac" cannot become "the Mac
+    // is the check that "the relay replays onto the computer" cannot become "the computer
     // fetches whatever the phone names": the origin is fixed at construction and
     // the path is only ever appended to it. A path that looks like a
     // protocol-relative URL is the obvious attempt.

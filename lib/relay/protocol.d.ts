@@ -1,5 +1,5 @@
 /**
- * The tunnel protocol, from the Mac's side.
+ * The tunnel protocol, from the computer's side.
  *
  * Declared again here rather than imported from `relay/` so the plugin and the
  * relay stay separately deployable -- a plugin installed from a git checkout has
@@ -14,7 +14,7 @@
 /** The first frame the relay sends. */
 export interface RelayWelcome {
     readonly t: 'welcome';
-    /** The room this tunnel serves. The relay chooses it; the Mac never invents one. */
+    /** The room this tunnel serves. The relay chooses it; the computer never invents one. */
     readonly room: string;
     readonly protocolVersion: number;
 }
@@ -93,11 +93,11 @@ export interface HostError {
     readonly id: string;
     readonly message: string;
 }
-/** Everything the Mac may send. */
+/** Everything the computer may send. */
 export type HostToRelay = HostResponse | HostStreamOpened | HostStreamMessage | HostStreamClose | HostPong | HostError;
 /** The tunnel protocol version. */
 export declare const TUNNEL_PROTOCOL_VERSION = 1;
-/** The path a Mac dials to establish its tunnel. */
+/** The path a computer dials to establish its tunnel. */
 export declare const TUNNEL_PATH = "/tunnel";
 /**
  * Parse a frame from the relay, refusing anything unrecognised.

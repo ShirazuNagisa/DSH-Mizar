@@ -17,7 +17,7 @@
  * screen should see the same grouped characters the panel shows.
  *
  * `u` is a base URL for a reverse tunnel, and it is optional in both directions.
- * When a Mac is only reachable through a relay, `h` is omitted and `u` carries
+ * When a computer is only reachable through a relay, `h` is omitted and `u` carries
  * everything -- there is no direct address worth dialling. When both are present
  * the app tries the direct one first, so one QR code covers both "same Wi-Fi"
  * and "anywhere", and the good path is taken when it is available.

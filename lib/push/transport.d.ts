@@ -51,7 +51,7 @@ export interface PushRegistration {
      * The APNs token of the Live Activity currently on screen, when there is one.
      *
      * Omitted when no activity is up. The relay keeps it so it can end the
-     * activity from the Mac side, which is the case the app cannot cover: a turn
+     * activity from the computer side, which is the case the app cannot cover: a turn
      * that finishes while the app is suspended has nobody on the phone to end the
      * countdown. An older relay ignores the field, exactly as it ignores any other
      * JSON key it does not know.
@@ -139,7 +139,7 @@ export interface RelayTransportOptions {
     /** The relay's HTTP base, without a trailing slash. */
     readonly baseURL: string;
     /**
-     * The credential the relay derives this Mac's room from.
+     * The credential the relay derives this computer's room from.
      *
      * The same secret the tunnel presents, and deliberately so: the relay already
      * proves it with every tunnel upgrade, so push needs no second enrolment

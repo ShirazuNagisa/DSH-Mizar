@@ -18,7 +18,7 @@
  * `workspace/follow`, a stream whose first frame is a complete baseline, because
  * `workspace` has no `list` endpoint. The registry service itself does have one —
  * `ctx.workspaceRegistry.list()` — and it is a synchronous projection of exactly
- * the records the Mac's own sidebar draws, in DSH's display order, with each
+ * the records the computer's own sidebar draws, in DSH's display order, with each
  * workspace's **validated session membership** already computed against the
  * canonical-cwd header index.
  *
@@ -249,7 +249,7 @@ function readRegistry(ctx: Context): RegistryRead {
  * One frame, then the iterator is closed. Following the stream for updates would
  * keep the list live, and is worth doing when a workspace can be deleted while
  * the phone has the app open; today the phone re-reads on every refresh, which
- * is often enough for a change an operator makes on the Mac.
+ * is often enough for a change an operator makes on the computer.
  *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @returns the rows, or `null` when the baseline did not arrive.
@@ -368,8 +368,8 @@ function idOf(value: unknown): string | null {
  * — and a workspace's session list is membership, not a directory scan. So a
  * session created from the phone with a `cwd` belongs to no workspace, which the
  * phone cannot tell: it groups by working directory and drew the session anyway.
- * The Mac's sidebar is built on workspaces, so it drew nothing. Reported as
- * "created a session on the phone, sent a message, the Mac never shows it".
+ * The computer's sidebar is built on workspaces, so it drew nothing. Reported as
+ * "created a session on the phone, sent a message, the computer never shows it".
  *
  * Creating the workspace when there is none is what DSH's own desktop does when
  * somebody opens a folder: a session has to live somewhere, and "somewhere DSH
@@ -412,7 +412,7 @@ export async function resolveWorkspaceId(ctx: Context, path: string): Promise<st
     // A path that is not a directory, or a registry that refused. The caller
     // falls back to passing the directory itself, which is what it did before
     // any of this existed: the session is still created, it is just not filed
-    // anywhere the Mac lists from.
+    // anywhere the computer lists from.
     return null
   }
 }

@@ -675,7 +675,7 @@ async function panelSection(context) {
   check('the QR payload uses the mizar scheme', uri.startsWith('mizar://pair?'), uri)
   // A QR must carry *an* address, but not necessarily a direct one. With a relay
   // the listener binds loopback, and a loopback authority is deliberately left
-  // out -- a phone cannot reach 127.0.0.1 on the Mac, and offering it would make
+  // out -- a phone cannot reach 127.0.0.1 on the computer, and offering it would make
   // every scan spend its direct-connection timeout before trying the relay.
   const authority = parsed.get('h')
   const relayBase = parsed.get('u')

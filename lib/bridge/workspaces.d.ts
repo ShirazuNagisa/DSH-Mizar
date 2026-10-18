@@ -62,8 +62,8 @@ export declare function listWorkspaces(ctx: Context): Promise<WorkspaceListResul
  * — and a workspace's session list is membership, not a directory scan. So a
  * session created from the phone with a `cwd` belongs to no workspace, which the
  * phone cannot tell: it groups by working directory and drew the session anyway.
- * The Mac's sidebar is built on workspaces, so it drew nothing. Reported as
- * "created a session on the phone, sent a message, the Mac never shows it".
+ * The computer's sidebar is built on workspaces, so it drew nothing. Reported as
+ * "created a session on the phone, sent a message, the computer never shows it".
  *
  * Creating the workspace when there is none is what DSH's own desktop does when
  * somebody opens a folder: a session has to live somewhere, and "somewhere DSH

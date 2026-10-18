@@ -323,10 +323,10 @@ export interface CreateSessionResult {
  *
  * DSH attaches a session to a workspace in one place, and only when the request
  * names a `workspaceId`; a bare `cwd` creates a session that belongs to no
- * workspace at all. Membership is what the Mac's sidebar lists from, so a
- * session created here with a directory was invisible on the Mac -- while the
+ * workspace at all. Membership is what the computer's sidebar lists from, so a
+ * session created here with a directory was invisible on the computer -- while the
  * phone, which groups by working directory, showed it. Reported as "created a
- * session on the phone, sent a message, and the Mac never shows it".
+ * session on the phone, sent a message, and the computer never shows it".
  *
  * So the directory is resolved to the workspace rooted at it, and one is created
  * when DSH has none, which is what the desktop does when somebody opens a
@@ -361,7 +361,7 @@ export async function createSession(
         ...(resolved === undefined ? {} : { workspaceId: resolved }),
         // Only when no workspace was found: a directory that DSH has no
         // workspace for is still a place to work, and refusing to create the
-        // session there would be a worse answer than creating one the Mac does
+        // session there would be a worse answer than creating one the computer does
         // not list.
         ...(resolved === undefined && options.cwd !== undefined ? { cwd: options.cwd } : {}),
         ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),

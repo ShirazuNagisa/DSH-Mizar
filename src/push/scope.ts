@@ -71,7 +71,7 @@ export interface RunningSessionRow {
  * so the two questions cannot disagree about which sessions are visible.
  *
  * @param rows - the session list, as `listSessions` returned it.
- * @returns whether the Mac is still working on something the phone shows.
+ * @returns whether the computer is still working on something the phone shows.
  */
 export function anyNotifiableSessionRunning(rows: readonly RunningSessionRow[]): boolean {
   return rows.some(

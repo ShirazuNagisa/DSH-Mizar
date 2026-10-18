@@ -95,12 +95,12 @@ export declare function tunnelURL(url: string): string | null;
 /**
  * The base URL a phone should be given, for a room.
  *
- * A Mac on the same LAN as its relay may dial a private address while a phone
+ * A computer on the same LAN as its relay may dial a private address while a phone
  * has to use the public one, so this prefers `publicUrl` when it is set. With
  * neither set there is nothing to give a phone, and returning `null` beats
  * inventing a URL that will not resolve.
  *
- * @param url - the relay URL the Mac dials.
+ * @param url - the relay URL the computer dials.
  * @param publicUrl - the operator's override, or empty.
  * @param room - the room, when it is known.
  * @returns the base URL, or `null`.

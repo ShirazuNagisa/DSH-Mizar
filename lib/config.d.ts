@@ -39,7 +39,7 @@ export interface Config {
         mode: 'off' | 'self-signed';
     };
     /**
-     * The reverse tunnel that makes this Mac reachable from a network that blocks
+     * The reverse tunnel that makes this computer reachable from a network that blocks
      * inbound traffic.
      *
      * On by default, pointed at the public service, because the point of the whole
@@ -58,14 +58,14 @@ export interface Config {
          *
          * Empty in every normal install: the plugin generates its own identity on
          * first run and the relay derives the room from it. Setting this is for
-         * pinning a specific room -- moving a Mac between relays without re-pairing
+         * pinning a specific room -- moving a computer between relays without re-pairing
          * the phones, or reproducing an issue.
          */
         token: string;
         /**
          * The base URL a phone should use, when it differs from {@link url}.
          *
-         * A Mac on the same LAN as the relay can dial it on a private address while
+         * A computer on the same LAN as the relay can dial it on a private address while
          * phones must use the public one. Empty means "the same host, with the
          * scheme a phone needs".
          */

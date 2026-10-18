@@ -34,7 +34,7 @@
  * same and is not: an iPad left open on a session silenced the pocketed iPhone,
  * and because the flag was a single boolean that only the device itself could
  * clear, a phone revoked while its app was foreground silenced every
- * notification for this Mac for the life of the process. Excluding the devices
+ * notification for this computer for the life of the process. Excluding the devices
  * that are looking costs one list on the message and makes a stale flag
  * harmless: it can only ever name the device whose app is open, which is the
  * device that does not need the notification anyway.
@@ -120,7 +120,7 @@ export declare class PushNotifier {
      *
      * No longer a veto -- see the module comment for why that was wrong -- but
      * still the only way to see the presence bookkeeping from outside, so it stays
-     * as the answer to "is this Mac talking to a phone that is awake".
+     * as the answer to "is this computer talking to a phone that is awake".
      */
     isForeground(): boolean;
     /**

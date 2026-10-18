@@ -1,6 +1,6 @@
 # Mizar 协议 v1
 
-手机与 Mac 之间说的话。
+手机与电脑之间说的话。
 
 **为什么要有自己的协议**：iPhone 只说 Mizar，不说 DSH 内部的 Typert 协议。DSH 那 140
 个 endpoint、`SessionHistoryRecord` 与 40+ 种会话事件变体的投影工作，全部由插件在服务端
@@ -30,7 +30,7 @@ Web 端口（19388）分开——**插件不碰 DSH 原有的安全边界**。
 一次性。之后只认设备令牌。
 
 ```text
-Mac 面板显示                   手机
+电脑面板显示                   手机
 ────────────                   ────
 mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
                                 │ 扫码或深链接解析
@@ -103,7 +103,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `UNAUTHENTICATED` | 还没握手 | 先发 hello |
 | `PAIRING_REQUIRED` | 设备未配对 | 回到配对界面 |
 | `PAIRING_CODE_INVALID` | 配对码格式不对 | 让用户检查输入 |
-| `PAIRING_CODE_EXPIRED` | 配对码超时 | 让 Mac 重新生成 |
+| `PAIRING_CODE_EXPIRED` | 配对码超时 | 让电脑重新生成 |
 | `PAIRING_CODE_UNKNOWN` | 没有这个码 | 同上 |
 | `RATE_LIMITED` | 尝试过频 | 退避后重试 |
 | `DEVICE_REVOKED` | 设备已被吊销 | **清掉本地令牌，回到配对** |
@@ -129,7 +129,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 |---|---|---|
 | `host.info` | — | 主机身份与绑定情况 |
 | `session.list` | `{}` | `{items: [SessionRow]}` |
-| `workspace.list` | `{}` | `{items: [WorkspaceRow], complete}` —— DSH **当前**拥有的工作区，按 DSH 自己的显示顺序（插件直接读 `ctx.workspaceRegistry.list()`，和 Mac 侧边栏同源），每个工作区带 `sessionIds`：DSH 认可的归属关系，只有主机知道，手机不该自己拿目录去猜。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话，手机再按目录分组就会一直留着它们。<br>`sessionIds` **缺省**和 `[]` 是两回事：`[]` 是「DSH 说这里没有会话」，缺省是「主机没说」，只有后者才允许退回按目录匹配。<br>`complete` 说这份清单**是不是完整读到了**：只有 `true` 才允许丢弃已经不在清单里的工作区，因为「主机答不上来」和「主机一个都没有」都是空数组。任何一条读不出来的记录都按「没答」处理（返回 `{items: [], complete: false}`）——主机还可以用 `workspace/follow` 的 baseline 兜底；两条路都不行时手机退回按目录分组。 |
+| `workspace.list` | `{}` | `{items: [WorkspaceRow], complete}` —— DSH **当前**拥有的工作区，按 DSH 自己的显示顺序（插件直接读 `ctx.workspaceRegistry.list()`，和电脑侧边栏同源），每个工作区带 `sessionIds`：DSH 认可的归属关系，只有主机知道，手机不该自己拿目录去猜。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话，手机再按目录分组就会一直留着它们。<br>`sessionIds` **缺省**和 `[]` 是两回事：`[]` 是「DSH 说这里没有会话」，缺省是「主机没说」，只有后者才允许退回按目录匹配。<br>`complete` 说这份清单**是不是完整读到了**：只有 `true` 才允许丢弃已经不在清单里的工作区，因为「主机答不上来」和「主机一个都没有」都是空数组。任何一条读不出来的记录都按「没答」处理（返回 `{items: [], complete: false}`）——主机还可以用 `workspace/follow` 的 baseline 兜底；两条路都不行时手机退回按目录分组。 |
 | `session.messages` | `sessionId`, `maxMessages?` | `{sessionId, asOfSeq, records[], hasMore}` |
 | `session.stats` | `sessionId` | `{sessionId, asOfSeq, stats}` —— `stats` 里的每个字段来自主机各自的 projection，**谁有就答谁**：agent 还没跑过的会话没有 `context`（上下文占用）也没有 `title`（标题要等模型读完对话才有），只有 `tokenUsage` 一类。所以「这次的帧比上一帧少几个字段」是**正常回答**，不是失败——实测一台真主机上 12 个会话里有 4 个是这样（缺 `context, title`）。手机必须把新帧**合并**进旧帧（有新值用新值，没有的保留），直接替换会把屏幕上已经画出来的标题、模型、上下文用量抹掉。 |
 | `session.create` | `cwd?` \| `workspaceId?` \| `sessionId?`, `agentPreset?` | `{sessionId, agentPreset}` —— 传 `cwd` 时插件会先把它解析成**工作区**（没有就建一个），再把工作区 id 交给 DSH。原因见下。 |
@@ -146,7 +146,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `permissions.catalog` | — | `{options[], defaults[], defaultPreset}` |
 | `session.permission.set` | `sessionId`, `preset` | `{commandResult}` |
 
-**`session.create` 只传 `cwd` 的话，Mac 上看不到这个会话。** DSH 里会话归属于工作区，而归属只在 `session/create` 收到 `workspaceId` 时建立一次：
+**`session.create` 只传 `cwd` 的话，电脑上看不到这个会话。** DSH 里会话归属于工作区，而归属只在 `session/create` 收到 `workspaceId` 时建立一次：
 
 ```js
 const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd
@@ -154,7 +154,7 @@ const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd
 if (workspace !== undefined) await workspace.attachSession(sessionId)
 ```
 
-只给 `cwd`，会话就建出来了但**不属于任何工作区**。手机按工作目录分组，照样显示它；Mac 的侧边栏是按工作区组织的，什么都不显示 —— 报障原话是"手机上新建会话、发了消息，电脑端 DSH 看不到"。所以插件在收到 `cwd` 时会先找这个目录的工作区，没有就建一个（Mac 上手动打开文件夹就是这个行为），然后把 `workspaceId` 传下去。
+只给 `cwd`，会话就建出来了但**不属于任何工作区**。手机按工作目录分组，照样显示它；电脑的侧边栏是按工作区组织的，什么都不显示 —— 报障原话是"手机上新建会话、发了消息，电脑端 DSH 看不到"。所以插件在收到 `cwd` 时会先找这个目录的工作区，没有就建一个（电脑上手动打开文件夹就是这个行为），然后把 `workspaceId` 传下去。
 
 `workspaceId` 和 `cwd` **不能同时传**，DSH 会直接拒绝。`sessionId`（恢复已有会话）时不做任何解析：会话已经有归属了，而拿一个和它不一致的目录去 attach 会让整个调用失败。
 

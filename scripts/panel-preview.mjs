@@ -44,7 +44,7 @@ const body = `
     <div class="mizar-row"><span class="mizar-label">Devices</span><span>2</span></div>
     <span class="mizar-badge">paired</span>
   </div>
-  <div class="mizar-warn">No LAN address is bound and no relay is connected, so the phone cannot reach this Mac.</div>
+  <div class="mizar-warn">No LAN address is bound and no relay is connected, so the phone cannot reach this computer.</div>
   <div class="mizar-card">
     <h2>Pair a device</h2>
     <div class="mizar-qr">

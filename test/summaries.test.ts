@@ -647,13 +647,13 @@ describe('the summary page', () => {
     expect(users).toHaveLength(1)
   })
 
-  it('drops injected context but keeps a prompt written on the Mac', async () => {
+  it('drops injected context but keeps a prompt written on the computer', async () => {
     // `runtime-context` and `skill-catalog` are DSH talking to itself -- 13 KB
     // of it per turn in the sessions measured here. An unrecognised source kind
     // is kept: an unrecognised injection is noise, a hidden message is data
     // loss.
     const typed = prompt(0, 'hello from the phone')
-    const fromMac = prompt(1, 'hello from the Mac window', 'user')
+    const fromMac = prompt(1, 'hello from the computer window', 'user')
     const records = [
       typed,
       prompt(2, 'Current DSH file policy: workspace-write.', 'runtime-context'),
