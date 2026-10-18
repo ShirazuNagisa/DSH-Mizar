@@ -2,12 +2,13 @@
 
 用手机看 DSH Agent 干活，也能给它发消息、回答审批。
 
-这个仓库是 **Mac 侧插件**（DSH 的一个 Cordis 插件）。另外两个仓库：
+这个仓库是 **电脑侧插件**（DSH 的一个 Cordis 插件，跑在 DSH 所在的那台机器上）。另外三个仓库：
 
 | | |
 |---|---|
 | **DSH-Mizar-iOS** | 手机 App（iOS / iPadOS） |
-| **DSH-Mizar-Relay** | 中继服务器，让手机从任何网络连上你的 Mac |
+| [**DSH-Mizar-Android**](https://github.com/ShirazuNagisa/DSH-Mizar-Android) | 手机 App（Android） |
+| **DSH-Mizar-Relay** | 中继服务器，让手机从任何网络连上你的电脑 |
 
 ## 一、装插件
 
@@ -82,7 +83,7 @@ Plugin dsh-mizar@0.8.3 is incompatible with dsh 0.2.1-rc.2
 
 ## 二、配对
 
-1. Mac 上打开 DSH，点侧边栏的 **DSH-Mizar**
+1. 电脑上打开 DSH，点侧边栏的 **DSH-Mizar**
 2. 面板里会出现二维码
 3. 手机装好 App 后扫码
 
@@ -93,7 +94,7 @@ Plugin dsh-mizar@0.8.3 is incompatible with dsh 0.2.1-rc.2
 - 把会话列表、对话正文、用量、审批和提问转给手机
 - 手机可以发消息、打断正在跑的 turn、回答审批和提问、切换模型与权限
 - 推送（审批 / 提问 / 跑完）经中继转给 Apple
-- 手机和 Mac 在同一个 Wi-Fi 时也可以直连，二维码里两条路都带着
+- 手机和电脑在同一个 Wi-Fi 时也可以直连，二维码里两条路都带着
 
 ### 对话只传总结
 
@@ -201,7 +202,7 @@ MIZAR_CODE=XXXX-XXXX node scripts/smoke-listener.mjs
 ## 常见问题
 
 **手机连不上。**
-面板顶部会写原因。默认走中继，只要 Mac 和手机都能上网就行，不需要在同一个 Wi-Fi。
+面板顶部会写原因。默认走中继，只要电脑和手机都能上网就行，不需要在同一个 Wi-Fi。
 
 **面板里没有二维码。**
 重启 DSH。装完不重启，插件不会加载。
