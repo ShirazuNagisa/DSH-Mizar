@@ -130,18 +130,41 @@ App 被挂起时它自己没机会收尾。所以 App 会把这次活动的推�
 
 ## 四·五、发布(维护者)
 
+发布走 **trusted publishing(OIDC)**:GitHub Actions 用一次性的 OIDC 身份向 npm 换发布凭证,
+**没有长期令牌,也没有验证码要输**。发布就是推一个版本 tag。
+
+一次性配置(npmjs.com,用账号的安全密钥验证):
+
+1. 打开 `dsh-mizar` 包页面 → **Settings** → **Publishing access** → **Trusted publisher** →
+   **GitHub Actions**;
+2. 填:
+   - Organization or user:`ShirazuNagisa`
+   - Repository:`DSH-Mizar`
+   - Workflow filename:`publish.yml`
+   - Environment name:留空
+   - **Allowed actions**:勾上 **`npm publish`**(直接发布;只勾暂存的话每次发布还要人工批准);
+3. 保存。
+
+之后发布:
+
 ```sh
 cd dsh
-npm publish --registry=https://registry.npmjs.org   # publishConfig 已钉好,不加也行
+npm version patch            # 或手改 package.json 的 version
+git push                     # 版本号先上 main
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-npm 11 起有两条容易卡住的规则:
+workflow(`.github/workflows/publish.yml`)会:**校验 tag 与 package.json 版本一致** →
+`npm ci` → typecheck → 全部测试 → build → `npm publish --provenance`。任何一步失败都不会发布。
 
-1. **发布必须 2FA**:`npm config set auth-type legacy` 让验证码在终端里提示(否则会跳浏览器,
-   并可能进入「暂存发布」流程,registry 上先出现一个 `0.0.0-stage` 占位版本);
-2. **暂存版本(`0.0.0-stage`)** 不进正式列表,发现它时用
-   `npm unpublish dsh-mizar@0.0.0-stage --registry=https://registry.npmjs.org` 清掉,
-   避免国内镜像只同步到占位版本。
+为什么不用手工 `npm publish`:这个账号的第二因子是**安全密钥(WebAuthn)**,npm CLI 不支持
+WebAuthn,`Enter OTP:` 永远过不去;trusted publishing 是 npm 对 CI 发布的官方方案,还顺带生成
+来源证明(provenance)。
+
+> 兜底:`npm publish --registry=https://registry.npmjs.org` 仍可用,但需要账号里有可用的
+> 验证器 App(TOTP)或一次性密码;若走 `auth-type=web` 会进入暂存发布,registry 上出现
+> `0.0.0-stage` 占位版本时用
+> `npm unpublish dsh-mizar@0.0.0-stage --registry=https://registry.npmjs.org` 清掉。
 
 ## 五、开发
 

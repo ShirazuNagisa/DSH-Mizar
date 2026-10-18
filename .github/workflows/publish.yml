@@ -1,0 +1,91 @@
+# Publish dsh-mizar to npm from a version tag.
+#
+# No token and no one-time password: npm is configured to trust this exact
+# workflow, and the CLI exchanges GitHub's OIDC identity token for a short-lived
+# publish credential (npm CLI >= 11.5.1, Node >= 22.14). This is the npm-blessed
+# answer for the account's second factor being a security key -- the CLI cannot
+# answer a WebAuthn challenge, so an interactive `npm publish` can never work
+# there, while this can.
+#
+# One-time setup, on npmjs.com (with the security key):
+#   package dsh-mizar -> Settings -> Publishing access -> Trusted publisher
+#   -> GitHub Actions
+#     Organization or user: ShirazuNagisa
+#     Repository:           DSH-Mizar
+#     Workflow filename:    publish.yml
+#     Environment name:     (leave empty)
+#     Allowed actions:      tick "npm publish" (direct publish)
+#   Without the "npm publish" tick, only `npm stage publish` is allowed and
+#   every release would need a manual approval with 2FA.
+#
+# Releasing after that:
+#   cd dsh
+#   npm version patch          # or edit package.json and commit
+#   git push                   # the version bump must be on main first
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# The tag must match package.json exactly; a mistyped tag fails before anything
+# reaches the registry, and the build/test steps run before the publish.
+
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish, e.g. v0.8.3 (must match package.json)'
+        required: true
+
+permissions:
+  contents: read
+  # The OIDC token GitHub mints for this workflow; npm trades it for a
+  # short-lived publish credential.
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A tag push checks out the tag; a manual run checks out the tag the
+          # operator named, not main.
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Use an npm that speaks OIDC
+        run: |
+          npm install -g npm@11
+          npm --version
+
+      - name: Check the tag matches package.json before doing any work
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="${{ inputs.tag || github.ref_name }}"
+          if [ "v$version" != "$tag" ]; then
+            echo "::error::tag $tag does not match package.json version v$version"
+            exit 1
+          fi
+          echo "publishing v$version"
+
+      - run: npm ci --no-audit --no-fund
+
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      # `--ignore-scripts` because the three steps above are exactly what
+      # prepublishOnly would run; running them twice is only slower.
+      - name: Publish with provenance
+        run: npm publish --provenance --access public --ignore-scripts
