@@ -222,3 +222,8 @@ DSH 启动日志里有 `[mizar] dsh-mizar <版本号> · state: … · devices: 
 ---
 
 协议、架构决策、自建中继、研究记录：[docs/](docs/)
+
+## 许可
+
+本项目以 **GNU General Public License v3.0**（GPLv3，SPDX：`GPL-3.0-only`）发布。
+许可证全文见 [LICENSE](LICENSE)。

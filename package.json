@@ -2,7 +2,7 @@
   "name": "dsh-mizar",
   "version": "0.8.3",
   "description": "Remote monitoring and guidance for DSH agents — host plugin backing the DSH-Mizar iOS app.",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
