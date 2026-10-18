@@ -25,7 +25,7 @@
 
 ```sh
 dsh plugin --profile desktop add dsh-mizar          # 跟随 npm 最新版
-dsh plugin --profile desktop add dsh-mizar@0.8.2    # 锁定某个版本
+dsh plugin --profile desktop add dsh-mizar@0.8.3    # 锁定某个版本
 ```
 
 两种装法都会把依赖写成 `dsh-mizar@^x.y.z`。升级只要再跑一次 `add dsh-mizar@latest`。
@@ -36,7 +36,7 @@ dsh plugin --profile desktop add dsh-mizar@0.8.2    # 锁定某个版本
 
 | | **npm(推荐)** | GitHub 直装 |
 |---|---|---|
-| 版本 | 有版本号,可锁 `@0.8.2` | 跟随 `main` 最新提交,不可锁 |
+| 版本 | 有版本号,可锁 `@0.8.3` | 跟随 `main` 最新提交,不可锁 |
 | 可追溯 | `npm view dsh-mizar versions`、`npm outdated` | 只有 commit hash |
 | 完整性 | registry **sha512 校验** | 无包完整性校验 |
 | 前提 | 只要能访问 registry | 需要 git + pnpm 的 git 支持 |
@@ -50,7 +50,7 @@ dsh plugin --profile desktop add ShirazuNagisa/DSH-Mizar
 
 # 离线 / 内网:在有网的机器上 npm pack,再把 .tgz 传过去
 npm pack dsh-mizar
-dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.2.tgz
+dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.3.tgz
 ```
 
 ### 装不到最新版 / 镜像同步延迟
@@ -60,7 +60,7 @@ dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.2.tgz
 
 - **加 `--registry` 直连官方源**:
   ```sh
-  dsh plugin --profile desktop add dsh-mizar@0.8.2 --registry=https://registry.npmjs.org
+  dsh plugin --profile desktop add dsh-mizar@0.8.3 --registry=https://registry.npmjs.org
   ```
 - 或者去 [npmmirror 同步页](https://npmmirror.com/sync/dsh-mizar) 点一次「同步」,等镜像更新。
 
@@ -71,13 +71,13 @@ dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.2.tgz
 DSH 会**精确比对**插件声明的 `@deepseek-ai/dsh-*` 与运行时版本，不匹配时安装会被拒绝：
 
 ```
-Plugin dsh-mizar@0.8.2 is incompatible with dsh 0.2.1-rc.2
+Plugin dsh-mizar@0.8.3 is incompatible with dsh 0.2.1-rc.2
 ```
 
 - 正常做法：升级到匹配的插件版本（DSH 每个 rc 发布后，插件跟一个 `+0.0.1`）；
 - 临时跑起来（**有风险**，只在确认没有 API 变更时用）：
   ```sh
-  dsh plugin --profile desktop allow-version dsh-mizar@0.8.2 --dsh-version 0.2.1-rc.2 --accept-risk
+  dsh plugin --profile desktop allow-version dsh-mizar@0.8.3 --dsh-version 0.2.1-rc.2 --accept-risk
   ```
 
 ## 二、配对
@@ -161,10 +161,9 @@ workflow(`.github/workflows/publish.yml`)会:**校验 tag 与 package.json 版�
 WebAuthn,`Enter OTP:` 永远过不去;trusted publishing 是 npm 对 CI 发布的官方方案,还顺带生成
 来源证明(provenance)。
 
-> 兜底:`npm publish --registry=https://registry.npmjs.org` 仍可用,但需要账号里有可用的
-> 验证器 App(TOTP)或一次性密码;若走 `auth-type=web` 会进入暂存发布,registry 上出现
-> `0.0.0-stage` 占位版本时用
-> `npm unpublish dsh-mizar@0.0.0-stage --registry=https://registry.npmjs.org` 清掉。
+> 手工 `npm publish` 对这个账号已经不可用:第二因子是安全密钥,npm CLI 没有 WebAuthn
+> 挑战,`Enter OTP:` 永远过不去。需要手工发布时,先给账号加一个验证器 App(TOTP),
+> 或者继续用 tag 工作流。
 
 ## 五、开发
 
