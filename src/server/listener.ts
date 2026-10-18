@@ -73,8 +73,8 @@ export interface ClientSession {
   readonly deviceName: string
   /** The remote address the socket came from. */
   readonly remote: string
-  /** Send one frame to this client. */
-  send(frame: ServerFrame): void
+  /** Send one frame to this client, reporting whether it was actually written. */
+  send(frame: ServerFrame): boolean
   /** Close this client's socket. */
   close(code?: number, reason?: string): void
 }
@@ -108,6 +108,16 @@ export interface ListenerOptions {
    * with nobody left to answer it must settle rather than hang the agent.
    */
   readonly onClientCount?: (count: number) => void
+  /**
+   * Called after a method's `ok` frame was written to an open socket.
+   *
+   * The listener itself has no idea what a result means; this exists so the one
+   * thing that does -- the bridge's delivery ledger -- can record what the phone
+   * has actually been sent. It must never be called for a frame that was not
+   * written: a response refused for size, or one aimed at a socket that had
+   * already closed, is not something the phone holds.
+   */
+  readonly onDelivered?: (method: string, result: unknown, session: ClientSession) => void
   /**
    * Wire method implementations, keyed by frame `type`.
    *
@@ -572,8 +582,8 @@ export class MizarListener {
       tracked.__mizarAlive = true
     })
 
-    const send = (frame: ServerFrame): void => {
-      if (socket.readyState !== socket.OPEN) return
+    const send = (frame: ServerFrame): boolean => {
+      if (socket.readyState !== socket.OPEN) return false
       const encoded = encodeFrame(frame)
       const bytes = Buffer.byteLength(encoded, 'utf8')
       // A frame over this size is not delivered, it is a disconnect. iOS's
@@ -603,9 +613,11 @@ export class MizarListener {
             ),
           )
         }
-        return
+        // Not delivered: the phone received a refusal, not the page.
+        return false
       }
       socket.send(encoded)
+      return true
     }
 
     // A client that never authenticates is dropped rather than left open; the
@@ -735,7 +747,11 @@ export class MizarListener {
 
         try {
           const result = await handler(frame.payload, session)
-          send(okFrame(frame.id, result))
+          // Recorded only after the answer is on the wire. A write that never
+          // happened must not be remembered as something the phone holds.
+          if (send(okFrame(frame.id, result))) {
+            this.#options.onDelivered?.(frame.type, result, session)
+          }
         } catch (error) {
           // A method that knows its own failure code may say so; anything else
           // is an internal fault and must not leak its message shape to a client.

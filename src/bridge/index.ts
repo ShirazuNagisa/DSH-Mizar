@@ -14,6 +14,7 @@
 import type { Context } from '../dsh.js'
 import { isLiveActivityToken } from '../auth/devices.js'
 import { deliverQuestionAnswers } from './answerers.js'
+import type { DeliveryLedger } from './delivery.js'
 import { toMethodError } from './errors.js'
 import {
   CLIENT_APPROVAL_OUTCOMES,
@@ -219,6 +220,9 @@ function readRegistration(payload: unknown): {
  * @param broker - the interaction broker holding pending approvals and questions.
  * @param push - where a device's notification endpoint is recorded, when the host
  *   has push at all. Absent in compositions without a relay.
+ * @param delivery - what each device has already been sent, when the host keeps
+ *   it. Absent leaves every page full: a composition without it still answers,
+ *   it just does not save the phone the bytes it already read.
  * @returns the table, keyed by wire method name.
  */
 export function createMethodTable(
@@ -226,6 +230,7 @@ export function createMethodTable(
   facts: HostFacts,
   broker: InteractionBroker,
   push?: PushBinding,
+  delivery?: DeliveryLedger,
 ): Record<string, MethodHandler> {
   const table: Record<string, MethodHandler> = {
     /** Host identity and protocol facts. */
@@ -268,15 +273,33 @@ export function createMethodTable(
      * narrowed to what a conversation screen draws -- prompts, turn boundaries,
      * one marker per step, and one assistant message per finished turn. See
      * `sessionMessages` for what that leaves out and the measurements behind it.
+     *
+     * A refresh may also say what it already holds, and only new records travel.
+     * `afterSeq` is a number (the phone's cursor), `null` (the phone holds
+     * nothing and needs a full page), or absent -- in which case the ledger
+     * answers with what was last actually delivered to this device.
      */
-    'session.messages': async (payload) => {
-      const limit = (payload as Record<string, unknown> | undefined)?.['maxMessages']
-      const before = (payload as Record<string, unknown> | undefined)?.['beforeSeq']
+    'session.messages': async (payload, context) => {
+      const fields = payload as Record<string, unknown> | undefined
+      const limit = fields?.['maxMessages']
+      const before = fields?.['beforeSeq']
+      const after = fields?.['afterSeq']
+      const sessionId = requireString(payload, 'sessionId', 'session.messages')
+      const explicit = typeof after === 'number' && Number.isFinite(after) ? after : undefined
+      // `null` is the phone saying it holds nothing -- a reinstall, a cleared
+      // cache. Silence is not that claim: it is a request with no cursor, which
+      // the ledger may answer from what it delivered.
+      const holdsNothing = after === null
+      const remembered =
+        holdsNothing || explicit !== undefined
+          ? undefined
+          : delivery?.deliveredThrough(context.deviceId, sessionId)
       return sessionMessages(
         ctx,
-        requireString(payload, 'sessionId', 'session.messages'),
+        sessionId,
         typeof limit === 'number' ? limit : undefined,
         typeof before === 'number' ? before : undefined,
+        explicit ?? remembered,
       )
     },
 

@@ -14,6 +14,7 @@ import type { Context } from './dsh.js'
 import { Config } from './config.js'
 import type { Config as MizarConfig } from './config.js'
 import { registerAnswerers } from './bridge/answerers.js'
+import { DeliveryLedger } from './bridge/delivery.js'
 import { createMethodTable } from './bridge/index.js'
 import { InteractionBroker } from './bridge/interactions.js'
 import { listSessions, sessionStats } from './bridge/sessions.js'
@@ -293,6 +294,11 @@ async function startListener(
   // reference that outlives the server.
   const broker = new InteractionBroker()
 
+  // What each phone already holds, so a refresh pays only for what is new. It
+  // is per plugin mount and per device: the phones' own cursors are the
+  // authority when they send one, and this answers the requests that do not.
+  const delivery = new DeliveryLedger()
+
   const methods = createMethodTable(
     ctx,
     {
@@ -303,6 +309,7 @@ async function startListener(
     },
     broker,
     push,
+    delivery,
   )
 
   // A stable handle the rest of the plugin reads through, so a rebind can swap
@@ -325,6 +332,13 @@ async function startListener(
     // Dropping to zero clients is the broker's fail-closed trigger: an approval
     // with nobody left to answer it must settle rather than hang the agent.
     onClientCount: (count) => broker.setClientCount(count),
+    // The one place that knows a page actually reached a phone: the frame was
+    // written to an open socket. A refused size, a closed socket and a failed
+    // method all leave this uncalled, which is exactly the set of things the
+    // phone does not hold.
+    onDelivered: (method, result, session) => {
+      if (method === 'session.messages') delivery.recordResult(session.deviceId, result)
+    },
     // The bridge speaks in terms of its own context; the listener speaks in
     // terms of the connection. Adapting here keeps both sides ignorant of the
     // other's vocabulary.
@@ -429,7 +443,12 @@ async function startListener(
         // fails still leaves the safer of the two states behind.
         await push.unregister(deviceId)
         if (current === null) return false
-        return current.revokeDevice(deviceId)
+        const revoked = await current.revokeDevice(deviceId)
+        // A removal that went through takes the device's delivery positions with
+        // it: nothing can ask for them again (a re-paired phone is a new device
+        // id), and keeping them would be memory no request can reach.
+        if (revoked) delivery.forgetDevice(deviceId)
+        return revoked
       },
     },
     store,

@@ -59,7 +59,8 @@ export declare function sessionStats(ctx: Context, sessionId: string): Promise<S
  *
  * The cut comes from {@link followCursor}, and from {@link projectionsCut} when
  * that cannot answer. The reply is narrowed by {@link summaryRecords} to what
- * the conversation screen draws, and then to what fits by {@link withinBudget}.
+ * the conversation screen draws, filtered to what the phone does not already
+ * hold, and then trimmed to what fits by {@link withinBudget}.
  *
  * Works for a cold session: neither read activates an agent, which was measured
  * for the follow path before it was adopted here.
@@ -68,9 +69,12 @@ export declare function sessionStats(ctx: Context, sessionId: string): Promise<S
  * @param sessionId - the session to read.
  * @param maxMessages - how many messages to ask for.
  * @param beforeSeq - the exclusive upper bound, for paging backwards.
+ * @param afterSeq - the log position the caller already holds; only records
+ *   after it travel. Ignored together with `beforeSeq`, because a page paged
+ *   backwards is not a page of new records.
  * @returns the page, or no records when the session is unknown.
  */
-export declare function sessionMessages(ctx: Context, sessionId: string, maxMessages?: number, beforeSeq?: number): Promise<SessionMessagesResult>;
+export declare function sessionMessages(ctx: Context, sessionId: string, maxMessages?: number, beforeSeq?: number, afterSeq?: number): Promise<SessionMessagesResult>;
 /** One page of a session's log. */
 export interface SessionMessagesResult {
     readonly sessionId: string;

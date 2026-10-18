@@ -26,9 +26,13 @@ let dir: string
 let listener: MizarListener
 let store: MizarStore
 
+/** Answers the listener reported as delivered, in order. */
+const delivered: { method: string; result: unknown; deviceId: string }[] = []
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'mizar-listener-'))
   store = await MizarStore.open(dir)
+  delivered.length = 0
   listener = await MizarListener.start({
     plan,
     port: 0,
@@ -39,6 +43,15 @@ beforeEach(async () => {
     heartbeatMs: 15_000,
     pongTimeoutMs: 20_000,
     log: () => undefined,
+    // One answer small enough to travel, one that cannot be delivered at all:
+    // the delivery hook must fire for the first and not for the second.
+    methods: {
+      'test.small': async () => ({ ok: true }),
+      'test.large': async () => ({ blob: 'x'.repeat(600 * 1024) }),
+    },
+    onDelivered: (method, result, session) => {
+      delivered.push({ method, result, deviceId: session.deviceId })
+    },
   })
 })
 
@@ -109,6 +122,32 @@ async function pair(): Promise<{ token: string; deviceId: string }> {
   return { token: body.deviceToken, deviceId: body.deviceId }
 }
 
+/**
+ * Authenticate, call one method, and read its answer.
+ *
+ * @param token - the device token to present.
+ * @param type - the method to call.
+ * @returns the answer frame.
+ */
+async function callMethod(token: string, type: string): Promise<Record<string, unknown>> {
+  const socket = new WebSocket(`ws://127.0.0.1:${listener.port}/mizar/v1/ws`)
+  return await new Promise<Record<string, unknown>>((resolve, reject) => {
+    socket.on('error', reject)
+    socket.on('open', () => {
+      socket.send(JSON.stringify({ v: 1, type: 'hello', id: 'h1', token, appVersion: '0.0.1' }))
+    })
+    socket.on('message', (data: Buffer) => {
+      const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>
+      if (frame['type'] === 'welcome') {
+        socket.send(JSON.stringify({ v: 1, type, id: 'm1', payload: {} }))
+        return
+      }
+      socket.terminate()
+      resolve(frame)
+    })
+  })
+}
+
 describe('the hello handshake', () => {
   it('accepts a token it issued', async () => {
     const { token, deviceId } = await pair()
@@ -173,5 +212,30 @@ describe('the hello handshake', () => {
     const details = rejected.map((event) => event.detail ?? '')
     expect(details.some((detail) => detail.includes('revoked'))).toBe(true)
     expect(details.some((detail) => detail.includes('unknown'))).toBe(true)
+  })
+})
+
+describe('delivery bookkeeping', () => {
+  it('reports an answer as delivered once it is on the wire', async () => {
+    const { token, deviceId } = await pair()
+    const frame = await callMethod(token, 'test.small')
+    expect(frame['type']).toBe('ok')
+    // The hook runs on the server as the frame is written, a moment before the
+    // client's message event; one short wait covers both.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]?.method).toBe('test.small')
+    expect(delivered[0]?.deviceId).toBe(deviceId)
+  })
+
+  it('does not report a response the transport refused', async () => {
+    // A page refused for size travels as an error frame, not as a page.
+    // Recording it would tell the phone it holds records it never received.
+    const { token } = await pair()
+    const frame = await callMethod(token, 'test.large')
+    expect(frame['type']).toBe('error')
+    expect(frame['code']).toBe('RESPONSE_TOO_LARGE')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(delivered).toHaveLength(0)
   })
 })

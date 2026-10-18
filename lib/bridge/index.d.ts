@@ -12,6 +12,7 @@
  * @module dsh-mizar/bridge
  */
 import type { Context } from '../dsh.js';
+import type { DeliveryLedger } from './delivery.js';
 import { InteractionBroker } from './interactions.js';
 import type { PushBinding } from '../push/binding.js';
 /** Per-connection facts handed to a method. */
@@ -40,6 +41,9 @@ export interface HostFacts {
  * @param broker - the interaction broker holding pending approvals and questions.
  * @param push - where a device's notification endpoint is recorded, when the host
  *   has push at all. Absent in compositions without a relay.
+ * @param delivery - what each device has already been sent, when the host keeps
+ *   it. Absent leaves every page full: a composition without it still answers,
+ *   it just does not save the phone the bytes it already read.
  * @returns the table, keyed by wire method name.
  */
-export declare function createMethodTable(ctx: Context, facts: HostFacts, broker: InteractionBroker, push?: PushBinding): Record<string, MethodHandler>;
+export declare function createMethodTable(ctx: Context, facts: HostFacts, broker: InteractionBroker, push?: PushBinding, delivery?: DeliveryLedger): Record<string, MethodHandler>;

@@ -8,8 +8,8 @@ export interface ClientSession {
     readonly deviceName: string;
     /** The remote address the socket came from. */
     readonly remote: string;
-    /** Send one frame to this client. */
-    send(frame: ServerFrame): void;
+    /** Send one frame to this client, reporting whether it was actually written. */
+    send(frame: ServerFrame): boolean;
     /** Close this client's socket. */
     close(code?: number, reason?: string): void;
 }
@@ -42,6 +42,16 @@ export interface ListenerOptions {
      * with nobody left to answer it must settle rather than hang the agent.
      */
     readonly onClientCount?: (count: number) => void;
+    /**
+     * Called after a method's `ok` frame was written to an open socket.
+     *
+     * The listener itself has no idea what a result means; this exists so the one
+     * thing that does -- the bridge's delivery ledger -- can record what the phone
+     * has actually been sent. It must never be called for a frame that was not
+     * written: a response refused for size, or one aimed at a socket that had
+     * already closed, is not something the phone holds.
+     */
+    readonly onDelivered?: (method: string, result: unknown, session: ClientSession) => void;
     /**
      * Wire method implementations, keyed by frame `type`.
      *

@@ -33,6 +33,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { Context } from '../dsh.js'
+import { recordSeq } from './delivery.js'
 import { invokeRemote, streamRemote } from './invoke.js'
 import { MethodError } from './method-error.js'
 import { buildStatsFrame, STATS_KEYS, type SessionStatsFrame } from './stats.js'
@@ -520,7 +521,8 @@ async function projectionsCut(ctx: Context, sessionId: string): Promise<number |
  *
  * The cut comes from {@link followCursor}, and from {@link projectionsCut} when
  * that cannot answer. The reply is narrowed by {@link summaryRecords} to what
- * the conversation screen draws, and then to what fits by {@link withinBudget}.
+ * the conversation screen draws, filtered to what the phone does not already
+ * hold, and then trimmed to what fits by {@link withinBudget}.
  *
  * Works for a cold session: neither read activates an agent, which was measured
  * for the follow path before it was adopted here.
@@ -529,6 +531,9 @@ async function projectionsCut(ctx: Context, sessionId: string): Promise<number |
  * @param sessionId - the session to read.
  * @param maxMessages - how many messages to ask for.
  * @param beforeSeq - the exclusive upper bound, for paging backwards.
+ * @param afterSeq - the log position the caller already holds; only records
+ *   after it travel. Ignored together with `beforeSeq`, because a page paged
+ *   backwards is not a page of new records.
  * @returns the page, or no records when the session is unknown.
  */
 export async function sessionMessages(
@@ -536,6 +541,7 @@ export async function sessionMessages(
   sessionId: string,
   maxMessages?: number,
   beforeSeq?: number,
+  afterSeq?: number,
 ): Promise<SessionMessagesResult> {
   const cut = (await followCursor(ctx, sessionId)) ?? (await projectionsCut(ctx, sessionId))
   if (cut === null) {
@@ -563,6 +569,26 @@ export async function sessionMessages(
   })) as { records?: unknown; hasMore?: unknown } | null | undefined
 
   const records = Array.isArray(value?.records) ? value.records : []
+  const summarized = summaryRecords(records)
+  // Only what the phone does not already hold. Filtered after the summary and
+  // before the budget, for the same two reasons in opposite directions: the
+  // summary decides which records are worth sending at all, and an old record
+  // that survives it must not spend bytes the new ones need.
+  //
+  // A backwards page ignores the cursor: it is a window before `beforeSeq`, and
+  // filtering it forward would return nothing an operator scrolling up asked
+  // for.
+  const floor = beforeSeq === undefined ? afterSeq : undefined
+  const fresh =
+    floor === undefined
+      ? summarized
+      : summarized.filter((record) => {
+          const seq = recordSeq(record)
+          // A record with no position cannot be proven old, so it travels:
+          // dropping it would be silent data loss on a host that stops
+          // numbering, and phones merge by identity anyway.
+          return seq === null || seq > floor
+        })
 
   return {
     sessionId,
@@ -570,7 +596,7 @@ export async function sessionMessages(
     // Narrowed before it is trimmed, so the budget is spent on records that
     // travel rather than on narration that would have filled it and been
     // dropped a line later.
-    records: withinBudget(summaryRecords(records)),
+    records: withinBudget(fresh),
     hasMore: value?.hasMore === true,
   }
 }
