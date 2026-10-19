@@ -1049,7 +1049,16 @@ describe('session.activity — the running turn', () => {
     const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 4, records }] })
     const result = await sessionActivity(ctx, 's1')
 
-    expect(result).toEqual({ sessionId: 's1', asOfSeq: 4, turn: null, entries: [], hasMore: false })
+    expect(result).toEqual({
+      sessionId: 's1',
+      asOfSeq: 4,
+      turn: null,
+      entries: [],
+      hasMore: false,
+      // The page's smallest position, so a phone that has nothing to draw yet
+      // still has the cursor a later page would need.
+      oldestSeq: 0,
+    })
   })
 
   it('answers an empty feed for a session with no log at all', async () => {
@@ -1062,6 +1071,17 @@ describe('session.activity — the running turn', () => {
       turn: null,
       entries: [],
       hasMore: false,
+      oldestSeq: null,
+    })
+  })
+
+  it('refuses a backwards page that names no turn', async () => {
+    // The wire refuses this pair before any read (see the bridge's reader); this
+    // is the same rule stated at the function boundary, so an internal caller
+    // cannot get a forward answer to a backwards question.
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 4, records: [] }] })
+    await expect(sessionActivity(ctx, 's1', undefined, 42)).rejects.toMatchObject({
+      code: 'MALFORMED_FRAME',
     })
   })
 

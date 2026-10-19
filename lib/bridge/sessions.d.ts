@@ -128,18 +128,42 @@ export interface SessionActivityResult {
      * right now" without repeating the conversation.
      */
     readonly entries: readonly SessionActivityEntry[];
-    /** Whether rows were dropped by the entry cap or the byte budget. */
+    /**
+     * Whether older rows may still be read.
+     *
+     * Wider than "this answer was trimmed", because a long turn extends before
+     * the page window even when every row fitted. On a forward read this is
+     * "rows were dropped" OR "the log page has older records"; on a backwards
+     * read it is "the page has older records" AND "this page had rows of the
+     * requested turn" -- false there means the walk has passed the turn's
+     * beginning, and asking again would only return empty pages.
+     */
     readonly hasMore: boolean;
+    /**
+     * The smallest log position in the page the host read; `null` when nothing
+     * was read or no record in it named a position.
+     *
+     * The cursor for paging back: the phone sends this value back as
+     * `beforeSeq`. It is the page's own lower bound rather than the oldest
+     * *returned* row, so it says where reading stopped rather than how many rows
+     * survived the caps.
+     */
+    readonly oldestSeq: number | null;
 }
 /**
  * The running turn's compact process detail.
  *
- * A paid-account feature, but a read-only host method: it is the same current
- * log page {@link sessionMessages} reads (see {@link readLogPage}), narrowed to
- * the one turn that has not ended yet and then mapped to one-line rows. The
+ * A paid-account feature, but a read-only host method: it reads a log page (see
+ * {@link readLogPage}), narrows it to one turn and maps it to one-line rows. The
  * conversation itself does not travel here -- committed user/assistant
  * messages, step markers and every unrecognised event are skipped -- because
  * the conversation screen already drew them from the summary page.
+ *
+ * Two reads share that mapping. Without a cursor this is the newest page and
+ * finds the turn that has not ended yet. With `beforeSeq` + `turn` it reads the
+ * window before a position and keeps only that turn's rows, which is how a
+ * scrolling reader lazily loads the older part of a long turn. The answer's
+ * `oldestSeq` is the cursor for the next such request.
  *
  * Everything about the answer is bounded so it stays a small frame: at most
  * {@link ACTIVITY_MAX_ENTRIES} rows, a byte budget of
@@ -148,9 +172,14 @@ export interface SessionActivityResult {
  * @param ctx - a context observing `ctx.typertGateway`.
  * @param sessionId - the session to inspect.
  * @param maxEntries - how many rows the client wants; capped, default 200.
+ * @param beforeSeq - read the page before this log position instead of the
+ *   newest one. Requires `turn`.
+ * @param turn - the running turn a backwards page belongs to. Ignored without
+ *   `beforeSeq`, because a forward read names its own turn.
  * @returns the running turn's rows, or an empty feed when nothing runs.
+ * @throws MethodError when `beforeSeq` is given without `turn`.
  */
-export declare function sessionActivity(ctx: Context, sessionId: string, maxEntries?: number): Promise<SessionActivityResult>;
+export declare function sessionActivity(ctx: Context, sessionId: string, maxEntries?: number, beforeSeq?: number, turn?: number): Promise<SessionActivityResult>;
 /** A newly created or resumed session. */
 export interface CreateSessionResult {
     readonly sessionId: string;

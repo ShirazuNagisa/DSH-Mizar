@@ -148,7 +148,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `session.list` | `{}` | `{items: [SessionRow]}` —— DSH 会列出的会话，**不含已归档的**：归档集在工作区注册表里，DSH 自己的 `session/list` 不知道它，所以插件在出口处过滤。 |
 | `workspace.list` | `{}` | `{items: [WorkspaceRow], complete}` —— DSH **当前**拥有的工作区，按 DSH 自己的显示顺序（插件直接读 `ctx.workspaceRegistry.list()`，和电脑侧边栏同源），每个工作区带 `sessionIds`：DSH 认可的归属关系，只有主机知道，手机不该自己拿目录去猜；**已归档的会话不在其中**（DSH 的归档保留归属槽位，以便取消归档回到原位，所以过滤在插件出口做）。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话，手机再按目录分组就会一直留着它们。<br>`sessionIds` **缺省**和 `[]` 是两回事：`[]` 是「DSH 说这里没有会话」，缺省是「主机没说」，只有后者才允许退回按目录匹配。<br>`complete` 说这份清单**是不是完整读到了**：只有 `true` 才允许丢弃已经不在清单里的工作区，因为「主机答不上来」和「主机一个都没有」都是空数组。任何一条读不出来的记录都按「没答」处理（返回 `{items: [], complete: false}`）——主机还可以用 `workspace/follow` 的 baseline 兜底；两条路都不行时手机退回按目录分组。 |
 | `session.messages` | `sessionId`, `maxMessages?`, `beforeSeq?`, `afterSeq?`（见下） | `{sessionId, asOfSeq, records[], hasMore}` —— **只发总结，不发过程**。一页里只保留：`turn/start`、`turn/end`、每个 `step/start`（只用来数步骤，约 100 字节）、人写的 `user/message`，以及**每一轮里模型最后那条有正文的 `assistant/message`**。逐步叙述、工具调用/结果、流式 attempt，以及**还没结束的那一轮的中间回复**，全部不发 —— 后两项正是最大的一块。原因：手机端只按「总结 + 状态」渲染，全量历史经中继太吃服务器带宽。`asOfSeq`（分页切点）取自 `session/follow` 首帧的 `cursor`，这是 DSH 自己对 `throughSeq` 的定义（"Inclusive log cut obtained from the corresponding follow opening frame"），原来用 `session/projections` 的 `asOfSeq` 会滞后于日志头，导致刚发出的那一轮不在页里、手机上就没有「AI 正在工作」那一行。 |
-| `session.activity` | `sessionId`, `maxEntries?`（默认 200，最多 300） | `{sessionId, asOfSeq, turn, entries[], hasMore}` —— **只返回正在跑的那一轮的紧凑过程**，付费账户的「全量细节」来源：`entries` 里每行是 `{id, seq, at, kind, title, text}`，`kind` 为 `thinking` / `command` / `output` / `tool`，`text` 一行、最多 240 字符；没有正在跑的轮次时 `turn: null, entries: [], hasMore: false`。详细语义见下。 |
+| `session.activity` | `sessionId`, `maxEntries?`（默认 200，最多 300）, `beforeSeq?`, `turn?`（见下） | `{sessionId, asOfSeq, turn, entries[], hasMore, oldestSeq}` —— **只返回正在跑的那一轮的紧凑过程**，付费账户的「全量细节」来源：`entries` 里每行是 `{id, seq, at, kind, title, text}`，`kind` 为 `thinking` / `command` / `output` / `tool`，`text` 一行、最多 240 字符；没有正在跑的轮次时 `turn: null, entries: [], hasMore: false`。详细语义见下。 |
 | `session.stats` | `sessionId` | `{sessionId, asOfSeq, stats}` —— `stats` 里的每个字段来自主机各自的 projection，**谁有就答谁**：agent 还没跑过的会话没有 `context`（上下文占用）也没有 `title`（标题要等模型读完对话才有），只有 `tokenUsage` 一类。所以「这次的帧比上一帧少几个字段」是**正常回答**，不是失败——实测一台真主机上 12 个会话里有 4 个是这样（缺 `context, title`）。手机必须把新帧**合并**进旧帧（有新值用新值，没有的保留），直接替换会把屏幕上已经画出来的标题、模型、上下文用量抹掉。 |
 | `session.create` | `cwd?` \| `workspaceId?` \| `sessionId?`, `agentPreset?` | `{sessionId, agentPreset}` —— 传 `cwd` 时插件会先把它解析成**工作区**（没有就建一个），再把工作区 id 交给 DSH。原因见下。 |
 | `session.rename` | `sessionId`, `title` | `{renamed: true}` |
@@ -199,11 +199,37 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
   第一行。**用户/助手已提交的消息、`step/*` 标记、以及任何不认识的事件全部跳过**——不把
   原始 payload 倒给手机，DSH 以后加事件也不会把这一帧撑大。
 - **有界**：默认 200 行、最多 300 行；整个 `entries` 的 JSON 预算 **256 KiB**（远低于
-  listener 的 512 KiB 帧上限和 iOS 的 1 MiB）。超出时从最旧的行开始裁，`hasMore: true`。
-  只有最新的行值得看，手机靠 `id`（`seq-<n>`，无 seq 时是 `at-<time>-<kind>`）合并。
+  listener 的 512 KiB 帧上限和 iOS 的 1 MiB）。超出时保留最新的行、裁掉最旧的，`hasMore`
+  见下面的翻页一节。只有最新的行值得看，手机靠 `id`（`seq-<n>`，无 seq 时是
+  `at-<time>-<kind>`）合并。
 - **`turn: null` 不是错误**：两轮之间、会话不存在都返回空 `entries`，手机据此隐藏细节区。
 - 这是**纯读**方法：不唤醒 agent、不改会话状态。是否调用由手机端决定（付费账户才调），
   宿主不判断账户状态。
+
+**向后翻页（0.9.4 新增，纯加法）。** 不带游标时读的是最新一页；带上 `beforeSeq` + `turn`
+才是**向后翻**：读 `beforeSeq` 之前的那一页日志（`session/page` 的 `beforeSeq` 参数），
+只保留 `turn` 等于所请求轮次的条目，仍按从旧到新排。这样长轮次的旧过程行可以随滚动懒加载，
+而不必每秒重读最新页。
+
+- **`oldestSeq` 是读到的这一页里最小的日志序号**（不是最旧返回行）。**手机从最旧返回行的
+  `seq` 继续翻**，而不是从页边界继续：条目上限/字节预算裁掉的是页里最旧的一端，从页边界
+  翻会跳过它们；从最旧返回行翻则下一负正好覆盖被裁掉的部分。`oldestSeq: null` 表示这一页
+  没有任何带序号的记录，或者什么都没读到（会话不存在）。
+- **向后翻的 `hasMore`** = 「条目被裁剪（`entries.length !== mapped.length`）」**或**
+  「这一页还有更旧的记录**且**这一页至少贡献了一条该轮次的条目」。第二项为假说明已经翻过
+  这一轮的开头，继续问只会拿到空页，必须停；第一项为真时虽然页边界到了，但被裁掉的旧行
+  仍夹在游标和页边界之间，必须继续。**向前读的 `hasMore`** 则放宽为「条目被裁剪」**或**
+  「这一页还有更旧记录」：这一轮可能延伸到页窗口之前，手机问一次才知道。
+- `turn` 必须和 `beforeSeq` 一起出现：一页日志横跨多个轮次，没有 `turn` 就不知道该留谁。
+  **`beforeSeq` 不带 `turn` → `MALFORMED_FRAME`**；`turn` 不带 `beforeSeq` 则被忽略（向前读
+  自己找正在跑的轮次）。`beforeSeq` / `turn` 传了但不是非负数字同样是 `MALFORMED_FRAME`。
+- 老宿主（0.8.4 及更早，没有这两个字段的构建）忽略它们、照旧回最新一页；手机靠「这一页没有
+  新增任何 entry id」判停，于是退化成今天的行为而不是死循环。新增可选字段，**不需要升
+  `PROTOCOL_VERSION`**。
+- 页大小、200/300 行上限和 256 KiB 预算不变，向后翻也套同样的裁剪。**注意 `oldestSeq` 是
+  页边界而不是最旧返回行**：向后翻时不要把 `maxEntries` 传得比一整页的条目还少 —— 被裁掉的
+  行位于新游标和已返回的行之间，下一页只读游标更小（更旧）的记录，就再也读不到它们了。
+  省略 `maxEntries`、用默认 200 最稳。
 
 这是**新增方法**：老宿主对未知方法回 `NOT_IMPLEMENTED`（客户端据此知道这台电脑的插件太旧），
 老客户端不会调用它，所以**不需要升 `PROTOCOL_VERSION`**。

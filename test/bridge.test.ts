@@ -1601,9 +1601,13 @@ describe('session.activity (method table)', () => {
    * projections read, and both reads are still exercised.
    *
    * @param records - the records every page returns.
+   * @param options - the page's `hasMore`, and whether the session has a cut.
    * @returns the context and the recorded invocations.
    */
-  function activityContext(records: unknown[]): { ctx: Context; calls: Invocation[] } {
+  function activityContext(
+    records: unknown[],
+    options: { hasMore?: boolean; noCut?: boolean } = {},
+  ): { ctx: Context; calls: Invocation[] } {
     const calls: Invocation[] = []
     const ctx = {
       typertGateway: {
@@ -1616,8 +1620,10 @@ describe('session.activity (method table)', () => {
             method: request.method,
             args: request.args,
           })
-          if (request.method === 'projections') return { asOfSeq: 9, values: {} }
-          if (request.method === 'page') return { records, hasMore: false }
+          if (request.method === 'projections') {
+            return options.noCut === true ? { asOfSeq: null, values: {} } : { asOfSeq: 9, values: {} }
+          }
+          if (request.method === 'page') return { records, hasMore: options.hasMore === true }
           throw new Error(`unexpected method ${request.method}`)
         },
       },
@@ -1650,7 +1656,14 @@ describe('session.activity (method table)', () => {
       context,
     )) as { sessionId: string; turn: number; entries: { kind: string }[] }
 
-    expect(result).toMatchObject({ sessionId: 's1', asOfSeq: 9, turn: 1, hasMore: false })
+    expect(result).toMatchObject({
+      sessionId: 's1',
+      asOfSeq: 9,
+      turn: 1,
+      hasMore: false,
+      // The page's smallest position: the cursor a later backwards read uses.
+      oldestSeq: 1,
+    })
     expect(result.entries.map((entry) => entry.kind)).toEqual(['thinking', 'command'])
   })
 
@@ -1667,6 +1680,10 @@ describe('session.activity (method table)', () => {
         maxMessages: 200,
       },
     })
+    // A forward read is the newest window: no lower bound travels.
+    expect((page?.args as { request: Record<string, unknown> }).request).not.toHaveProperty(
+      'beforeSeq',
+    )
   })
 
   it('requires a session id and ignores an unusable maxEntries', async () => {
@@ -1684,5 +1701,216 @@ describe('session.activity (method table)', () => {
     await expect(
       table['session.activity']?.({ sessionId: 's1', maxEntries: 'ten' }, context),
     ).resolves.toMatchObject({ sessionId: 's1', turn: null, entries: [] })
+  })
+
+  it('widens hasMore on a forward read when the page has older records', async () => {
+    // Every row fitted, so nothing was trimmed -- but the page itself starts
+    // partway into the log, and the running turn may extend before it. The phone
+    // can only find that out by asking, so this answer has to say so.
+    const records = [
+      event('turn/start', 40, { turn: 3 }),
+      event('tool/call', 41, {
+        turn: 3,
+        step: 1,
+        callId: 'c1',
+        name: 'bash',
+        arguments: JSON.stringify({ command: 'npm test' }),
+      }),
+    ]
+    const { ctx } = activityContext(records, { hasMore: true })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    const result = (await table['session.activity']?.({ sessionId: 's1' }, context)) as {
+      entries: unknown[]
+      hasMore: boolean
+      oldestSeq: number
+    }
+    expect(result.entries).toHaveLength(1)
+    expect(result.hasMore).toBe(true)
+    expect(result.oldestSeq).toBe(40)
+  })
+
+  it('reads the page before beforeSeq when paging back', async () => {
+    const records = [
+      event('tool/call', 20, {
+        turn: 2,
+        step: 1,
+        callId: 'c1',
+        name: 'bash',
+        arguments: JSON.stringify({ command: 'ls' }),
+      }),
+    ]
+    const { ctx, calls } = activityContext(records)
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    const result = (await table['session.activity']?.(
+      { sessionId: 's1', beforeSeq: 42, turn: 2, maxEntries: 10 },
+      context,
+    )) as { turn: number; entries: { id: string }[]; oldestSeq: number; hasMore: boolean }
+
+    expect(result).toMatchObject({ turn: 2, oldestSeq: 20, hasMore: false })
+    expect(result.entries.map((entry) => entry.id)).toEqual(['seq-20'])
+    const page = calls.find((call) => call.method === 'page')
+    expect(page?.args).toMatchObject({
+      request: {
+        address: { kind: 'session', sessionId: 's1' },
+        throughSeq: 9,
+        // The cursor the phone sent is the page's lower bound.
+        beforeSeq: 42,
+        maxMessages: 200,
+      },
+    })
+  })
+
+  it('keeps hasMore true when a backwards page was trimmed by the cap', async () => {
+    // The phone pages from the oldest *returned* row, so rows the cap trimmed
+    // from the old end of this page are still reachable -- but only if this
+    // answer says the walk continues. Reporting just the page's own bound would
+    // end the walk here and drop them silently.
+    const records = [20, 21, 22].map((seq) =>
+      event('tool/call', seq, {
+        turn: 2,
+        step: 1,
+        callId: `c${seq}`,
+        name: 'bash',
+        arguments: JSON.stringify({ command: `step ${seq}` }),
+      }),
+    )
+    const { ctx } = activityContext(records)
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    const result = (await table['session.activity']?.(
+      { sessionId: 's1', beforeSeq: 42, turn: 2, maxEntries: 2 },
+      context,
+    )) as { entries: { id: string }[]; hasMore: boolean; oldestSeq: number }
+
+    // The newest rows fit under the cap; the oldest one did not.
+    expect(result.entries.map((entry) => entry.id)).toEqual(['seq-21', 'seq-22'])
+    expect(result.hasMore).toBe(true)
+    expect(result.oldestSeq).toBe(20)
+  })
+
+  it('keeps only the requested turn out of a backwards page', async () => {
+    // A page is a window cut out of the log, so it normally starts before the
+    // turn the caller asked for. Earlier turns' rows are expected and skipped;
+    // no `turn/start` is needed in the page.
+    const thinking = [
+      { type: 'reasoning-chunks', time0: 1, index: 0, dt: [], texts: ['thinking'] },
+    ]
+    const records = [
+      event('tool/call', 10, {
+        turn: 1,
+        step: 1,
+        callId: 'old',
+        name: 'bash',
+        arguments: JSON.stringify({ command: 'old' }),
+      }),
+      event('assistant/attempt', 11, { turn: 2, step: 1, stream: thinking }),
+      event('tool/call', 12, {
+        turn: 2,
+        step: 1,
+        callId: 'new',
+        name: 'bash',
+        arguments: JSON.stringify({ command: 'new' }),
+      }),
+      event('assistant/attempt', 13, { turn: 3, step: 1, stream: thinking }),
+    ]
+    const { ctx } = activityContext(records, { hasMore: true })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    const result = (await table['session.activity']?.(
+      { sessionId: 's1', beforeSeq: 100, turn: 2 },
+      context,
+    )) as { turn: number; entries: { id: string }[]; hasMore: boolean; oldestSeq: number }
+
+    expect(result.turn).toBe(2)
+    expect(result.entries.map((entry) => entry.id)).toEqual(['seq-11', 'seq-12'])
+    // The page has older records and it contributed rows of this turn, so
+    // another page may be worth asking for.
+    expect(result.hasMore).toBe(true)
+    expect(result.oldestSeq).toBe(10)
+  })
+
+  it("stops the walk when a backwards page passes the turn's beginning", async () => {
+    // Older records exist -- but none of them is of the requested turn. That is
+    // the definitive "there is no more history for this turn", not "try again",
+    // so the phone must not page for ever on empty answers.
+    const records = [
+      event('tool/call', 5, {
+        turn: 1,
+        step: 1,
+        callId: 'ancient',
+        name: 'bash',
+        arguments: JSON.stringify({ command: 'old' }),
+      }),
+    ]
+    const { ctx } = activityContext(records, { hasMore: true })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    await expect(
+      table['session.activity']?.({ sessionId: 's1', beforeSeq: 50, turn: 7 }, context),
+    ).resolves.toEqual({
+      sessionId: 's1',
+      asOfSeq: 9,
+      turn: 7,
+      entries: [],
+      hasMore: false,
+      oldestSeq: 5,
+    })
+  })
+
+  it('answers a backwards page for a session with no log as an empty stop', async () => {
+    const { ctx } = activityContext([], { noCut: true })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    await expect(
+      table['session.activity']?.({ sessionId: 'gone', beforeSeq: 5, turn: 2 }, context),
+    ).resolves.toEqual({
+      sessionId: 'gone',
+      asOfSeq: null,
+      turn: 2,
+      entries: [],
+      hasMore: false,
+      oldestSeq: null,
+    })
+  })
+
+  it('refuses beforeSeq without a turn, and ignores a turn without beforeSeq', async () => {
+    const records = [
+      event('turn/start', 1, { turn: 1 }),
+      event('tool/call', 2, {
+        turn: 1,
+        step: 1,
+        callId: 'c1',
+        name: 'bash',
+        arguments: JSON.stringify({ command: 'npm test' }),
+      }),
+    ]
+    const { ctx, calls } = activityContext(records)
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    // A page read without a turn cannot be answered honestly: the page spans
+    // earlier turns, and guessing which one to keep would append another turn's
+    // rows to the feed.
+    await expect(
+      table['session.activity']?.({ sessionId: 's1', beforeSeq: 42 }, context),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+    await expect(
+      table['session.activity']?.({ sessionId: 's1', beforeSeq: 42, turn: 'two' }, context),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+    await expect(
+      table['session.activity']?.({ sessionId: 's1', beforeSeq: -1, turn: 2 }, context),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+
+    // `turn` alone is not a paging request: a forward read names its own
+    // running turn, so a stray one is ignored like any other unused field.
+    const forward = (await table['session.activity']?.(
+      { sessionId: 's1', turn: 99 },
+      context,
+    )) as { turn: number; entries: { id: string }[] }
+    expect(forward.turn).toBe(1)
+    expect(forward.entries.map((entry) => entry.id)).toEqual(['seq-2'])
+    // None of the refusals read the log; only the forward answer did.
+    expect(calls.filter((call) => call.method === 'page')).toHaveLength(1)
   })
 })

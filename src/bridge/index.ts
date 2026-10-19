@@ -134,6 +134,50 @@ function readStopActivity(payload: unknown): boolean {
 }
 
 /**
+ * Read the optional backwards-page cursor for `session.activity`.
+ *
+ * `beforeSeq` changes the read from "the newest window" to "the window before
+ * this position", so the pair is validated rather than treated as hints. A
+ * `beforeSeq` without a `turn` cannot be answered honestly: the page it names
+ * spans earlier turns too, and guessing which one the caller means would append
+ * another turn's rows to a feed. A `turn` without `beforeSeq` is ignored -- a
+ * forward read finds its own running turn.
+ *
+ * A present value that is not a usable number is a mistake, not an omission:
+ * quietly answering the newest page for a scrolling reader would hand them the
+ * wrong end of the log and look like a successful older page.
+ *
+ * @param payload - the request payload.
+ * @returns the cursor, or an empty object for a forward read.
+ * @throws MethodError when `beforeSeq` is present without a usable `turn`.
+ */
+function readActivityCursor(payload: unknown): { beforeSeq?: number; turn?: number } {
+  const fields = requireObject(payload, 'session.activity')
+  const beforeSeq = fields['beforeSeq']
+  if (beforeSeq === undefined) return {}
+  if (typeof beforeSeq !== 'number' || !Number.isFinite(beforeSeq) || beforeSeq < 0) {
+    throw new MethodError(
+      'MALFORMED_FRAME',
+      'session.activity: payload."beforeSeq" must be a non-negative number',
+    )
+  }
+  const turn = fields['turn']
+  if (turn === undefined) {
+    throw new MethodError(
+      'MALFORMED_FRAME',
+      'session.activity: payload."turn" is required when "beforeSeq" is given',
+    )
+  }
+  if (typeof turn !== 'number' || !Number.isFinite(turn) || turn < 0) {
+    throw new MethodError(
+      'MALFORMED_FRAME',
+      'session.activity: payload."turn" must be a non-negative number when "beforeSeq" is given',
+    )
+  }
+  return { beforeSeq, turn }
+}
+
+/**
  * Read a prompt's text, which is optional when attachments are present.
  *
  * Absent and empty both mean "there is no text part". A present value that is
@@ -437,15 +481,22 @@ export function createMethodTable(
      *
      * `maxEntries` is a hint, not a promise: the host clamps it to the protocol
      * ceiling and may return fewer rows when the byte budget fills.
+     *
+     * `beforeSeq` + `turn` ask for the page *before* a position instead of the
+     * newest one. That is how a scrolling reader loads the older rows of a long
+     * turn: the answer's `oldestSeq` is the cursor for the next request. Without
+     * `beforeSeq` the read is exactly what it always was.
      */
     'session.activity': async (payload) => {
-      const sessionId = requireString(payload, 'sessionId', 'session.activity')
-      const fields = payload as Record<string, unknown> | undefined
-      const maxEntries = fields?.['maxEntries']
+      const fields = requireObject(payload, 'session.activity')
+      const maxEntries = fields['maxEntries']
+      const cursor = readActivityCursor(payload)
       return sessionActivity(
         ctx,
-        sessionId,
+        requireString(payload, 'sessionId', 'session.activity'),
         typeof maxEntries === 'number' && Number.isFinite(maxEntries) ? maxEntries : undefined,
+        cursor.beforeSeq,
+        cursor.turn,
       )
     },
 
