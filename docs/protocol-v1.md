@@ -125,7 +125,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 
 ## 方法表
 
-19 个方法。`payload` 里的键：
+以下为基础方法，另新增五个可协商的附件方法（见 [附件扩展 v1](attachments-v1.md)），不改变原有帧版本。`payload` 里的键：
 
 ### 主机与会话
 
@@ -138,7 +138,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `session.stats` | `sessionId` | `{sessionId, asOfSeq, stats}` —— `stats` 里的每个字段来自主机各自的 projection，**谁有就答谁**：agent 还没跑过的会话没有 `context`（上下文占用）也没有 `title`（标题要等模型读完对话才有），只有 `tokenUsage` 一类。所以「这次的帧比上一帧少几个字段」是**正常回答**，不是失败——实测一台真主机上 12 个会话里有 4 个是这样（缺 `context, title`）。手机必须把新帧**合并**进旧帧（有新值用新值，没有的保留），直接替换会把屏幕上已经画出来的标题、模型、上下文用量抹掉。 |
 | `session.create` | `cwd?` \| `workspaceId?` \| `sessionId?`, `agentPreset?` | `{sessionId, agentPreset}` —— 传 `cwd` 时插件会先把它解析成**工作区**（没有就建一个），再把工作区 id 交给 DSH。原因见下。 |
 | `session.rename` | `sessionId`, `title` | `{renamed: true}` |
-| `session.prompt` | `sessionId`, `text`, `requestId?`, `clientTimeZone?`, `mode?` | `{accepted, requestId}` |
+| `session.prompt` | `sessionId`, `text`, `requestId?`, `clientTimeZone?`, `mode?`, `attachments?` | `{accepted, requestId}`；`attachments` 为本设备、本会话上传完成后的不透明 ID 列表，最多 5 个。带附件时必须提供稳定 `requestId`，且允许 `text: ""`。见[附件扩展](attachments-v1.md)。 |
 | `session.cancel` | `sessionId` | `{accepted}` |
 
 **`session.messages` 的增量语义（省流）。** 手机每次刷新都可以带上「我读到哪」，插件只回那之后的新记录。三种取值含义不同：

@@ -330,7 +330,7 @@ export class MizarListener {
    * @param port - the port to bind.
    */
   async #bindAll(addresses: readonly string[], port: number): Promise<void> {
-    this.#wss = new WebSocketServer({ noServer: true })
+    this.#wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
     for (const address of addresses) {
       const server = createServer((request, response) => {
         void this.#handleHttp(request, response)
@@ -575,6 +575,7 @@ export class MizarListener {
   #acceptSocket(socket: WebSocket, remote: string): void {
     this.#sockets.add(socket)
     let session: ClientSession | undefined
+    let inFlight = 0
 
     const tracked = socket as WebSocket & { __mizarAlive?: boolean }
     tracked.__mizarAlive = true
@@ -739,12 +740,17 @@ export class MizarListener {
           return
         }
 
+        if (inFlight >= 8) {
+          send(errorFrame('RATE_LIMITED', 'too many in-flight requests on this connection', frame.id, true))
+          return
+        }
         const handler = this.#options.methods?.[frame.type]
         if (handler === undefined) {
           send(errorFrame('NOT_IMPLEMENTED', `method "${frame.type}" is not implemented`, frame.id))
           return
         }
 
+        inFlight++
         try {
           const result = await handler(frame.payload, session)
           // Recorded only after the answer is on the wire. A write that never
@@ -761,6 +767,8 @@ export class MizarListener {
           } else {
             send(errorFrame('INTERNAL', describe(error), frame.id))
           }
+        } finally {
+          inFlight--
         }
       })().catch((error: unknown) => {
         send(errorFrame('INTERNAL', describe(error), currentId))

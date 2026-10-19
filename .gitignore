@@ -8,6 +8,11 @@
 node_modules/
 *.log
 
+# Local validation evidence and package archives (may contain machine paths)
+reports/
+attachment-tests.json
+*.tgz
+
 # --- Build output ---
 # The plugin's `lib/` is committed **on purpose**: `dsh plugin add` installs a git
 # checkout with no build step, so a missing `lib/` is a plugin that does not work

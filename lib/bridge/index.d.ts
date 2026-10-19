@@ -12,6 +12,7 @@
  * @module dsh-mizar/bridge
  */
 import type { Context } from '../dsh.js';
+import type { AttachmentBridge } from '../attachments/bridge.js';
 import type { DeliveryLedger } from './delivery.js';
 import { InteractionBroker } from './interactions.js';
 import type { PushBinding } from '../push/binding.js';
@@ -46,4 +47,4 @@ export interface HostFacts {
  *   it just does not save the phone the bytes it already read.
  * @returns the table, keyed by wire method name.
  */
-export declare function createMethodTable(ctx: Context, facts: HostFacts, broker: InteractionBroker, push?: PushBinding, delivery?: DeliveryLedger): Record<string, MethodHandler>;
+export declare function createMethodTable(ctx: Context, facts: HostFacts, broker: InteractionBroker, push?: PushBinding, delivery?: DeliveryLedger, attachments?: AttachmentBridge): Record<string, MethodHandler>;

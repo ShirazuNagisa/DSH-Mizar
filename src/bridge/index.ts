@@ -12,6 +12,7 @@
  * @module dsh-mizar/bridge
  */
 import type { Context } from '../dsh.js'
+import type { AttachmentBridge } from '../attachments/bridge.js'
 import { isLiveActivityToken } from '../auth/devices.js'
 import { deliverQuestionAnswers } from './answerers.js'
 import type { DeliveryLedger } from './delivery.js'
@@ -231,7 +232,12 @@ export function createMethodTable(
   broker: InteractionBroker,
   push?: PushBinding,
   delivery?: DeliveryLedger,
+  attachments?: AttachmentBridge,
 ): Record<string, MethodHandler> {
+  const attachmentService = (): AttachmentBridge => {
+    if (!attachments) throw new MethodError('NOT_IMPLEMENTED', 'install the attachment-enabled host plugin')
+    return attachments
+  }
   const table: Record<string, MethodHandler> = {
     /** Host identity and protocol facts. */
     'host.info': async () => ({
@@ -325,14 +331,27 @@ export function createMethodTable(
      * the host treats it as an idempotency key and will not insert the same
      * message twice.
      */
-    'session.prompt': async (payload) =>
-      promptSession(ctx, {
+    'session.prompt': async (payload, context) => {
+      if (attachments) return attachments.prompt(context.deviceId, payload, readMode(payload))
+      const record = optionalObject(payload, 'session.prompt')
+      // A host without the extension must never silently discard requested files.
+      if (record['attachments'] !== undefined && (!Array.isArray(record['attachments']) || record['attachments'].length > 0)) {
+        return attachmentService().prompt(context.deviceId, payload, readMode(payload))
+      }
+      return promptSession(ctx, {
         sessionId: requireString(payload, 'sessionId', 'session.prompt'),
         text: requireString(payload, 'text', 'session.prompt'),
         mode: readMode(payload),
         requestId: optionalString(payload, 'requestId'),
         clientTimeZone: optionalString(payload, 'clientTimeZone'),
-      }),
+      })
+    },
+
+    'attachment.capabilities': async () => attachmentService().capabilities(),
+    'attachment.begin': async (payload, context) => attachmentService().begin(context.deviceId, payload),
+    'attachment.chunk': async (payload, context) => attachmentService().uploads.chunk(context.deviceId, payload),
+    'attachment.finish': async (payload, context) => attachmentService().uploads.finish(context.deviceId, payload),
+    'attachment.abort': async (payload, context) => attachmentService().uploads.abort(context.deviceId, payload),
 
     /** Interrupt the running turn. */
     'session.cancel': async (payload) =>

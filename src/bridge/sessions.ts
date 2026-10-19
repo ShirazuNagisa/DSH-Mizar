@@ -700,6 +700,11 @@ export async function createSession(
   }
 }
 
+/** Host-generated content only: the mobile wire never accepts these parts directly. */
+export type PromptPart =
+  | { readonly type: 'image'; readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; readonly data: string; readonly name: string }
+  | { readonly type: 'file'; readonly receiptId: string }
+
 /** Acceptance of a prompt. */
 export interface PromptResult {
   /** Always true when the call succeeds; the host rejects rather than queues silently. */
@@ -729,6 +734,8 @@ export async function promptSession(
     mode?: 'queue' | 'steer'
     requestId?: string
     clientTimeZone?: string
+    attachmentParts?: readonly PromptPart[]
+    signal?: AbortSignal
   },
 ): Promise<PromptResult> {
   const requestId = options.requestId ?? randomUUID()
@@ -741,11 +748,16 @@ export async function promptSession(
         requestId,
         sessionId: options.sessionId,
         mode: options.mode ?? 'queue',
-        content: [{ type: 'text', text: options.text }],
+        content: [
+          ...(options.text !== '' || !options.attachmentParts?.length ? [{ type: 'text', text: options.text }] : []),
+          ...(options.attachmentParts ?? []),
+        ],
         ...(options.clientTimeZone === undefined ? {} : { clientTimeZone: options.clientTimeZone }),
       },
     },
-    signal: AbortSignal.timeout(60_000),
+    signal: options.signal
+      ? AbortSignal.any([options.signal, AbortSignal.timeout(60_000)])
+      : AbortSignal.timeout(60_000),
   })
 
   return { accepted: true, requestId }

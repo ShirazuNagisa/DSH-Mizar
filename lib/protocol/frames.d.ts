@@ -44,7 +44,7 @@ export declare const PAIR_PATH = "/mizar/v1/pair";
  * These are the app's switch statement; adding one is a protocol change and
  * needs a version bump if it changes an existing meaning.
  */
-export declare const ERROR_CODES: readonly ["PROTOCOL_VERSION_MISMATCH", "MALFORMED_FRAME", "UNAUTHENTICATED", "PAIRING_REQUIRED", "PAIRING_CODE_INVALID", "PAIRING_CODE_EXPIRED", "PAIRING_CODE_UNKNOWN", "RATE_LIMITED", "DEVICE_REVOKED", "WRITER_HELD", "MODEL_UNAVAILABLE", "REMOTE_ERROR", "NOT_IMPLEMENTED", "INTERNAL", "RESPONSE_TOO_LARGE"];
+export declare const ERROR_CODES: readonly ["PROTOCOL_VERSION_MISMATCH", "MALFORMED_FRAME", "UNAUTHENTICATED", "PAIRING_REQUIRED", "PAIRING_CODE_INVALID", "PAIRING_CODE_EXPIRED", "PAIRING_CODE_UNKNOWN", "RATE_LIMITED", "DEVICE_REVOKED", "WRITER_HELD", "MODEL_UNAVAILABLE", "REMOTE_ERROR", "NOT_IMPLEMENTED", "UPLOAD_NOT_FOUND", "UPLOAD_EXPIRED", "UPLOAD_TOO_LARGE", "UPLOAD_LIMIT_REACHED", "UPLOAD_OFFSET_MISMATCH", "UPLOAD_INTEGRITY", "ATTACHMENT_INVALID", "INTERNAL", "RESPONSE_TOO_LARGE"];
 /** One failure code. */
 export type ErrorCode = (typeof ERROR_CODES)[number];
 /** The `hello` frame: the first frame a client must send on a socket. */

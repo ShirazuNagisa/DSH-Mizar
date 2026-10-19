@@ -135,6 +135,16 @@ export declare function createSession(ctx: Context, options: {
     sessionId?: string;
     agentPreset?: string;
 }): Promise<CreateSessionResult>;
+/** Host-generated content only: the mobile wire never accepts these parts directly. */
+export type PromptPart = {
+    readonly type: 'image';
+    readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+    readonly data: string;
+    readonly name: string;
+} | {
+    readonly type: 'file';
+    readonly receiptId: string;
+};
 /** Acceptance of a prompt. */
 export interface PromptResult {
     /** Always true when the call succeeds; the host rejects rather than queues silently. */
@@ -161,6 +171,8 @@ export declare function promptSession(ctx: Context, options: {
     mode?: 'queue' | 'steer';
     requestId?: string;
     clientTimeZone?: string;
+    attachmentParts?: readonly PromptPart[];
+    signal?: AbortSignal;
 }): Promise<PromptResult>;
 /**
  * Interrupt the running turn.

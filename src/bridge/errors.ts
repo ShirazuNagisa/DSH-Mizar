@@ -39,6 +39,7 @@ const MAPPED: Readonly<Record<string, ErrorCode>> = {
   'session/writer-held': 'WRITER_HELD',
   // The selected provider/model pair is not in the available catalog.
   'session/model-unavailable': 'MODEL_UNAVAILABLE',
+  'session/attachment-invalid': 'ATTACHMENT_INVALID',
   // The default model could not be initialised because the provider exposes no
   // usable model at all.
   'session/provider-models-unavailable': 'MODEL_UNAVAILABLE',

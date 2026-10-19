@@ -560,6 +560,11 @@ describe('method table', () => {
     expect(Object.keys(createMethodTable(ctx, facts, new InteractionBroker())).sort()).toEqual(
       [
         'approval.answer',
+        'attachment.abort',
+        'attachment.begin',
+        'attachment.capabilities',
+        'attachment.chunk',
+        'attachment.finish',
         'host.info',
         'interactions.pending',
         'model.catalog',
