@@ -1,5 +1,6 @@
 import type { Context } from '../dsh.js';
 import { type SessionStatsFrame } from './stats.js';
+import { type PromptAttachment } from './uploads.js';
 /** One row in the session list. */
 export interface SessionRow {
     readonly sessionId: string;
@@ -151,13 +152,23 @@ export interface PromptResult {
  * generate it once and reuse it across retries — which is why the optional
  * `requestId` argument exists rather than being minted here every call.
  *
+ * ### Attachments
+ *
+ * `text` may be absent when there is at least one attachment, and the resulting
+ * content preserves the caller's order: the text first (when there is one), then
+ * each attachment in the order its id was listed. A prompt with neither is
+ * refused before any host call -- DSH itself requires one of the two, and saying
+ * so here keeps the failure a clear `MALFORMED_FRAME` rather than an upstream
+ * error.
+ *
  * @param ctx - a context observing `ctx.typertGateway`.
- * @param options - target session, text, delivery mode and idempotency key.
+ * @param options - target session, text and/or attachments, delivery mode and idempotency key.
  * @returns the acceptance.
  */
 export declare function promptSession(ctx: Context, options: {
     sessionId: string;
-    text: string;
+    text?: string;
+    attachments?: readonly PromptAttachment[];
     mode?: 'queue' | 'steer';
     requestId?: string;
     clientTimeZone?: string;

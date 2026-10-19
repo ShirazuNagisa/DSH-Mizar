@@ -11,6 +11,7 @@
  *
  * @module dsh-mizar/bridge
  */
+import { join } from 'node:path'
 import type { Context } from '../dsh.js'
 import { isLiveActivityToken } from '../auth/devices.js'
 import { deliverQuestionAnswers } from './answerers.js'
@@ -36,6 +37,7 @@ import {
   sessionMessages,
   sessionStats,
 } from './sessions.js'
+import { parseUploadBegin, parseUploadChunk, UploadStore } from './uploads.js'
 
 /** Per-connection facts handed to a method. */
 export interface MethodContext {
@@ -85,6 +87,59 @@ function readMode(payload: unknown): 'queue' | 'steer' {
     throw new MethodError('MALFORMED_FRAME', `session.prompt: mode must be "queue" or "steer", got "${mode}"`)
   }
   return mode
+}
+
+/**
+ * Read a prompt's text, which is optional when attachments are present.
+ *
+ * Absent and empty both mean "there is no text part". A present value that is
+ * not a string is a mistake rather than an omission: silently dropping it would
+ * send a prompt the client did not mean to send.
+ *
+ * @param payload - the request payload.
+ * @returns the text, or `undefined` when there is none.
+ * @throws MethodError when the field is present but not a string.
+ */
+function readPromptText(payload: unknown): string | undefined {
+  const record = optionalObject(payload, 'session.prompt')
+  const value = record['text']
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') {
+    throw new MethodError('MALFORMED_FRAME', 'session.prompt: payload."text" must be a string')
+  }
+  return value === '' ? undefined : value
+}
+
+/**
+ * Read the attachment ids a prompt refers to.
+ *
+ * Shape only -- whether each id names a usable attachment is the upload store's
+ * question, and its answer is a specific code (`ATTACHMENT_UNKNOWN`) rather than
+ * a generic malformed frame.
+ *
+ * @param payload - the request payload.
+ * @returns the ids, empty when the field is absent.
+ * @throws MethodError when the field is present but not an array of non-empty strings.
+ */
+function readAttachmentIds(payload: unknown): string[] {
+  const record = optionalObject(payload, 'session.prompt')
+  const value = record['attachmentIds']
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) {
+    throw new MethodError(
+      'MALFORMED_FRAME',
+      'session.prompt: payload."attachmentIds" must be an array of strings',
+    )
+  }
+  return value.map((entry) => {
+    if (typeof entry !== 'string' || entry === '') {
+      throw new MethodError(
+        'MALFORMED_FRAME',
+        'session.prompt: payload."attachmentIds" must contain non-empty strings',
+      )
+    }
+    return entry
+  })
 }
 
 /**
@@ -216,13 +271,16 @@ function readRegistration(payload: unknown): {
  * Build the method table for one plugin mount.
  *
  * @param ctx - the plugin context, used for every DSH call.
- * @param facts - host identity reported to clients.
+ * @param facts - host identity reported to clients, including the state directory
+ *   the upload staging area lives under.
  * @param broker - the interaction broker holding pending approvals and questions.
  * @param push - where a device's notification endpoint is recorded, when the host
  *   has push at all. Absent in compositions without a relay.
  * @param delivery - what each device has already been sent, when the host keeps
  *   it. Absent leaves every page full: a composition without it still answers,
  *   it just does not save the phone the bytes it already read.
+ * @param uploads - the attachment staging store. Absent builds one under
+ *   `facts.home`; a caller that wants to share or test one may pass it.
  * @returns the table, keyed by wire method name.
  */
 export function createMethodTable(
@@ -231,7 +289,15 @@ export function createMethodTable(
   broker: InteractionBroker,
   push?: PushBinding,
   delivery?: DeliveryLedger,
+  uploads?: UploadStore,
 ): Record<string, MethodHandler> {
+  const uploadStore =
+    uploads ??
+    new UploadStore({
+      root: join(facts.home, 'uploads'),
+      attachmentsRoot: join(facts.home, 'attachments'),
+    })
+
   const table: Record<string, MethodHandler> = {
     /** Host identity and protocol facts. */
     'host.info': async () => ({
@@ -324,15 +390,62 @@ export function createMethodTable(
      * Send a prompt. The client should reuse one `requestId` across retries:
      * the host treats it as an idempotency key and will not insert the same
      * message twice.
+     *
+     * `text` is required only when there are no attachments. The ids name
+     * finished uploads from `upload.finish`; each is checked against this
+     * connection's device and this session before anything is read.
      */
-    'session.prompt': async (payload) =>
-      promptSession(ctx, {
-        sessionId: requireString(payload, 'sessionId', 'session.prompt'),
-        text: requireString(payload, 'text', 'session.prompt'),
-        mode: readMode(payload),
+    'session.prompt': async (payload, context) => {
+      const sessionId = requireString(payload, 'sessionId', 'session.prompt')
+      const text = readPromptText(payload)
+      const attachmentIds = readAttachmentIds(payload)
+      const mode = readMode(payload)
+      if (text === undefined && attachmentIds.length === 0) {
+        throw new MethodError(
+          'MALFORMED_FRAME',
+          'session.prompt: payload."text" must be a non-empty string when no attachments are given',
+        )
+      }
+      const attachments =
+        attachmentIds.length === 0
+          ? []
+          : await uploadStore.resolveForPrompt(context.deviceId, sessionId, attachmentIds)
+      return promptSession(ctx, {
+        sessionId,
+        ...(text === undefined ? {} : { text }),
+        ...(attachments.length === 0 ? {} : { attachments }),
+        mode,
         requestId: optionalString(payload, 'requestId'),
         clientTimeZone: optionalString(payload, 'clientTimeZone'),
-      }),
+      })
+    },
+
+    /**
+     * Start an attachment upload.
+     *
+     * The device comes from the connection, not the payload: an upload is one
+     * phone's, and no field it sends may say otherwise. `chunkBytes` in the
+     * answer is the exact size every chunk but the last must be.
+     */
+    'upload.begin': async (payload, context) =>
+      uploadStore.begin(context.deviceId, parseUploadBegin(payload)),
+
+    /**
+     * Send one chunk of an attachment.
+     *
+     * Idempotent for an index already accepted; refused out of order and when
+     * the bytes for an accepted index differ. See `bridge/uploads.ts`.
+     */
+    'upload.chunk': async (payload, context) =>
+      uploadStore.chunk(context.deviceId, parseUploadChunk(payload)),
+
+    /** Finish an upload and get the attachment id a prompt refers to. */
+    'upload.finish': async (payload, context) =>
+      uploadStore.finish(context.deviceId, requireString(payload, 'uploadId', 'upload.finish')),
+
+    /** Discard a half-sent upload and its bytes. */
+    'upload.abort': async (payload, context) =>
+      uploadStore.abort(context.deviceId, requireString(payload, 'uploadId', 'upload.abort')),
 
     /** Interrupt the running turn. */
     'session.cancel': async (payload) =>

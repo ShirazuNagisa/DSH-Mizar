@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   encodeFrame,
+  ERROR_CODES,
   errorFrame,
   isHelloFrame,
   okFrame,
@@ -140,6 +141,32 @@ describe('isHelloFrame', () => {
   it('does not match a request that happens to be named like hello', () => {
     const frame = accept({ v: 1, type: 'session.hello', id: 'a' })
     expect(isHelloFrame(frame)).toBe(false)
+  })
+})
+
+describe('error codes', () => {
+  it('carries every code the attachment methods answer with', () => {
+    // The app renders localized text from the code, so the upload vocabulary is
+    // part of the contract the moment a method can produce it.
+    for (const code of [
+      'UPLOAD_UNKNOWN',
+      'UPLOAD_BAD_CHUNK',
+      'UPLOAD_TOO_LARGE',
+      'UPLOAD_INCOMPLETE',
+      'ATTACHMENT_UNKNOWN',
+      'ATTACHMENT_TOO_LARGE',
+      'ATTACHMENT_UNSUPPORTED',
+      'ATTACHMENT_FAILED',
+    ]) {
+      expect(ERROR_CODES, `${code} is not a wire code`).toContain(code)
+    }
+  })
+
+  it('does not change the protocol version for optional additions', () => {
+    // New methods, new optional payload fields and new error codes are
+    // compatible: every existing frame means what it meant, and a peer that does
+    // not know a key or a method leaves it alone.
+    expect(PROTOCOL_VERSION).toBe(1)
   })
 })
 

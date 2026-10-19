@@ -784,3 +784,154 @@ describe('the summary page', () => {
     await expect(sessionMessages(ctx, 's1')).resolves.toMatchObject({ records: [] })
   })
 })
+
+/** The content parts of a message record the bridge returned. */
+function contentOf(value: unknown): unknown[] {
+  const data = eventOf(value)['data'] as { content?: unknown } | undefined
+  return Array.isArray(data?.content) ? data.content : []
+}
+
+/** One durable image content block, as a committed user message carries it. */
+function imageBlock(name: string): unknown {
+  return {
+    type: 'image',
+    attachment: { attachmentId: `image-${name}`, name, mediaType: 'image/jpeg', bytes: 1024 },
+  }
+}
+
+/** One durable file content block, as a committed user message carries it. */
+function fileBlock(name: string): unknown {
+  return {
+    type: 'file',
+    attachment: { attachmentId: `file-${name}`, name, mediaType: 'application/pdf', bytes: 2048 },
+  }
+}
+
+/**
+ * One user message with the given content parts.
+ * @param seq - the log position.
+ * @param content - the content blocks.
+ * @param kind - the message source kind; `user` unless a test is proving a filter.
+ * @returns the record.
+ */
+function userContent(seq: number, content: unknown[], kind = 'user'): unknown {
+  return record('user/message', seq, { role: 'user', content, source: { kind } })
+}
+
+describe('attachment-only prompts in the summary', () => {
+  it('appends [Photo] to an image-only prompt', async () => {
+    // A prompt that is only a photo has no text part, and the conversation
+    // screen draws text -- without a placeholder the turn renders as an empty
+    // bubble with nothing to say an image is there.
+    const onlyPhoto = userContent(0, [imageBlock('IMG_0001.JPG')])
+    const records = [
+      onlyPhoto,
+      record('turn/start', 1, { turn: 1 }),
+      record('turn/end', 2, { turn: 1, reason: { kind: 'complete' } }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 2, records }] })
+    const result = await sessionMessages(ctx, 's1')
+
+    const users = result.records.filter((value) => nameOf(value) === 'user/message')
+    expect(users).toHaveLength(1)
+    expect(contentOf(users[0])).toEqual([imageBlock('IMG_0001.JPG'), { type: 'text', text: '[Photo]' }])
+    // The host's record is not mutated: this object is the durable log record,
+    // and another reader may be holding the same one.
+    expect(contentOf(onlyPhoto)).toHaveLength(1)
+  })
+
+  it('appends [File: name] to a file-only prompt, one line per file', async () => {
+    const onlyFiles = userContent(0, [fileBlock('report.pdf'), fileBlock('notes.txt')])
+    const records = [
+      onlyFiles,
+      record('turn/start', 1, { turn: 1 }),
+      record('turn/end', 2, { turn: 1, reason: { kind: 'complete' } }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 2, records }] })
+    const result = await sessionMessages(ctx, 's1')
+
+    const user = result.records.find((value) => nameOf(value) === 'user/message')
+    expect(contentOf(user)).toEqual([
+      fileBlock('report.pdf'),
+      fileBlock('notes.txt'),
+      { type: 'text', text: '[File: report.pdf]\n[File: notes.txt]' },
+    ])
+  })
+
+  it('says [File] when the block carries no name', async () => {
+    const nameless = userContent(0, [{ type: 'file', attachment: { attachmentId: 'f1', bytes: 10 } }])
+    const records = [nameless, record('turn/start', 1, { turn: 1 }), record('turn/end', 2, { turn: 1, reason: { kind: 'complete' } })]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 2, records }] })
+    const result = await sessionMessages(ctx, 's1')
+
+    const user = result.records.find((value) => nameOf(value) === 'user/message')
+    expect(contentOf(user)).toContainEqual({ type: 'text', text: '[File]' })
+  })
+
+  it('leaves a prompt that already has text untouched, byte for byte', async () => {
+    // Placeholders are for prompts with nothing to read. A prompt with text must
+    // travel as the identical object: the bridge narrows pages, it does not
+    // reshape records.
+    const withCaption = userContent(0, [
+      { type: 'text', text: 'what is this?' },
+      imageBlock('IMG_0002.JPG'),
+    ])
+    const records = [
+      withCaption,
+      record('turn/start', 1, { turn: 1 }),
+      record('turn/end', 2, { turn: 1, reason: { kind: 'complete' } }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 2, records }] })
+    const result = await sessionMessages(ctx, 's1')
+
+    const user = result.records.find((value) => nameOf(value) === 'user/message')
+    expect(user).toBe(withCaption)
+  })
+
+  it('adds the placeholder to an unwrapped record in the log’s own shape', async () => {
+    // The gateway wraps records as `{type: 'event', event: {...}}`; a host that
+    // returns the durable log's shape has the event's fields at the top level.
+    const unwrapped = {
+      type: 'user/message',
+      seq: 0,
+      time: 1,
+      data: { role: 'user', content: [imageBlock('IMG_0003.JPG')], source: { kind: 'user' } },
+    }
+    const records = [
+      unwrapped,
+      { type: 'turn/start', seq: 1, time: 2, data: { turn: 1 } },
+      { type: 'turn/end', seq: 2, time: 3, data: { turn: 1, reason: { kind: 'complete' } } },
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 2, records }] })
+    const result = await sessionMessages(ctx, 's1')
+
+    const user = result.records.find((value) => nameOf(value) === 'user/message')
+    expect(nameOf(user)).toBe('user/message')
+    expect(contentOf(user)).toEqual([imageBlock('IMG_0003.JPG'), { type: 'text', text: '[Photo]' }])
+    // And the original object's content is not touched.
+    expect((unwrapped.data.content as unknown[]).length).toBe(1)
+  })
+
+  it('still drops injected context that happens to carry an image', async () => {
+    // The injected-context rule is about who wrote the message, not what it
+    // contains: a runtime-context record with an image is still not a prompt.
+    const records = [
+      userContent(0, [imageBlock('system.png')], 'runtime-context'),
+      userContent(1, [imageBlock('IMG_0004.JPG')]),
+      record('turn/start', 2, { turn: 1 }),
+      record('turn/end', 3, { turn: 1, reason: { kind: 'complete' } }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 3, records }] })
+    const result = await sessionMessages(ctx, 's1')
+
+    const users = result.records.filter((value) => nameOf(value) === 'user/message')
+    expect(users).toHaveLength(1)
+    expect(contentOf(users[0])).toEqual([imageBlock('IMG_0004.JPG'), { type: 'text', text: '[Photo]' }])
+  })
+})

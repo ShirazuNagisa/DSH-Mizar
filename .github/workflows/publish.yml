@@ -36,7 +36,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to publish, e.g. v0.8.3 (must match package.json)'
+        description: 'Tag to publish, e.g. v0.8.4 (must match package.json)'
         required: true
 
 permissions:

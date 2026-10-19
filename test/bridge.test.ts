@@ -9,7 +9,10 @@
  *
  * @module dsh-mizar/test/bridge
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '../src/dsh.js'
 import { toMethodError } from '../src/bridge/errors.js'
 import { listWorkspaces } from '../src/bridge/workspaces.js'
@@ -21,6 +24,7 @@ import {
   requireString,
 } from '../src/bridge/method-error.js'
 import { createMethodTable } from '../src/bridge/index.js'
+import { UploadStore } from '../src/bridge/uploads.js'
 import { InteractionBroker } from '../src/bridge/interactions.js'
 import { modelCatalog, selectModel } from '../src/bridge/models.js'
 import { permissionCatalog, setPermissionPreset } from '../src/bridge/permissions.js'
@@ -48,12 +52,18 @@ interface Invocation {
  * @param result - the value to return, or a function producing it.
  * @returns the fake context and the recorded invocations.
  */
-function fakeContext(result: unknown | ((request: Invocation) => unknown)): {
+function fakeContext(
+  result: unknown | ((request: Invocation) => unknown),
+  options: { fileUploads?: unknown } = {},
+): {
   ctx: Context
   calls: Invocation[]
 } {
   const calls: Invocation[] = []
   const ctx = {
+    ...(options.fileUploads === undefined
+      ? {}
+      : { get: (name: string) => (name === 'fileUploads' ? options.fileUploads : undefined) }),
     typertGateway: {
       invoke: async (request: Invocation) => {
         calls.push({
@@ -575,6 +585,10 @@ describe('method table', () => {
         'session.prompt',
         'session.rename',
         'question.answer',
+        'upload.abort',
+        'upload.begin',
+        'upload.chunk',
+        'upload.finish',
         'session.messages',
         'session.stats',
         'workspace.list',
@@ -925,3 +939,435 @@ async function capture(thunk: () => Promise<unknown>): Promise<unknown> {
     return error
   }
 }
+
+/** Temporary directories the attachment tests created, removed after each test. */
+const attachmentTempDirs: string[] = []
+
+afterEach(async () => {
+  await Promise.all(
+    attachmentTempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  )
+})
+
+/**
+ * A method table whose uploads live under a fresh temporary state directory.
+ *
+ * The real `createMethodTable` builds its own store under `facts.home`; passing
+ * one in here is what lets the tests use a short chunk size and clean up.
+ *
+ * @param result - the scripted gateway answer.
+ * @param options - a `fileUploads` service to expose, and the chunk size.
+ * @returns the table, the recorded gateway calls and the temp directory.
+ */
+async function attachmentTable(
+  result: unknown,
+  options: { fileUploads?: unknown; chunkBytes?: number } = {},
+): Promise<{
+  table: ReturnType<typeof createMethodTable>
+  calls: Invocation[]
+  dir: string
+}> {
+  const dir = await mkdtemp(join(tmpdir(), 'mizar-bridge-uploads-'))
+  attachmentTempDirs.push(dir)
+  const { ctx, calls } = fakeContext(result, {
+    ...(options.fileUploads === undefined ? {} : { fileUploads: options.fileUploads }),
+  })
+  const uploads = new UploadStore({
+    root: join(dir, 'uploads'),
+    attachmentsRoot: join(dir, 'attachments'),
+    chunkBytes: options.chunkBytes ?? 8,
+  })
+  const table = createMethodTable(
+    ctx,
+    { hostId: 'h1', hostName: 'mac', home: dir, protocolVersion: 1 },
+    new InteractionBroker(),
+    undefined,
+    undefined,
+    uploads,
+  )
+  return { table, calls, dir }
+}
+
+/** The prompt request the gateway was last asked to run. */
+function lastPromptRequest(calls: Invocation[]): Record<string, unknown> {
+  const call = calls[calls.length - 1]
+  if (call?.method !== 'prompt') throw new Error('no prompt call was recorded')
+  return (call.args as { request: Record<string, unknown> }).request
+}
+
+/**
+ * Upload a small attachment through the real method table.
+ *
+ * @param table - the method table.
+ * @param device - the connection the frames arrive on.
+ * @param request - what to upload.
+ * @param bytes - the exact bytes, which must fit the table's chunk size.
+ * @returns the finished attachment.
+ */
+async function uploadThroughTable(
+  table: ReturnType<typeof createMethodTable>,
+  device: { deviceId: string; deviceName: string; remote: string },
+  request: {
+    sessionId: string
+    kind: 'image' | 'file'
+    name: string
+    mediaType: string
+    byteSize: number
+  },
+  bytes: Buffer,
+): Promise<{ attachmentId: string; kind: string; name: string; mediaType: string; byteSize: number }> {
+  const begun = (await table['upload.begin']?.(request, device)) as {
+    uploadId: string
+    chunkBytes: number
+  }
+  expect(begun.chunkBytes).toBe(8)
+  await table['upload.chunk']?.(
+    { uploadId: begun.uploadId, index: 0, data: bytes.toString('base64') },
+    device,
+  )
+  return (await table['upload.finish']?.({ uploadId: begun.uploadId }, device)) as {
+    attachmentId: string
+    kind: string
+    name: string
+    mediaType: string
+    byteSize: number
+  }
+}
+
+describe('attachment upload methods', () => {
+  const device = { deviceId: 'd1', deviceName: 'iPhone', remote: '127.0.0.1' }
+  const other = { deviceId: 'd2', deviceName: 'iPad', remote: '127.0.0.2' }
+
+  it('runs begin, chunk and finish, and binds the upload to the connection device', async () => {
+    const { table } = await attachmentTable({})
+    const bytes = Buffer.from('abcdefgh')
+
+    const begun = (await table['upload.begin']?.(
+      { sessionId: 's1', kind: 'file', name: 'a.txt', mediaType: 'text/plain', byteSize: bytes.length },
+      device,
+    )) as { uploadId: string; chunkBytes: number }
+    expect(begun.uploadId).toEqual(expect.any(String))
+    expect(begun.chunkBytes).toBe(8)
+
+    await expect(
+      table['upload.chunk']?.(
+        { uploadId: begun.uploadId, index: 0, data: bytes.toString('base64') },
+        device,
+      ),
+    ).resolves.toEqual({ received: 1 })
+
+    // The device id is the socket's, never the payload's: another connection
+    // cannot finish somebody else's upload.
+    await expect(
+      table['upload.finish']?.({ uploadId: begun.uploadId, deviceId: other.deviceId }, other),
+    ).rejects.toMatchObject({ code: 'UPLOAD_UNKNOWN' })
+
+    await expect(
+      table['upload.finish']?.({ uploadId: begun.uploadId }, device),
+    ).resolves.toEqual({
+      attachmentId: expect.any(String),
+      kind: 'file',
+      name: 'a.txt',
+      mediaType: 'text/plain',
+      byteSize: bytes.length,
+    })
+  })
+
+  it('aborts a half-sent upload through the table', async () => {
+    const { table } = await attachmentTable({})
+    const begun = (await table['upload.begin']?.(
+      { sessionId: 's1', kind: 'file', name: 'a.txt', mediaType: 'text/plain', byteSize: 8 },
+      device,
+    )) as { uploadId: string }
+    await expect(table['upload.abort']?.({ uploadId: begun.uploadId }, device)).resolves.toEqual({
+      aborted: true,
+    })
+    await expect(table['upload.abort']?.({ uploadId: begun.uploadId }, device)).rejects.toMatchObject({
+      code: 'UPLOAD_UNKNOWN',
+    })
+  })
+
+  it('refuses a begin whose kind or media type is not usable', async () => {
+    const { table } = await attachmentTable({})
+    await expect(
+      table['upload.begin']?.(
+        { sessionId: 's1', kind: 'video', name: 'v.mp4', mediaType: 'video/mp4', byteSize: 8 },
+        device,
+      ),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+    await expect(
+      table['upload.begin']?.(
+        { sessionId: 's1', kind: 'image', name: 'p.tiff', mediaType: 'image/tiff', byteSize: 8 },
+        device,
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_UNSUPPORTED' })
+  })
+})
+
+describe('prompt attachments', () => {
+  const device = { deviceId: 'd1', deviceName: 'iPhone', remote: '127.0.0.1' }
+
+  it('keeps a text-only prompt exactly as it was', async () => {
+    const { table, calls } = await attachmentTable({})
+    const result = await table['session.prompt']?.(
+      { sessionId: 's1', text: 'hello', requestId: 'keep-me' },
+      device,
+    )
+    expect(result).toEqual({ accepted: true, requestId: 'keep-me' })
+    const request = lastPromptRequest(calls)
+    expect(request['requestId']).toBe('keep-me')
+    expect(request['content']).toEqual([{ type: 'text', text: 'hello' }])
+    expect(request['mode']).toBe('queue')
+  })
+
+  it('turns a finished image into an inline base64 content part', async () => {
+    const { table, calls } = await attachmentTable({})
+    const bytes = Buffer.from('jpegdata')
+    const finished = await uploadThroughTable(
+      table,
+      device,
+      { sessionId: 's1', kind: 'image', name: 'p.jpg', mediaType: 'image/jpeg', byteSize: bytes.length },
+      bytes,
+    )
+
+    // No text at all: `text` is optional when attachments are present.
+    await expect(
+      table['session.prompt']?.(
+        { sessionId: 's1', attachmentIds: [finished.attachmentId] },
+        device,
+      ),
+    ).resolves.toMatchObject({ accepted: true })
+    expect(lastPromptRequest(calls)['content']).toEqual([
+      {
+        type: 'image',
+        data: bytes.toString('base64'),
+        mediaType: 'image/jpeg',
+        name: 'p.jpg',
+      },
+    ])
+
+    // And the text, when there is one, comes first in the caller's order.
+    await table['session.prompt']?.(
+      { sessionId: 's1', text: 'what is this?', attachmentIds: [finished.attachmentId] },
+      device,
+    )
+    expect(lastPromptRequest(calls)['content']).toEqual([
+      { type: 'text', text: 'what is this?' },
+      {
+        type: 'image',
+        data: bytes.toString('base64'),
+        mediaType: 'image/jpeg',
+        name: 'p.jpg',
+      },
+    ])
+  })
+
+  it('stages a file with fileUploads and sends the receipt', async () => {
+    const staged: { sessionId: string; name?: string; bytes: Buffer }[] = []
+    const fileUploads = {
+      uploadStream: async (request: {
+        sessionId: string
+        name?: string
+        data: AsyncIterable<Uint8Array>
+      }) => {
+        const parts: Buffer[] = []
+        for await (const chunk of request.data) parts.push(Buffer.from(chunk))
+        staged.push({
+          sessionId: request.sessionId,
+          ...(request.name === undefined ? {} : { name: request.name }),
+          bytes: Buffer.concat(parts),
+        })
+        return { receiptId: 'receipt-1' }
+      },
+    }
+    const { table, calls } = await attachmentTable({}, { fileUploads })
+    const bytes = Buffer.from('filebody')
+    const finished = await uploadThroughTable(
+      table,
+      device,
+      { sessionId: 's1', kind: 'file', name: 'notes.txt', mediaType: 'text/plain', byteSize: bytes.length },
+      bytes,
+    )
+
+    await table['session.prompt']?.(
+      { sessionId: 's1', text: 'see attached', attachmentIds: [finished.attachmentId] },
+      device,
+    )
+
+    expect(lastPromptRequest(calls)['content']).toEqual([
+      { type: 'text', text: 'see attached' },
+      { type: 'file', receiptId: 'receipt-1' },
+    ])
+    expect(staged).toHaveLength(1)
+    expect(staged[0]?.sessionId).toBe('s1')
+    expect(staged[0]?.name).toBe('notes.txt')
+    expect(staged[0]?.bytes).toEqual(bytes)
+  })
+
+  it('falls back to a saved path when the host has no fileUploads', async () => {
+    const { table, calls, dir } = await attachmentTable({})
+    const bytes = Buffer.from('filebody')
+    const finished = await uploadThroughTable(
+      table,
+      device,
+      { sessionId: 's1', kind: 'file', name: 'notes.txt', mediaType: 'text/plain', byteSize: bytes.length },
+      bytes,
+    )
+
+    // File-only prompt: no text part of the caller's own, but the fallback adds
+    // a readable handle the agent can act on.
+    await expect(
+      table['session.prompt']?.(
+        { sessionId: 's1', attachmentIds: [finished.attachmentId] },
+        device,
+      ),
+    ).resolves.toMatchObject({ accepted: true })
+
+    const content = lastPromptRequest(calls)['content'] as { type: string; text: string }[]
+    expect(content).toHaveLength(1)
+    expect(content[0]?.type).toBe('text')
+    expect(content[0]?.text.startsWith('[File: notes.txt]\n')).toBe(true)
+    const saved = content[0]?.text.slice('[File: notes.txt]\n'.length) ?? ''
+    expect(saved.startsWith(join(dir, 'attachments'))).toBe(true)
+    await expect(readFile(saved)).resolves.toEqual(bytes)
+  })
+
+  it('reports a fileUploads failure as ATTACHMENT_FAILED', async () => {
+    const failing = {
+      uploadStream: async () => {
+        throw new Error('disk full')
+      },
+    }
+    const { table } = await attachmentTable({}, { fileUploads: failing })
+    const bytes = Buffer.from('filebody')
+    const finished = await uploadThroughTable(
+      table,
+      device,
+      { sessionId: 's1', kind: 'file', name: 'notes.txt', mediaType: 'text/plain', byteSize: bytes.length },
+      bytes,
+    )
+    await expect(
+      table['session.prompt']?.(
+        { sessionId: 's1', attachmentIds: [finished.attachmentId] },
+        device,
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_FAILED' })
+  })
+
+  it('reports a receipt-less fileUploads answer as ATTACHMENT_FAILED', async () => {
+    const { table } = await attachmentTable({}, { fileUploads: { uploadStream: async () => ({}) } })
+    const bytes = Buffer.from('filebody')
+    const finished = await uploadThroughTable(
+      table,
+      device,
+      { sessionId: 's1', kind: 'file', name: 'notes.txt', mediaType: 'text/plain', byteSize: bytes.length },
+      bytes,
+    )
+    await expect(
+      table['session.prompt']?.(
+        { sessionId: 's1', attachmentIds: [finished.attachmentId] },
+        device,
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_FAILED' })
+  })
+
+  it('refuses a prompt with neither text nor attachments', async () => {
+    const { table } = await attachmentTable({})
+    await expect(table['session.prompt']?.({ sessionId: 's1' }, device)).rejects.toMatchObject({
+      code: 'MALFORMED_FRAME',
+    })
+    await expect(
+      table['session.prompt']?.({ sessionId: 's1', text: '' }, device),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+  })
+
+  it('refuses a non-string text instead of silently dropping it', async () => {
+    const { table } = await attachmentTable({})
+    await expect(
+      table['session.prompt']?.({ sessionId: 's1', text: 42 }, device),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+  })
+
+  it('refuses attachmentIds that are not an array of ids', async () => {
+    const { table } = await attachmentTable({})
+    // `null` is read as "absent" (a client encoding nil explicitly), the same
+    // way an absent field is; a value of the wrong shape is a frame error.
+    for (const attachmentIds of ['nope', [42], ['']]) {
+      await expect(
+        table['session.prompt']?.({ sessionId: 's1', text: 'hi', attachmentIds }, device),
+        `attachmentIds ${JSON.stringify(attachmentIds)} was accepted`,
+      ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+    }
+  })
+
+  it('refuses an attachment that is unknown, expired or not this session’s', async () => {
+    const { table } = await attachmentTable({})
+    await expect(
+      table['session.prompt']?.(
+        { sessionId: 's1', attachmentIds: ['not-an-attachment'] },
+        device,
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_UNKNOWN' })
+
+    const bytes = Buffer.from('filebody')
+    const finished = await uploadThroughTable(
+      table,
+      device,
+      { sessionId: 's1', kind: 'file', name: 'notes.txt', mediaType: 'text/plain', byteSize: bytes.length },
+      bytes,
+    )
+    await expect(
+      table['session.prompt']?.(
+        { sessionId: 's2', attachmentIds: [finished.attachmentId] },
+        device,
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_UNKNOWN' })
+  })
+
+  it('refuses more than eight attachment ids before reading anything', async () => {
+    const { table } = await attachmentTable({})
+    const ids = Array.from({ length: 9 }, (_unused, index) => `attachment-${index}`)
+    await expect(
+      table['session.prompt']?.({ sessionId: 's1', attachmentIds: ids }, device),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_TOO_LARGE' })
+  })
+
+  it('refuses the same attachment listed twice', async () => {
+    const { table } = await attachmentTable({})
+    const bytes = Buffer.from('filebody')
+    const finished = await uploadThroughTable(
+      table,
+      device,
+      { sessionId: 's1', kind: 'file', name: 'notes.txt', mediaType: 'text/plain', byteSize: bytes.length },
+      bytes,
+    )
+    await expect(
+      table['session.prompt']?.(
+        { sessionId: 's1', attachmentIds: [finished.attachmentId, finished.attachmentId] },
+        device,
+      ),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+  })
+
+  it('keeps requestId idempotency when attachments are present', async () => {
+    const { table, calls } = await attachmentTable({})
+    const bytes = Buffer.from('filebody')
+    const finished = await uploadThroughTable(
+      table,
+      device,
+      { sessionId: 's1', kind: 'file', name: 'notes.txt', mediaType: 'text/plain', byteSize: bytes.length },
+      bytes,
+    )
+    const result = await table['session.prompt']?.(
+      {
+        sessionId: 's1',
+        text: 'one more time',
+        attachmentIds: [finished.attachmentId],
+        requestId: 'retry-me',
+      },
+      device,
+    )
+    expect(result).toEqual({ accepted: true, requestId: 'retry-me' })
+    expect(lastPromptRequest(calls)['requestId']).toBe('retry-me')
+  })
+})

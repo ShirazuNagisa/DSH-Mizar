@@ -26,7 +26,7 @@
 
 ```sh
 dsh plugin --profile desktop add dsh-mizar          # 跟随 npm 最新版
-dsh plugin --profile desktop add dsh-mizar@0.8.3    # 锁定某个版本
+dsh plugin --profile desktop add dsh-mizar@0.8.4    # 锁定某个版本
 ```
 
 两种装法都会把依赖写成 `dsh-mizar@^x.y.z`。升级只要再跑一次 `add dsh-mizar@latest`。
@@ -37,7 +37,7 @@ dsh plugin --profile desktop add dsh-mizar@0.8.3    # 锁定某个版本
 
 | | **npm(推荐)** | GitHub 直装 |
 |---|---|---|
-| 版本 | 有版本号,可锁 `@0.8.3` | 跟随 `main` 最新提交,不可锁 |
+| 版本 | 有版本号,可锁 `@0.8.4` | 跟随 `main` 最新提交,不可锁 |
 | 可追溯 | `npm view dsh-mizar versions`、`npm outdated` | 只有 commit hash |
 | 完整性 | registry **sha512 校验** | 无包完整性校验 |
 | 前提 | 只要能访问 registry | 需要 git + pnpm 的 git 支持 |
@@ -51,7 +51,7 @@ dsh plugin --profile desktop add ShirazuNagisa/DSH-Mizar
 
 # 离线 / 内网:在有网的机器上 npm pack,再把 .tgz 传过去
 npm pack dsh-mizar
-dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.3.tgz
+dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.4.tgz
 ```
 
 ### 装不到最新版 / 镜像同步延迟
@@ -61,7 +61,7 @@ dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.3.tgz
 
 - **加 `--registry` 直连官方源**:
   ```sh
-  dsh plugin --profile desktop add dsh-mizar@0.8.3 --registry=https://registry.npmjs.org
+  dsh plugin --profile desktop add dsh-mizar@0.8.4 --registry=https://registry.npmjs.org
   ```
 - 或者去 [npmmirror 同步页](https://npmmirror.com/sync/dsh-mizar) 点一次「同步」,等镜像更新。
 
@@ -72,13 +72,13 @@ dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.3.tgz
 DSH 会**精确比对**插件声明的 `@deepseek-ai/dsh-*` 与运行时版本，不匹配时安装会被拒绝：
 
 ```
-Plugin dsh-mizar@0.8.3 is incompatible with dsh 0.2.1-rc.2
+Plugin dsh-mizar@0.8.4 is incompatible with dsh 0.2.1-rc.2
 ```
 
 - 正常做法：升级到匹配的插件版本（DSH 每个 rc 发布后，插件跟一个 `+0.0.1`）；
 - 临时跑起来（**有风险**，只在确认没有 API 变更时用）：
   ```sh
-  dsh plugin --profile desktop allow-version dsh-mizar@0.8.3 --dsh-version 0.2.1-rc.2 --accept-risk
+  dsh plugin --profile desktop allow-version dsh-mizar@0.8.4 --dsh-version 0.2.1-rc.2 --accept-risk
   ```
 
 ## 二、配对
@@ -93,6 +93,7 @@ Plugin dsh-mizar@0.8.3 is incompatible with dsh 0.2.1-rc.2
 
 - 把会话列表、对话正文、用量、审批和提问转给手机
 - 手机可以发消息、打断正在跑的 turn、回答审批和提问、切换模型与权限
+- 付费账户可以在会话里发送照片或文件；图片作为 DSH 图片内容，文件作为 DSH 文件内容或可读路径句柄
 - 推送（审批 / 提问 / 跑完）经中继转给 Apple
 - 手机和电脑在同一个 Wi-Fi 时也可以直连，二维码里两条路都带着
 

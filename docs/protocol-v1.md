@@ -116,6 +116,15 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `REMOTE_ERROR` | 宿主服务报错 | 透传 message |
 | `NOT_IMPLEMENTED` | 未知方法 | 版本不匹配的信号 |
 | `INTERNAL` | 插件内部错误 | 报告 |
+| `RESPONSE_TOO_LARGE` | 回答超过传输能带的字节数 | 请求更少的数据,不要原样重试 |
+| `UPLOAD_UNKNOWN` | upload 不存在、已过期,或不属于这台设备 | 重新开始上传 |
+| `UPLOAD_BAD_CHUNK` | chunk 乱序、与已收内容冲突,或不是规范 base64 | 从该 index 重发,或重传 |
+| `UPLOAD_TOO_LARGE` | 超过声明大小或大小上限 | 换更小的文件 |
+| `UPLOAD_INCOMPLETE` | `finish` 时字节数不够 | 补发缺的 chunk |
+| `ATTACHMENT_UNKNOWN` | 附件不存在、已过期,或不属于这台设备/这个会话 | 重新选择附件 |
+| `ATTACHMENT_TOO_LARGE` | 一次 prompt 的附件数量或总大小超限 | 减少附件 |
+| `ATTACHMENT_UNSUPPORTED` | 媒体类型不能变成 prompt 内容 | 换格式 |
+| `ATTACHMENT_FAILED` | 宿主保存文件或交给 DSH 时失败 | 重试;持续失败看宿主日志 |
 
 > **`PAIRING_CODE_INVALID` / `EXPIRED` / `UNKNOWN` 对客户端回答是不同的，但审计日志里
 > 区分得更细**（含"已兑换"）。已经兑换过的码重放会被当成 `UNKNOWN`——**故意不告诉客户端
@@ -125,7 +134,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 
 ## 方法表
 
-19 个方法。`payload` 里的键：
+23 个方法。`payload` 里的键：
 
 ### 主机与会话
 
@@ -138,7 +147,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `session.stats` | `sessionId` | `{sessionId, asOfSeq, stats}` —— `stats` 里的每个字段来自主机各自的 projection，**谁有就答谁**：agent 还没跑过的会话没有 `context`（上下文占用）也没有 `title`（标题要等模型读完对话才有），只有 `tokenUsage` 一类。所以「这次的帧比上一帧少几个字段」是**正常回答**，不是失败——实测一台真主机上 12 个会话里有 4 个是这样（缺 `context, title`）。手机必须把新帧**合并**进旧帧（有新值用新值，没有的保留），直接替换会把屏幕上已经画出来的标题、模型、上下文用量抹掉。 |
 | `session.create` | `cwd?` \| `workspaceId?` \| `sessionId?`, `agentPreset?` | `{sessionId, agentPreset}` —— 传 `cwd` 时插件会先把它解析成**工作区**（没有就建一个），再把工作区 id 交给 DSH。原因见下。 |
 | `session.rename` | `sessionId`, `title` | `{renamed: true}` |
-| `session.prompt` | `sessionId`, `text`, `requestId?`, `clientTimeZone?`, `mode?` | `{accepted, requestId}` |
+| `session.prompt` | `sessionId`, `text?`, `attachmentIds?`, `requestId?`, `clientTimeZone?`, `mode?` | `{accepted, requestId}` —— `text` **在有附件时可省**;两者不能同时缺。`attachmentIds` 是 `upload.finish` 返回的 id,顺序就是 content 的顺序(文本在最前);附件怎么来见「附件上传」。 |
 | `session.cancel` | `sessionId` | `{accepted}` |
 
 **`session.messages` 的增量语义（省流）。** 手机每次刷新都可以带上「我读到哪」，插件只回那之后的新记录。三种取值含义不同：
@@ -152,6 +161,12 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 插件自己记账：一页 `session.messages` 的 `ok` 帧**真正写到开启的 socket 之后**，才把这一页里最大的 `seq` 记到这台设备（按 `deviceId` + `sessionId` 分开）。被 `RESPONSE_TOO_LARGE` 拒绝的、socket 已经关掉的，都不算送达——记的是「传到了」，不是「存在过」。这份记账只在插件进程内，重启后由手机自己的 `afterSeq` 接手。
 
 过滤发生在**摘要之后、字节预算之前**：老记录不能占掉新记录要用的预算；没有 `seq` 的记录无法证明是旧的，照样发。`beforeSeq`（向上翻历史）与 `afterSeq` 同时出现时，`afterSeq` 不生效——往回翻的页不是「新记录」。
+
+**只有附件的 prompt 会多一行占位文本。** 纯图片/纯文件的 `user/message` 没有 text part,
+而会话界面画的是文本 —— 所以摘要会给这类记录**追加**一个
+`{type:"text", text:"[Photo]"}` 或 `[File: name]` 的 content part,多个附件按顺序各一行。
+这是 `session.messages` 唯一会改动记录内容的地方:其余字段、事件名和顺序仍然原样,
+已经有可读文本的消息连对象都不变。
 
 ### 模型与权限
 
@@ -215,6 +230,66 @@ if (workspace !== undefined) await workspace.attachSession(sessionId)
 `outcome` 只有 **`allowed-once`** 和 **`rejected`** 两个值。传别的值得到
 `MALFORMED_FRAME`，不是静默忽略。
 
+### 附件上传
+
+照片和文件走四步:`upload.begin` → 若干 `upload.chunk` → `upload.finish`;放弃时
+`upload.abort`。要分片不是因为协议喜欢分片,而是因为 iOS 的 `URLSessionWebSocketTask`
+单帧上限是 1 MiB,而且**超了不是截断,是直接断开连接**:
+
+```
+input message size 2222614 exceeds maximum message size 1048576
+Read completed with an error Message too long
+```
+
+一张 10 MiB 的照片 base64 之后还要再大三分之一,一帧发不出去 —— 连接会先死,附件和
+这一轮对话一起丢。
+
+| 方法 | payload | 返回 |
+|---|---|---|
+| `upload.begin` | `sessionId`, `kind`（`image` \| `file`）, `name`, `mediaType`, `byteSize` | `{uploadId, chunkBytes: 131072}` |
+| `upload.chunk` | `uploadId`, `index`（从 0 开始）, `data`（规范 base64） | `{received: index + 1}` |
+| `upload.finish` | `uploadId` | `{attachmentId, kind, name, mediaType, byteSize}` |
+| `upload.abort` | `uploadId` | `{aborted: true}` |
+
+规则:
+
+- **绑定连接和目标会话。** 设备 id 永远取自已认证的 socket,不取自 payload;一台设备
+  开始的 upload 不能被另一台设备 `chunk`/`finish`/`abort`,`finish` 得到的 attachment
+  也只能被同一设备、同一 `sessionId` 的 prompt 使用。不属于你的 id 和不存在的 id 得到
+  **同一个** `UPLOAD_UNKNOWN` / `ATTACHMENT_UNKNOWN` —— 告诉客户端「那个 upload 存在
+  但不是你的」没有任何可操作性,只是泄露。
+- **按序、可重试。** 每个 chunk 写在 `index × 131072` 的偏移上,所以同一 index 重发是
+  幂等的:会与已写入的字节逐字节比较,相同则照常回答,不同则 `UPLOAD_BAD_CHUNK`,**绝不
+  静默覆盖**。乱序(`index` 大于已收块数)直接 `UPLOAD_BAD_CHUNK`;除最后一块外每块必须
+  正好 128 KiB,否则偏移约定就被破坏,同样拒绝。
+- **只接受规范 base64。** Node 的 base64 解码器会静默跳过非法字符,所以每个 chunk 都先
+  解码再编码比对;缺 padding、带换行、含字母表外字符一律拒绝。这是把客户端编码 bug 变成
+  「文件少了几段但日志里什么都没有」的唯一入口。
+- **大小先验。** `upload.begin` 就按 `kind` 检查:图片 ≤ **10 MiB**、文件 ≤ **32 MiB**,
+  超过即 `UPLOAD_TOO_LARGE`,不必先传几十兆。单个 chunk 超过 128 KiB、或写入后超过声明
+  的 `byteSize`,同样是 `UPLOAD_TOO_LARGE`;`finish` 时字节数不足则是
+  `UPLOAD_INCOMPLETE`。
+- **30 分钟 TTL。** 未完成的 upload 和已完成的 attachment 都在最后一次触碰 30 分钟后
+  连同 `<stateDir>/uploads/<uploadId>/` 一起删除;插件重启同样会丢弃半成品。过期后的
+  id 一律按未知处理,客户端重新选文件即可。`<stateDir>` 是宿主的 Mizar 状态目录
+  (默认 `~/.dsh/.mizar`)。
+- **一次 prompt 的配额。** 最多 **8 个附件**、其中最多 **4 张图片**、全部附件合计
+  ≤ **64 MiB**;超了是 `ATTACHMENT_TOO_LARGE`。图片的 `mediaType` 只接受
+  `image/png`、`image/jpeg`、`image/webp`、`image/gif`,其它是
+  `ATTACHMENT_UNSUPPORTED`。
+- **图片内联进 prompt,文件以 receipt 或路径句柄进入。** 图片最终是 DSH 的
+  `{type: "image", data, mediaType, name?}` content part(DSH 自己把它转成持久引用);
+  文件优先交给宿主 `fileUploads` 服务的 `uploadStream`,prompt part 是
+  `{type: "file", receiptId}`。**老宿主没有这个服务时**,插件把文件存到
+  `<stateDir>/attachments/`,并在 prompt 末尾追加一段可读文本
+  `[File: name]` 加换行加绝对路径 —— 那是 agent 唯一能用的句柄,也是这个协议不要求
+  每个宿主都实现上传存储的原因。
+
+`upload.*` 四个方法、`session.prompt` 的 `text` 可选化与 `attachmentIds` 都是**新增**:
+老客户端不会调用它们;老宿主对未知方法回 `NOT_IMPLEMENTED`(这正是客户端判断「这台
+电脑的插件不支持附件」的信号),新客户端对老宿主仍可走原来的纯文本路径。所以
+**没有 `PROTOCOL_VERSION` 升级** —— 只有把已有字段变成必填、改名或改变含义才需要。
+
 ### `requestId` 的语义
 
 `requestId` 是**幂等键**，宿主靠它避免同一条消息被插入两次：
@@ -277,6 +352,10 @@ assistant/attempt
 **assistant 的文本在 `assistant/attempt` 的 `data.stream[]` 分块里**；以
 `chunk.type == "finish"` 且 `reason.kind == "error"` 结束的轮次**没有产出回答**，必须显式
 呈现而不是当作空回复。
+
+唯一的例外是「只有附件、没有文本」的用户消息：桥会追加一行 `[Photo]` /
+`[File: name]` 占位文本(见 `session.messages`)，否则那一轮在手机上是一个没有内容的
+空泡泡。除这一行以外不改任何字段。
 
 ---
 
