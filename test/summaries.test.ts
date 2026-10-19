@@ -17,7 +17,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '../src/dsh.js'
-import { sessionMessages } from '../src/bridge/sessions.js'
+import { sessionActivity, sessionMessages } from '../src/bridge/sessions.js'
 
 /** One gateway invocation as the bridge issues it. */
 interface Invocation {
@@ -933,5 +933,341 @@ describe('attachment-only prompts in the summary', () => {
     const users = result.records.filter((value) => nameOf(value) === 'user/message')
     expect(users).toHaveLength(1)
     expect(contentOf(users[0])).toEqual([imageBlock('IMG_0004.JPG'), { type: 'text', text: '[Photo]' }])
+  })
+})
+
+/** One event record as the activity tests need it, with an explicit time. */
+function eventAt(type: string, seq: number, data: Record<string, unknown>, time: number): unknown {
+  return { type: 'event', event: { type, seq, time, data } }
+}
+
+/** A compact `assistant/attempt` event carrying the given stream records. */
+function attempt(seq: number, turn: number, stream: unknown[]): unknown {
+  return record('assistant/attempt', seq, { turn, step: 1, stream })
+}
+
+/** A `tool/call` event. */
+function toolCall(seq: number, turn: number, callId: string, name: string, args: unknown): unknown {
+  return record('tool/call', seq, { turn, step: 1, callId, name, arguments: args })
+}
+
+/** A `tool/result` event whose tool message carries one text block. */
+function toolResult(seq: number, turn: number, callId: string, text: string): unknown {
+  return record('tool/result', seq, {
+    turn,
+    step: 1,
+    callId,
+    message: { role: 'tool', content: [{ type: 'text', text }], source: { kind: 'tool', callId } },
+  })
+}
+
+/** The event names in an activity answer, as a short list of kinds. */
+function kinds(entries: readonly { kind: string }[]): string[] {
+  return entries.map((entry) => entry.kind)
+}
+
+describe('session.activity — the running turn', () => {
+  it('returns only the unfinished turn, mapped to compact one-line rows', async () => {
+    const records = [
+      prompt(0, 'first task'),
+      record('turn/start', 1, { turn: 1 }),
+      record('step/start', 2, { turn: 1, step: 1 }),
+      attempt(3, 1, [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['finished answer'] }]),
+      record('turn/end', 4, { turn: 1, reason: { kind: 'complete' } }),
+      prompt(5, 'second task'),
+      record('turn/start', 6, { turn: 2 }),
+      record('step/start', 7, { turn: 2, step: 1 }),
+      attempt(8, 2, [
+        { type: 'reasoning-chunks', time0: 1, index: 0, dt: [], texts: ['thinking about '] },
+        { type: 'text-chunks', time0: 2, index: 1, dt: [], texts: ['the fix'] },
+      ]),
+      toolCall(9, 2, 'call-1', 'bash', JSON.stringify({ command: 'npm test' })),
+      toolResult(10, 2, 'call-1', 'Tests 550 passed\nsecond line is not shown'),
+      record('assistant/message', 11, {
+        turn: 2,
+        step: 1,
+        message: { content: [{ type: 'text', text: 'a committed reply' }] },
+      }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 11, records }] })
+    const result = await sessionActivity(ctx, 's1')
+
+    expect(result).toMatchObject({ sessionId: 's1', asOfSeq: 11, turn: 2, hasMore: false })
+    // The ended turn's narration and every committed message are absent: the
+    // summary page draws those, this feed draws the process.
+    expect(kinds(result.entries)).toEqual(['thinking', 'command', 'output'])
+    expect(result.entries.map((entry) => entry.id)).toEqual(['seq-8', 'seq-9', 'seq-10'])
+    expect(result.entries[0]).toMatchObject({
+      seq: 8,
+      at: 1_700_000_000_008,
+      kind: 'thinking',
+      title: '',
+      text: 'thinking about the fix',
+    })
+    expect(result.entries[1]).toMatchObject({
+      kind: 'command',
+      title: 'bash',
+      text: 'npm test',
+    })
+    // The result is titled by the call it answers and shows only its first line.
+    expect(result.entries[2]).toMatchObject({
+      kind: 'output',
+      title: 'bash',
+      text: 'Tests 550 passed',
+    })
+  })
+
+  it('takes the highest unfinished turn when the page window starts inside it', async () => {
+    // A window can begin mid-turn, so there is no `turn/start` for the turn that
+    // is running. The markers and attempts still name it, and no `turn/end`
+    // does, which is the definition of running.
+    const records = [
+      record('step/start', 805, { turn: 101, step: 1 }),
+      attempt(806, 101, [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['still working'] }]),
+      record('step/start', 807, { turn: 101, step: 2 }),
+      toolCall(808, 101, 'call-1', 'read_file', JSON.stringify({ path: '/tmp/a', description: 'read /tmp/a' })),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 900, records }] })
+    const result = await sessionActivity(ctx, 's1')
+
+    expect(result.turn).toBe(101)
+    expect(kinds(result.entries)).toEqual(['thinking', 'tool'])
+    expect(result.entries[1]).toMatchObject({ kind: 'tool', title: 'read_file', text: 'read /tmp/a' })
+  })
+
+  it('answers an empty feed when every turn in the page has ended', async () => {
+    const records = [
+      prompt(0, 'one'),
+      record('turn/start', 1, { turn: 1 }),
+      record('step/start', 2, { turn: 1, step: 1 }),
+      attempt(3, 1, [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['done'] }]),
+      record('turn/end', 4, { turn: 1, reason: { kind: 'complete' } }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 4, records }] })
+    const result = await sessionActivity(ctx, 's1')
+
+    expect(result).toEqual({ sessionId: 's1', asOfSeq: 4, turn: null, entries: [], hasMore: false })
+  })
+
+  it('answers an empty feed for a session with no log at all', async () => {
+    const { ctx } = fakeGateway({ streamThrows: true, projections: null })
+    const result = await sessionActivity(ctx, 'missing')
+
+    expect(result).toEqual({
+      sessionId: 'missing',
+      asOfSeq: null,
+      turn: null,
+      entries: [],
+      hasMore: false,
+    })
+  })
+
+  it('still leaves the summary page byte for byte as it was', async () => {
+    // The activity read must not change what `session.messages` returns, even
+    // for the same page: the summary keeps its step markers and drops process,
+    // the activity feed does the opposite.
+    const records = [
+      prompt(0, 'run the tests'),
+      record('turn/start', 1, { turn: 1 }),
+      record('step/start', 2, { turn: 1, step: 1 }),
+      attempt(3, 1, [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['running'] }]),
+      toolCall(4, 1, 'call-1', 'bash', JSON.stringify({ command: 'npm test' })),
+      toolResult(5, 1, 'call-1', 'ok'),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 5, records }] })
+    const summary = await sessionMessages(ctx, 's1')
+    const activity = await sessionActivity(ctx, 's1')
+
+    expect(names(summary.records)).toEqual(['user/message', 'turn/start', 'step/start'])
+    expect(kinds(activity.entries)).toEqual(['thinking', 'command', 'output'])
+    // Same current page, same cut, and the activity read asked for the bounded
+    // page window rather than an unbounded one.
+    expect(activity.asOfSeq).toBe(summary.asOfSeq)
+  })
+})
+
+describe('session.activity — mapping', () => {
+  it('maps JSON arguments, non-JSON arguments and plain objects to one line', async () => {
+    const records = [
+      record('turn/start', 1, { turn: 1 }),
+      toolCall(2, 1, 'c1', 'bash', JSON.stringify({ command: 'ls -la\npwd' })),
+      toolCall(3, 1, 'c2', 'grep', 'plain "not" json'),
+      toolCall(4, 1, 'c3', 'custom', { path: '/tmp/x', description: 'a described tool' }),
+      toolCall(5, 1, 'c4', 'shell', JSON.stringify({ description: 'only a description' })),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 5, records }] })
+    const result = await sessionActivity(ctx, 's1')
+
+    expect(result.entries.map((entry) => [entry.kind, entry.title, entry.text])).toEqual([
+      ['command', 'bash', 'ls -la pwd'],
+      // A tool whose name is not a shell runner keeps the tool kind, even when
+      // its argument string is not JSON.
+      ['tool', 'grep', 'plain "not" json'],
+      // A non-command tool keeps the tool kind, and an object argument is JSON.
+      ['tool', 'custom', '{"path":"/tmp/x","description":"a described tool"}'],
+      // `shell` is command-like even when the argument shape is unusual.
+      ['command', 'shell', 'only a description'],
+    ])
+  })
+
+  it('recovers the detail from an error result and leaves unknown output titleless', async () => {
+    const records = [
+      record('turn/start', 1, { turn: 1 }),
+      record('tool/result', 2, {
+        turn: 1,
+        step: 1,
+        callId: 'call-from-previous-page',
+        message: { role: 'tool', content: [{ type: 'text', text: '' }] },
+        error: { name: 'CommandError', code: 'E2', reason: 'command failed' },
+      }),
+      record('tool/result', 3, {
+        turn: 1,
+        step: 1,
+        callId: 'call-2',
+        output: 'file one\nfile two',
+      }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 3, records }] })
+    const result = await sessionActivity(ctx, 's1')
+
+    expect(result.entries).toHaveLength(2)
+    expect(result.entries[0]).toMatchObject({ kind: 'output', title: '', text: 'command failed' })
+    // The call is not in this page, so the title is not invented.
+    expect(result.entries[1]).toMatchObject({ kind: 'output', title: '', text: 'file one' })
+  })
+
+  it('flattens and truncates narration to one 240-character line', async () => {
+    const long = `${'reasoning '.repeat(40)}\nsecond line`
+    const records = [
+      record('turn/start', 1, { turn: 1 }),
+      attempt(2, 1, [
+        {
+          type: 'chunk',
+          time: 1,
+          chunk: { type: 'text-delta', index: 0, text: 'first   ' },
+        },
+        {
+          type: 'chunk',
+          time: 2,
+          chunk: { type: 'reasoning-delta', index: 1, text: '\n second' },
+        },
+        // A live attempt streams `TimedStreamChunk` records, which have no
+        // wrapper `type` at all; the nested chunk is what carries the text.
+        { time: 4, chunk: { type: 'text-delta', index: 0, text: ' live' } },
+        {
+          type: 'chunk',
+          time: 3,
+          chunk: {
+            type: 'block-end',
+            index: 0,
+            block: { type: 'text', text: 'settled block is not joined twice' },
+          },
+        },
+      ]),
+      attempt(3, 1, [{ type: 'reasoning-chunks', time0: 1, index: 0, dt: [], texts: [long] }]),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 3, records }] })
+    const result = await sessionActivity(ctx, 's1')
+
+    expect(result.entries).toHaveLength(2)
+    expect(result.entries[0]?.text).toBe('first second live')
+    expect(result.entries[1]?.text).toHaveLength(240)
+    expect(result.entries[1]?.text).not.toContain('\n')
+    expect(result.entries[1]?.text.startsWith('reasoning reasoning')).toBe(true)
+  })
+
+  it('skips events that are not process detail instead of dumping payloads', async () => {
+    const records = [
+      prompt(0, 'hello'),
+      record('turn/start', 1, { turn: 1 }),
+      record('step/start', 2, { turn: 1, step: 1 }),
+      record('system/message', 3, { turn: 1, step: 1, message: { content: [] } }),
+      record('request/header', 4, { header: { huge: true } }),
+      record('assistant/message', 5, { turn: 1, step: 1, message: { content: [] } }),
+      record('tool/call', 6, { turn: 1, step: 1, callId: 'c1', name: 'bash', arguments: '{}' }),
+      record('session/title', 7, { title: 'a title' }),
+    ]
+
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 7, records }] })
+    const result = await sessionActivity(ctx, 's1')
+
+    expect(result.entries).toHaveLength(1)
+    expect(result.entries[0]).toMatchObject({ id: 'seq-6', kind: 'command', title: 'bash' })
+  })
+})
+
+describe('session.activity — bounds', () => {
+  /** A running turn with `count` tool calls numbered from `firstSeq`. */
+  function callsRecords(count: number, firstSeq = 1000): unknown[] {
+    const records: unknown[] = [record('turn/start', firstSeq - 1, { turn: 1 })]
+    for (let index = 0; index < count; index += 1) {
+      records.push(toolCall(firstSeq + index, 1, `call-${index}`, 'bash', JSON.stringify({ command: `step ${index}` })))
+    }
+    return records
+  }
+
+  it('defaults to 200 entries and reports that older rows were trimmed', async () => {
+    const records = callsRecords(205)
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 3000, records }] })
+    const result = await sessionActivity(ctx, 's1')
+
+    expect(result.entries).toHaveLength(200)
+    expect(result.hasMore).toBe(true)
+    // The newest rows are kept; the five oldest are the ones dropped.
+    expect(result.entries[0]?.seq).toBe(1005)
+    expect(result.entries[199]?.seq).toBe(1204)
+  })
+
+  it('honours a smaller maxEntries and clamps a larger one to 300', async () => {
+    const records = callsRecords(305)
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 4000, records }] })
+
+    const small = await sessionActivity(ctx, 's1', 10)
+    expect(small.entries).toHaveLength(10)
+    expect(small.hasMore).toBe(true)
+    expect(small.entries[9]?.seq).toBe(1304)
+
+    const large = await sessionActivity(ctx, 's1', 10_000)
+    expect(large.entries).toHaveLength(300)
+    expect(large.entries[299]?.seq).toBe(1304)
+
+    // An unusable request is the default, not an empty feed or an error.
+    const fallback = await sessionActivity(ctx, 's1', -5)
+    expect(fallback.entries).toHaveLength(200)
+  })
+
+  it('trims by the 256 KiB byte budget, keeping the newest rows', async () => {
+    // 300 rows of three-byte characters: ~1.1 KB of JSON each, well past the
+    // budget. The feed must still leave the host as one small frame.
+    const records: unknown[] = [record('turn/start', 1, { turn: 1 })]
+    for (let index = 0; index < 300; index += 1) {
+      records.push(
+        toolCall(
+          2 + index,
+          1,
+          `call-${index}`,
+          '命'.repeat(120),
+          JSON.stringify({ command: '中'.repeat(240) }),
+        ),
+      )
+    }
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 10_000, records }] })
+    const result = await sessionActivity(ctx, 's1', 300)
+
+    expect(result.hasMore).toBe(true)
+    expect(result.entries.length).toBeLessThan(300)
+    expect(result.entries.length).toBeGreaterThan(0)
+    const bytes = Buffer.byteLength(JSON.stringify(result.entries), 'utf8')
+    expect(bytes).toBeLessThanOrEqual(256 * 1024)
+    // The newest row survived; the trimmed ones are the oldest. The calls were
+    // numbered 2..301, so 301 is the last one.
+    expect(result.entries[result.entries.length - 1]?.seq).toBe(301)
   })
 })

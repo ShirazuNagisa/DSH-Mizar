@@ -134,7 +134,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 
 ## 方法表
 
-23 个方法。`payload` 里的键：
+24 个方法。`payload` 里的键：
 
 ### 主机与会话
 
@@ -144,6 +144,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `session.list` | `{}` | `{items: [SessionRow]}` |
 | `workspace.list` | `{}` | `{items: [WorkspaceRow], complete}` —— DSH **当前**拥有的工作区，按 DSH 自己的显示顺序（插件直接读 `ctx.workspaceRegistry.list()`，和电脑侧边栏同源），每个工作区带 `sessionIds`：DSH 认可的归属关系，只有主机知道，手机不该自己拿目录去猜。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话，手机再按目录分组就会一直留着它们。<br>`sessionIds` **缺省**和 `[]` 是两回事：`[]` 是「DSH 说这里没有会话」，缺省是「主机没说」，只有后者才允许退回按目录匹配。<br>`complete` 说这份清单**是不是完整读到了**：只有 `true` 才允许丢弃已经不在清单里的工作区，因为「主机答不上来」和「主机一个都没有」都是空数组。任何一条读不出来的记录都按「没答」处理（返回 `{items: [], complete: false}`）——主机还可以用 `workspace/follow` 的 baseline 兜底；两条路都不行时手机退回按目录分组。 |
 | `session.messages` | `sessionId`, `maxMessages?`, `beforeSeq?`, `afterSeq?`（见下） | `{sessionId, asOfSeq, records[], hasMore}` —— **只发总结，不发过程**。一页里只保留：`turn/start`、`turn/end`、每个 `step/start`（只用来数步骤，约 100 字节）、人写的 `user/message`，以及**每一轮里模型最后那条有正文的 `assistant/message`**。逐步叙述、工具调用/结果、流式 attempt，以及**还没结束的那一轮的中间回复**，全部不发 —— 后两项正是最大的一块。原因：手机端只按「总结 + 状态」渲染，全量历史经中继太吃服务器带宽。`asOfSeq`（分页切点）取自 `session/follow` 首帧的 `cursor`，这是 DSH 自己对 `throughSeq` 的定义（"Inclusive log cut obtained from the corresponding follow opening frame"），原来用 `session/projections` 的 `asOfSeq` 会滞后于日志头，导致刚发出的那一轮不在页里、手机上就没有「AI 正在工作」那一行。 |
+| `session.activity` | `sessionId`, `maxEntries?`（默认 200，最多 300） | `{sessionId, asOfSeq, turn, entries[], hasMore}` —— **只返回正在跑的那一轮的紧凑过程**，付费账户的「全量细节」来源：`entries` 里每行是 `{id, seq, at, kind, title, text}`，`kind` 为 `thinking` / `command` / `output` / `tool`，`text` 一行、最多 240 字符；没有正在跑的轮次时 `turn: null, entries: [], hasMore: false`。详细语义见下。 |
 | `session.stats` | `sessionId` | `{sessionId, asOfSeq, stats}` —— `stats` 里的每个字段来自主机各自的 projection，**谁有就答谁**：agent 还没跑过的会话没有 `context`（上下文占用）也没有 `title`（标题要等模型读完对话才有），只有 `tokenUsage` 一类。所以「这次的帧比上一帧少几个字段」是**正常回答**，不是失败——实测一台真主机上 12 个会话里有 4 个是这样（缺 `context, title`）。手机必须把新帧**合并**进旧帧（有新值用新值，没有的保留），直接替换会把屏幕上已经画出来的标题、模型、上下文用量抹掉。 |
 | `session.create` | `cwd?` \| `workspaceId?` \| `sessionId?`, `agentPreset?` | `{sessionId, agentPreset}` —— 传 `cwd` 时插件会先把它解析成**工作区**（没有就建一个），再把工作区 id 交给 DSH。原因见下。 |
 | `session.rename` | `sessionId`, `title` | `{renamed: true}` |
@@ -167,6 +168,29 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 `{type:"text", text:"[Photo]"}` 或 `[File: name]` 的 content part,多个附件按顺序各一行。
 这是 `session.messages` 唯一会改动记录内容的地方:其余字段、事件名和顺序仍然原样,
 已经有可读文本的消息连对象都不变。
+
+**`session.activity` 是付费账户的「跑动中全量细节」来源。** 它和 `session.messages`
+读**同一页当前日志**（同样先 `session/follow` 首帧取切点，失败再用
+`session/projections`），但只回答一个问题：这一轮现在在干什么。
+
+- **找正在跑的轮次**：取本页里带活动、且没有 `turn/end` 的**最大轮次号**。页窗口可能正好
+  从这一轮中间开始，所以缺 `turn/start` 不算「没在跑」——`turn/end` 才是唯一结束一轮的
+  记录。
+- **只映射过程**：`assistant/attempt` → `thinking`（从 stream 的 text/reasoning chunk 拼出
+  一行，压平换行、截断 240 字符）；`tool/call` → `command`（bash/shell/exec 一类工具名）
+  或 `tool`，`title` 是工具名，`text` 取参数的 `command`/`description`，否则截断 JSON；
+  `tool/result` → `output`，`title` 按 `callId` 对上工具名，`text` 取输出/内容/错误的
+  第一行。**用户/助手已提交的消息、`step/*` 标记、以及任何不认识的事件全部跳过**——不把
+  原始 payload 倒给手机，DSH 以后加事件也不会把这一帧撑大。
+- **有界**：默认 200 行、最多 300 行；整个 `entries` 的 JSON 预算 **256 KiB**（远低于
+  listener 的 512 KiB 帧上限和 iOS 的 1 MiB）。超出时从最旧的行开始裁，`hasMore: true`。
+  只有最新的行值得看，手机靠 `id`（`seq-<n>`，无 seq 时是 `at-<time>-<kind>`）合并。
+- **`turn: null` 不是错误**：两轮之间、会话不存在都返回空 `entries`，手机据此隐藏细节区。
+- 这是**纯读**方法：不唤醒 agent、不改会话状态。是否调用由手机端决定（付费账户才调），
+  宿主不判断账户状态。
+
+这是**新增方法**：老宿主对未知方法回 `NOT_IMPLEMENTED`（客户端据此知道这台电脑的插件太旧），
+老客户端不会调用它，所以**不需要升 `PROTOCOL_VERSION`**。
 
 ### 模型与权限
 

@@ -577,6 +577,7 @@ describe('method table', () => {
         'push.presence',
         'push.register',
         'push.unregister',
+        'session.activity',
         'session.cancel',
         'session.create',
         'session.list',
@@ -1369,5 +1370,108 @@ describe('prompt attachments', () => {
     )
     expect(result).toEqual({ accepted: true, requestId: 'retry-me' })
     expect(lastPromptRequest(calls)['requestId']).toBe('retry-me')
+  })
+})
+
+
+describe('session.activity (method table)', () => {
+  const context = { deviceId: 'd1', deviceName: 'iPhone', remote: '127.0.0.1' }
+  const facts = { hostId: 'h1', hostName: 'mac', home: '/home', protocolVersion: 1 }
+
+  /** One log record in the gateway's shape. */
+  function event(type: string, seq: number, data: Record<string, unknown>): unknown {
+    return { type: 'event', event: { type, seq, time: 1_700_000_000_000 + seq, data } }
+  }
+
+  /**
+   * A context that answers the page read and has no follow stream.
+   *
+   * The missing stream is the older-host path: the cut comes from the
+   * projections read, and both reads are still exercised.
+   *
+   * @param records - the records every page returns.
+   * @returns the context and the recorded invocations.
+   */
+  function activityContext(records: unknown[]): { ctx: Context; calls: Invocation[] } {
+    const calls: Invocation[] = []
+    const ctx = {
+      typertGateway: {
+        stream: async () => {
+          throw new Error('no follow stream in this test')
+        },
+        invoke: async (request: Invocation) => {
+          calls.push({
+            namespace: request.namespace,
+            method: request.method,
+            args: request.args,
+          })
+          if (request.method === 'projections') return { asOfSeq: 9, values: {} }
+          if (request.method === 'page') return { records, hasMore: false }
+          throw new Error(`unexpected method ${request.method}`)
+        },
+      },
+      effect: () => () => {},
+    } as unknown as Context
+    return { ctx, calls }
+  }
+
+  it('answers the running turn through the method table', async () => {
+    const records = [
+      event('turn/start', 1, { turn: 1 }),
+      event('assistant/attempt', 2, {
+        turn: 1,
+        step: 1,
+        stream: [{ type: 'reasoning-chunks', time0: 1, index: 0, dt: [], texts: ['working on it'] }],
+      }),
+      event('tool/call', 3, {
+        turn: 1,
+        step: 1,
+        callId: 'c1',
+        name: 'bash',
+        arguments: JSON.stringify({ command: 'git status' }),
+      }),
+    ]
+    const { ctx } = activityContext(records)
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    const result = (await table['session.activity']?.(
+      { sessionId: 's1', maxEntries: 10 },
+      context,
+    )) as { sessionId: string; turn: number; entries: { kind: string }[] }
+
+    expect(result).toMatchObject({ sessionId: 's1', asOfSeq: 9, turn: 1, hasMore: false })
+    expect(result.entries.map((entry) => entry.kind)).toEqual(['thinking', 'command'])
+  })
+
+  it('asks the host for the bounded activity page window', async () => {
+    const { ctx, calls } = activityContext([])
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+    await table['session.activity']?.({ sessionId: 's1' }, context)
+
+    const page = calls.find((call) => call.method === 'page')
+    expect(page?.args).toMatchObject({
+      request: {
+        address: { kind: 'session', sessionId: 's1' },
+        throughSeq: 9,
+        maxMessages: 200,
+      },
+    })
+  })
+
+  it('requires a session id and ignores an unusable maxEntries', async () => {
+    const { ctx } = activityContext([])
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    await expect(table['session.activity']?.('nope', context)).rejects.toMatchObject({
+      code: 'MALFORMED_FRAME',
+    })
+    await expect(table['session.activity']?.({}, context)).rejects.toMatchObject({
+      code: 'MALFORMED_FRAME',
+    })
+    // A non-number hint is the default, not an error: the host's own clamp is
+    // the authority and the client has nothing useful to do with a refusal.
+    await expect(
+      table['session.activity']?.({ sessionId: 's1', maxEntries: 'ten' }, context),
+    ).resolves.toMatchObject({ sessionId: 's1', turn: null, entries: [] })
   })
 })

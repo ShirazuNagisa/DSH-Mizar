@@ -594,10 +594,20 @@ async function projectionsCut(ctx: Context, sessionId: string): Promise<number |
   return typeof value?.asOfSeq === 'number' && Number.isFinite(value.asOfSeq) ? value.asOfSeq : null
 }
 
+/** One raw page of a session's log, as the host returned it. */
+interface LogPage {
+  /** The inclusive log cut the page was taken at. */
+  readonly cut: number
+  /** Raw records, oldest first, exactly as the gateway reported them. */
+  readonly records: readonly unknown[]
+  /** Whether the host says older records exist before this page. */
+  readonly hasMore: boolean
+}
+
 /**
- * Read a page of a session's log.
+ * Read the current tail page of a session's raw log.
  *
- * The two-step shape is not optional. `session/page` is keyed by `address` and a
+ * The two-step shape is not optional: `session/page` is keyed by `address` and a
  * `throughSeq` cut, not by session id, and the cut comes from opening the
  * session's follow stream and reading one frame -- so a caller cannot ask "give
  * me the last N messages" without first asking "what is the log at".
@@ -606,33 +616,28 @@ async function projectionsCut(ctx: Context, sessionId: string): Promise<number |
  * window of deltas.
  *
  * The cut comes from {@link followCursor}, and from {@link projectionsCut} when
- * that cannot answer. The reply is narrowed by {@link summaryRecords} to what
- * the conversation screen draws, filtered to what the phone does not already
- * hold, and then trimmed to what fits by {@link withinBudget}.
+ * that cannot answer. Works for a cold session: neither read activates an agent,
+ * which was measured for the follow path before it was adopted here.
  *
- * Works for a cold session: neither read activates an agent, which was measured
- * for the follow path before it was adopted here.
+ * Shared by {@link sessionMessages} and {@link sessionActivity}: both start from
+ * exactly the same current page, and only differ in what they keep from it.
  *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @param sessionId - the session to read.
- * @param maxMessages - how many messages to ask for.
+ * @param maxMessages - how many messages to ask for; absent uses the host default.
  * @param beforeSeq - the exclusive upper bound, for paging backwards.
- * @param afterSeq - the log position the caller already holds; only records
- *   after it travel. Ignored together with `beforeSeq`, because a page paged
- *   backwards is not a page of new records.
- * @returns the page, or no records when the session is unknown.
+ * @returns the page, or `null` when the session has no log to read.
  */
-export async function sessionMessages(
+async function readLogPage(
   ctx: Context,
   sessionId: string,
   maxMessages?: number,
   beforeSeq?: number,
-  afterSeq?: number,
-): Promise<SessionMessagesResult> {
+): Promise<LogPage | null> {
   const cut = (await followCursor(ctx, sessionId)) ?? (await projectionsCut(ctx, sessionId))
   if (cut === null) {
     // No cut, no page: the session has no log to read.
-    return { sessionId, asOfSeq: null, records: [], hasMore: false }
+    return null
   }
 
   const value = (await invokeRemote(ctx, {
@@ -654,7 +659,43 @@ export async function sessionMessages(
     signal: AbortSignal.timeout(READ_TIMEOUT_MS),
   })) as { records?: unknown; hasMore?: unknown } | null | undefined
 
-  const records = Array.isArray(value?.records) ? value.records : []
+  return {
+    cut,
+    records: Array.isArray(value?.records) ? value.records : [],
+    hasMore: value?.hasMore === true,
+  }
+}
+
+/**
+ * Read a page of a session's log.
+ *
+ * See {@link readLogPage} for the two reads behind the cut. The reply is
+ * narrowed by {@link summaryRecords} to what the conversation screen draws,
+ * filtered to what the phone does not already hold, and then trimmed to what
+ * fits by {@link withinBudget}.
+ *
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param sessionId - the session to read.
+ * @param maxMessages - how many messages to ask for.
+ * @param beforeSeq - the exclusive upper bound, for paging backwards.
+ * @param afterSeq - the log position the caller already holds; only records
+ *   after it travel. Ignored together with `beforeSeq`, because a page paged
+ *   backwards is not a page of new records.
+ * @returns the page, or no records when the session is unknown.
+ */
+export async function sessionMessages(
+  ctx: Context,
+  sessionId: string,
+  maxMessages?: number,
+  beforeSeq?: number,
+  afterSeq?: number,
+): Promise<SessionMessagesResult> {
+  const page = await readLogPage(ctx, sessionId, maxMessages, beforeSeq)
+  if (page === null) {
+    return { sessionId, asOfSeq: null, records: [], hasMore: false }
+  }
+
+  const records = page.records
   const summarized = summaryRecords(records)
   // Only what the phone does not already hold. Filtered after the summary and
   // before the budget, for the same two reasons in opposite directions: the
@@ -678,12 +719,12 @@ export async function sessionMessages(
 
   return {
     sessionId,
-    asOfSeq: cut,
+    asOfSeq: page.cut,
     // Narrowed before it is trimmed, so the budget is spent on records that
     // travel rather than on narration that would have filled it and been
     // dropped a line later.
     records: withinBudget(fresh),
-    hasMore: value?.hasMore === true,
+    hasMore: page.hasMore,
   }
 }
 
@@ -709,6 +750,537 @@ export interface SessionMessagesResult {
    */
   readonly records: readonly unknown[]
   readonly hasMore: boolean
+}
+
+/** One compact line of a running turn's process. */
+export interface SessionActivityEntry {
+  /** Stable across polls: `seq-<n>` when the record has a log position. */
+  readonly id: string
+  /** The record's log position, or `null` when the host numbered nothing. */
+  readonly seq: number | null
+  /** When the record was written, epoch milliseconds. */
+  readonly at: number
+  /** Narration (`thinking`), a shell-like `command`, its `output`, or another `tool`. */
+  readonly kind: 'thinking' | 'command' | 'output' | 'tool'
+  /** The tool name for command/tool rows, the matching name for output; may be empty. */
+  readonly title: string
+  /** Compact one-line detail, at most {@link ACTIVITY_TEXT_CHARS} characters. */
+  readonly text: string
+}
+
+/** What `session.activity` answers: the running turn's compact process detail. */
+export interface SessionActivityResult {
+  readonly sessionId: string
+  /** The log cut the page was taken at; `null` when the session is unknown. */
+  readonly asOfSeq: number | null
+  /** The currently running turn, or `null` when nothing is running. */
+  readonly turn: number | null
+  /**
+   * Only the running turn's process rows, oldest first.
+   *
+   * No committed user/assistant messages and no step markers: the summary page
+   * already carries those, and this feed exists to answer "what is it doing
+   * right now" without repeating the conversation.
+   */
+  readonly entries: readonly SessionActivityEntry[]
+  /** Whether rows were dropped by the entry cap or the byte budget. */
+  readonly hasMore: boolean
+}
+
+/** How many entries `session.activity` returns unless the client asks for fewer. */
+const ACTIVITY_DEFAULT_ENTRIES = 200
+
+/**
+ * The hard ceiling on entries per answer.
+ *
+ * The answer leaves as one websocket frame: the listener refuses anything over
+ * 512 KiB and iOS closes the connection over 1 MiB. 300 compact rows stay far
+ * below both even with 240-character text; the byte budget below is the real
+ * bound, and this cap keeps the array shape bounded when the text is short.
+ */
+const ACTIVITY_MAX_ENTRIES = 300
+
+/**
+ * The byte budget for `entries`, measured as the JSON the phone will read.
+ *
+ * A quarter of a mebibyte: envelope, tool titles and timestamps still fit well
+ * under the listener's 512 KiB frame limit, with room for the relay's framing,
+ * while being large enough that the default 200 rows usually fit intact.
+ */
+const ACTIVITY_MAX_BYTES = 256 * 1024
+
+/** Longest one-line detail text, in characters. */
+const ACTIVITY_TEXT_CHARS = 240
+
+/** Longest tool title. A name is display text, not a payload, so it is bounded too. */
+const ACTIVITY_TITLE_CHARS = 120
+
+/**
+ * How many messages of log to ask for when looking for the running turn.
+ *
+ * `session.maxMessages` counts messages rather than raw events, and the running
+ * turn is always a *tail*: this window is wide enough to hold a long tool loop's
+ * calls and results while keeping the host-side read small. The entry cap and
+ * byte budget do the rest.
+ */
+const ACTIVITY_PAGE_MESSAGES = 200
+
+/**
+ * Clamp a requested entry cap.
+ *
+ * The client can ask for fewer rows; it cannot ask for an unbounded answer. An
+ * absent, non-finite or non-positive request means the default, and the ceiling
+ * is stated by the protocol rather than inferred from the request.
+ *
+ * @param value - the client's `maxEntries`, when it sent a number.
+ * @returns the number of entries to keep.
+ */
+function normalizeMaxEntries(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1) return ACTIVITY_DEFAULT_ENTRIES
+  return Math.min(ACTIVITY_MAX_ENTRIES, Math.floor(value))
+}
+
+/**
+ * One line of display text, bounded.
+ *
+ * Tool output and model narration arrive with newlines and runs of indentation;
+ * a detail row is one line, so every whitespace run collapses to one space
+ * before the length bound is applied.
+ *
+ * @param value - the text to flatten, or anything else (which becomes empty).
+ * @param limit - the maximum number of characters.
+ * @returns the flattened, bounded line.
+ */
+function oneLine(value: unknown, limit: number): string {
+  if (typeof value !== 'string') return ''
+  const flattened = value.replace(/\s+/gu, ' ').trim()
+  return flattened.length > limit ? flattened.slice(0, limit) : flattened
+}
+
+/**
+ * The first line of a block of text.
+ *
+ * Tool output is often a whole transcript; a detail row shows one compact line,
+ * and the first line is the one a reader scans.
+ *
+ * @param value - the text.
+ * @returns its first line, trimmed.
+ */
+function firstLine(value: string): string {
+  const end = value.search(/[\r\n]/u)
+  return (end === -1 ? value : value.slice(0, end)).trim()
+}
+
+/**
+ * JSON text for an unknown value, never throwing on a hostile object.
+ *
+ * @param value - the value to render.
+ * @returns its JSON text, or the value itself when it is already a string.
+ */
+function compactJson(value: unknown): string {
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** Tool names that mean "this runs a shell command", for the command row kind. */
+const COMMAND_TOOL_NAME =
+  /(?:^|[._:/-])(?:bash|sh|shell|zsh|exec|execute|command|run|terminal|powershell|cmd)(?:$|[._:/-])/iu
+
+/**
+ * Whether a tool name is a shell-like command runner.
+ *
+ * The app draws `command` rows differently from `tool` rows (a terminal icon, a
+ * command-shaped one-liner), and the host knows the vocabulary the app does not.
+ * The match is on name tokens, so `run_command` and `bash` are commands while
+ * `read_file` is not.
+ *
+ * @param name - the tool's DSH name.
+ * @returns whether it runs a command.
+ */
+function isCommandTool(name: string): boolean {
+  return COMMAND_TOOL_NAME.test(name)
+}
+
+/**
+ * The readable narration carried by one `assistant/attempt` stream.
+ *
+ * A durable attempt stores model output as compact runs (`text-chunks` and
+ * `reasoning-chunks` carrying `texts`) and, for anything the accumulator cannot
+ * pack, raw `chunk` records. Both are read; delta text wins over settled blocks
+ * so the same sentence is not joined twice, and a host that stores only
+ * `block-end` chunks still gets its narration from the block.
+ *
+ * @param data - the attempt event's `data`.
+ * @returns the joined narration, empty when it has none.
+ */
+function attemptText(data: Record<string, unknown>): string {
+  const stream = data['stream']
+  if (!Array.isArray(stream)) return ''
+  const deltas: string[] = []
+  const blocks: string[] = []
+  for (const record of stream) {
+    if (typeof record !== 'object' || record === null) continue
+    const item = record as Record<string, unknown>
+    const type = item['type']
+    if (type === 'text-chunks' || type === 'reasoning-chunks') {
+      const texts = item['texts']
+      if (Array.isArray(texts)) {
+        for (const text of texts) if (typeof text === 'string') deltas.push(text)
+      }
+      continue
+    }
+    // Two raw shapes are in the wild: the durable `{type: 'chunk', chunk}` and a
+    // live `TimedStreamChunk` that is just `{time, chunk}`. Reading the nested
+    // chunk rather than switching on the wrapper covers both.
+    const chunk = item['chunk']
+    if (typeof chunk !== 'object' || chunk === null) continue
+    const chunkRecord = chunk as Record<string, unknown>
+    const chunkType = chunkRecord['type']
+    if (chunkType === 'text-delta' || chunkType === 'reasoning-delta') {
+      const text = chunkRecord['text']
+      if (typeof text === 'string') deltas.push(text)
+      continue
+    }
+    if (chunkType === 'block-end') {
+      const block = chunkRecord['block']
+      if (typeof block !== 'object' || block === null) continue
+      const blockRecord = block as Record<string, unknown>
+      const blockType = blockRecord['type']
+      const text = blockRecord['text']
+      if ((blockType === 'text' || blockType === 'reasoning') && typeof text === 'string') {
+        blocks.push(text)
+      }
+    }
+  }
+  return deltas.length > 0 ? deltas.join('') : blocks.join('')
+}
+
+/**
+ * The compact detail for one tool call's arguments.
+ *
+ * `arguments` is a JSON string in DSH's log. A shell command or a short
+ * description is what a reader needs; the rest of the object is noise on a
+ * one-line row. A non-JSON argument string is already the most readable thing
+ * there is, so it is shown as-is.
+ *
+ * @param raw - the `arguments` field of a `tool/call`.
+ * @returns the one-line detail.
+ */
+function toolCallText(raw: unknown): string {
+  if (typeof raw !== 'string') return oneLine(compactJson(raw), ACTIVITY_TEXT_CHARS)
+  const text = raw.trim()
+  if (text === '') return ''
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return oneLine(text, ACTIVITY_TEXT_CHARS)
+  }
+  if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+    const record = parsed as Record<string, unknown>
+    for (const key of ['command', 'description']) {
+      const value = record[key]
+      if (typeof value === 'string' && value.trim() !== '') {
+        return oneLine(value, ACTIVITY_TEXT_CHARS)
+      }
+    }
+  }
+  return oneLine(text, ACTIVITY_TEXT_CHARS)
+}
+
+/**
+ * The compact detail for one tool result.
+ *
+ * The normal shape is a tool-role message whose content blocks are text. Hosts
+ * that report the outcome differently are still usable: `output`/`result`/
+ * `content` are read next, then the error object, in the order the protocol
+ * names them. Only the first line is kept.
+ *
+ * @param data - the `tool/result` event's `data`.
+ * @returns the one-line detail, empty when the result carries nothing readable.
+ */
+function toolResultText(data: Record<string, unknown>): string {
+  const message = data['message']
+  if (typeof message === 'object' && message !== null) {
+    const content = (message as { content?: unknown }).content
+    if (Array.isArray(content)) {
+      const lines: string[] = []
+      for (const part of content) {
+        if (typeof part !== 'object' || part === null) continue
+        const record = part as { type?: unknown; text?: unknown }
+        if (record.type === 'text' && typeof record.text === 'string') lines.push(record.text)
+      }
+      if (lines.length > 0) {
+        const line = firstLine(lines.join('\n'))
+        if (line !== '') return line
+      }
+    }
+  }
+  for (const key of ['output', 'result', 'content']) {
+    const value = data[key]
+    if (typeof value === 'string') {
+      const line = firstLine(value)
+      if (line !== '') return line
+    } else if (typeof value === 'object' && value !== null) {
+      const line = firstLine(compactJson(value))
+      if (line !== '') return line
+    }
+  }
+  const error = data['error']
+  if (typeof error === 'object' && error !== null) {
+    const record = error as Record<string, unknown>
+    for (const key of ['reason', 'name', 'code']) {
+      const value = record[key]
+      if (typeof value === 'string') {
+        const line = firstLine(value)
+        if (line !== '') return line
+      }
+    }
+  }
+  return ''
+}
+
+/**
+ * A stable id for one row.
+ *
+ * The phone merges the feed by id across polls, so the id must not depend on
+ * the row's position in the page. A log position is exactly that; a host that
+ * numbers nothing falls back to the event's timestamp, which is stable for as
+ * long as the row is inside the window.
+ *
+ * @param seq - the record's log position, when it has one.
+ * @param at - the record's timestamp.
+ * @param kind - the row kind.
+ * @returns the id.
+ */
+function activityId(seq: number | null, at: number, kind: string): string {
+  return seq === null ? `at-${at}-${kind}` : `seq-${seq}`
+}
+
+/**
+ * When one event was written.
+ * @param event - the unwrapped event.
+ * @returns its time in epoch milliseconds, or `0` when it names none.
+ */
+function activityTime(event: Record<string, unknown>): number {
+  const time = event['time']
+  return typeof time === 'number' && Number.isFinite(time) ? time : 0
+}
+
+/**
+ * Narrow one running-turn record into a detail row.
+ *
+ * Only three event types are mapped, and everything else is skipped rather than
+ * dumped: the feed exists to be drawn as one-liners, and a shape this build does
+ * not know is a payload the phone cannot use.
+ *
+ * @param record - one log record.
+ * @param callNames - tool names by call id, for titling output rows.
+ * @returns the row, or `null` when the record is not process detail.
+ */
+function activityEntryOf(
+  record: unknown,
+  callNames: ReadonlyMap<string, string>,
+): SessionActivityEntry | null {
+  const event = eventOf(record)
+  if (event === null) return null
+  const data = event['data']
+  if (typeof data !== 'object' || data === null) return null
+  const fields = data as Record<string, unknown>
+  const seq = recordSeq(record)
+  const at = activityTime(event)
+  const callId = typeof fields['callId'] === 'string' ? fields['callId'] : null
+
+  switch (event['type']) {
+    case 'assistant/attempt': {
+      const text = oneLine(attemptText(fields), ACTIVITY_TEXT_CHARS)
+      // An attempt with no readable narration would be an empty row; there is
+      // nothing for the phone to draw and nothing worth a frame.
+      if (text === '') return null
+      const kind = 'thinking' as const
+      return { id: activityId(seq, at, kind), seq, at, kind, title: '', text }
+    }
+    case 'tool/call': {
+      const name = typeof fields['name'] === 'string' && fields['name'] !== '' ? fields['name'] : 'tool'
+      const kind = isCommandTool(name) ? 'command' : 'tool'
+      return {
+        id: activityId(seq, at, kind),
+        seq,
+        at,
+        kind,
+        title: oneLine(name, ACTIVITY_TITLE_CHARS),
+        text: toolCallText(fields['arguments']),
+      }
+    }
+    case 'tool/result': {
+      const text = oneLine(toolResultText(fields), ACTIVITY_TEXT_CHARS)
+      if (text === '') return null
+      const kind = 'output' as const
+      const title = callId === null ? '' : oneLine(callNames.get(callId) ?? '', ACTIVITY_TITLE_CHARS)
+      return { id: activityId(seq, at, kind), seq, at, kind, title, text }
+    }
+    default:
+      // `user/message`, `assistant/message`, `step/*`, `turn/*`, request
+      // headers, inbox splices and whatever DSH adds next: the summary page
+      // carries the conversation, and this feed carries the process.
+      return null
+  }
+}
+
+/**
+ * The turn the feed is about: the highest-numbered turn with activity in this
+ * page and no `turn/end` for it.
+ *
+ * The page is a window, and a window can start inside the running turn, so a
+ * missing `turn/start` is not evidence that nothing runs -- the highest turn
+ * with activity and no end is, and that is exactly what a window cut through a
+ * running turn looks like. `turn/end` is the only record that ends a turn.
+ *
+ * @param records - one raw page, oldest first.
+ * @returns the running turn number, or `null` when none is running.
+ */
+function findRunningTurn(records: readonly unknown[]): number | null {
+  const active = new Set<number>()
+  const ended = new Set<number>()
+  for (const record of records) {
+    const event = eventOf(record)
+    if (event === null) continue
+    const turn = turnOf(event)
+    if (typeof turn !== 'number' || !Number.isFinite(turn)) continue
+    if (event['type'] === 'turn/end') {
+      ended.add(turn)
+      continue
+    }
+    active.add(turn)
+  }
+  let running: number | null = null
+  for (const turn of active) {
+    if (ended.has(turn)) continue
+    if (running === null || turn > running) running = turn
+  }
+  return running
+}
+
+/**
+ * Tool names by call id, for titling output rows.
+ *
+ * A `tool/result` names the call, not the tool; the call that named it may be
+ * in this page (it normally is) or in the page before it (not known here, so
+ * the title stays empty rather than invented).
+ *
+ * @param records - one raw page, oldest first.
+ * @returns tool names keyed by call id.
+ */
+function collectToolNames(records: readonly unknown[]): Map<string, string> {
+  const names = new Map<string, string>()
+  for (const record of records) {
+    const event = eventOf(record)
+    if (event?.['type'] !== 'tool/call') continue
+    const data = event['data']
+    if (typeof data !== 'object' || data === null) continue
+    const fields = data as Record<string, unknown>
+    const callId = fields['callId']
+    const name = fields['name']
+    if (typeof callId === 'string' && typeof name === 'string' && name !== '') {
+      names.set(callId, name)
+    }
+  }
+  return names
+}
+
+/**
+ * Trim a running turn's rows to the byte budget, keeping the newest.
+ *
+ * The newest rows are the ones a running-turn feed is looking at, so the oldest
+ * go first -- the same rule the summary page uses. A single row larger than the
+ * budget still travels: it is bounded by its own 240 characters, and an empty
+ * answer would be worse than one slightly over budget.
+ *
+ * @param entries - the rows, oldest first.
+ * @returns as many of the newest as fit.
+ */
+function withinActivityBudget(
+  entries: readonly SessionActivityEntry[],
+): SessionActivityEntry[] {
+  const kept: SessionActivityEntry[] = []
+  // The budget is about the JSON array the phone reads, not the sum of the
+  // entries: the brackets and the separators between them are bytes too. Two
+  // brackets up front and one separator per row is a slight over-estimate,
+  // which is the safe direction.
+  let total = 2
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index] as SessionActivityEntry
+    // Bytes, not `length`: a Chinese character is one UTF-16 unit and three
+    // bytes of UTF-8, and the budget is about what leaves the host.
+    const size = Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1
+    if (total + size > ACTIVITY_MAX_BYTES && kept.length > 0) break
+    total += size
+    kept.push(entry)
+  }
+  return kept.reverse()
+}
+
+/**
+ * The running turn's compact process detail.
+ *
+ * A paid-account feature, but a read-only host method: it is the same current
+ * log page {@link sessionMessages} reads (see {@link readLogPage}), narrowed to
+ * the one turn that has not ended yet and then mapped to one-line rows. The
+ * conversation itself does not travel here -- committed user/assistant
+ * messages, step markers and every unrecognised event are skipped -- because
+ * the conversation screen already drew them from the summary page.
+ *
+ * Everything about the answer is bounded so it stays a small frame: at most
+ * {@link ACTIVITY_MAX_ENTRIES} rows, a byte budget of
+ * {@link ACTIVITY_MAX_BYTES}, 240-character text and one line each.
+ *
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param sessionId - the session to inspect.
+ * @param maxEntries - how many rows the client wants; capped, default 200.
+ * @returns the running turn's rows, or an empty feed when nothing runs.
+ */
+export async function sessionActivity(
+  ctx: Context,
+  sessionId: string,
+  maxEntries?: number,
+): Promise<SessionActivityResult> {
+  const page = await readLogPage(ctx, sessionId, ACTIVITY_PAGE_MESSAGES)
+  if (page === null) {
+    return { sessionId, asOfSeq: null, turn: null, entries: [], hasMore: false }
+  }
+
+  const running = findRunningTurn(page.records)
+  if (running === null) {
+    // Not an error: a session between turns is the normal state, and the phone
+    // hides the detail area instead of drawing an empty one.
+    return { sessionId, asOfSeq: page.cut, turn: null, entries: [], hasMore: false }
+  }
+
+  const callNames = collectToolNames(page.records)
+  const mapped: SessionActivityEntry[] = []
+  for (const record of page.records) {
+    const event = eventOf(record)
+    // Only the running turn's process. Earlier turns are history, and the
+    // summary page already carries what the conversation screen draws of them.
+    if (event === null || turnOf(event) !== running) continue
+    const entry = activityEntryOf(record, callNames)
+    if (entry !== null) mapped.push(entry)
+  }
+
+  const limit = normalizeMaxEntries(maxEntries)
+  const capped = mapped.length > limit ? mapped.slice(mapped.length - limit) : mapped
+  const entries = withinActivityBudget(capped)
+  return {
+    sessionId,
+    asOfSeq: page.cut,
+    turn: running,
+    entries,
+    hasMore: entries.length !== mapped.length,
+  }
 }
 
 /** A newly created or resumed session. */

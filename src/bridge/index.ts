@@ -34,6 +34,7 @@ import {
   listSessions,
   promptSession,
   renameSession,
+  sessionActivity,
   sessionMessages,
   sessionStats,
 } from './sessions.js'
@@ -366,6 +367,30 @@ export function createMethodTable(
         typeof limit === 'number' ? limit : undefined,
         typeof before === 'number' ? before : undefined,
         explicit ?? remembered,
+      )
+    },
+
+    /**
+     * The running turn's compact process detail.
+     *
+     * Separate from `session.messages` because it answers a different question
+     * and changes far more often: a summary refresh is a page of conversation,
+     * this is polled a couple of times a second while a turn runs, and the paid
+     * account's UI draws it as a full-detail feed under the status row. The
+     * answer carries only the running turn's one-line process rows; see
+     * `sessionActivity` for what is mapped and the byte budget it enforces.
+     *
+     * `maxEntries` is a hint, not a promise: the host clamps it to the protocol
+     * ceiling and may return fewer rows when the byte budget fills.
+     */
+    'session.activity': async (payload) => {
+      const sessionId = requireString(payload, 'sessionId', 'session.activity')
+      const fields = payload as Record<string, unknown> | undefined
+      const maxEntries = fields?.['maxEntries']
+      return sessionActivity(
+        ctx,
+        sessionId,
+        typeof maxEntries === 'number' && Number.isFinite(maxEntries) ? maxEntries : undefined,
       )
     },
 

@@ -50,21 +50,10 @@ export declare function sessionStats(ctx: Context, sessionId: string): Promise<S
 /**
  * Read a page of a session's log.
  *
- * The two-step shape is not optional. `session/page` is keyed by `address` and a
- * `throughSeq` cut, not by session id, and the cut comes from opening the
- * session's follow stream and reading one frame -- so a caller cannot ask "give
- * me the last N messages" without first asking "what is the log at".
- * `session.maxMessages` counts messages rather than raw events, so a page that
- * spans a long tool run still returns the requests around it rather than a
- * window of deltas.
- *
- * The cut comes from {@link followCursor}, and from {@link projectionsCut} when
- * that cannot answer. The reply is narrowed by {@link summaryRecords} to what
- * the conversation screen draws, filtered to what the phone does not already
- * hold, and then trimmed to what fits by {@link withinBudget}.
- *
- * Works for a cold session: neither read activates an agent, which was measured
- * for the follow path before it was adopted here.
+ * See {@link readLogPage} for the two reads behind the cut. The reply is
+ * narrowed by {@link summaryRecords} to what the conversation screen draws,
+ * filtered to what the phone does not already hold, and then trimmed to what
+ * fits by {@link withinBudget}.
  *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @param sessionId - the session to read.
@@ -99,6 +88,59 @@ export interface SessionMessagesResult {
     readonly records: readonly unknown[];
     readonly hasMore: boolean;
 }
+/** One compact line of a running turn's process. */
+export interface SessionActivityEntry {
+    /** Stable across polls: `seq-<n>` when the record has a log position. */
+    readonly id: string;
+    /** The record's log position, or `null` when the host numbered nothing. */
+    readonly seq: number | null;
+    /** When the record was written, epoch milliseconds. */
+    readonly at: number;
+    /** Narration (`thinking`), a shell-like `command`, its `output`, or another `tool`. */
+    readonly kind: 'thinking' | 'command' | 'output' | 'tool';
+    /** The tool name for command/tool rows, the matching name for output; may be empty. */
+    readonly title: string;
+    /** Compact one-line detail, at most {@link ACTIVITY_TEXT_CHARS} characters. */
+    readonly text: string;
+}
+/** What `session.activity` answers: the running turn's compact process detail. */
+export interface SessionActivityResult {
+    readonly sessionId: string;
+    /** The log cut the page was taken at; `null` when the session is unknown. */
+    readonly asOfSeq: number | null;
+    /** The currently running turn, or `null` when nothing is running. */
+    readonly turn: number | null;
+    /**
+     * Only the running turn's process rows, oldest first.
+     *
+     * No committed user/assistant messages and no step markers: the summary page
+     * already carries those, and this feed exists to answer "what is it doing
+     * right now" without repeating the conversation.
+     */
+    readonly entries: readonly SessionActivityEntry[];
+    /** Whether rows were dropped by the entry cap or the byte budget. */
+    readonly hasMore: boolean;
+}
+/**
+ * The running turn's compact process detail.
+ *
+ * A paid-account feature, but a read-only host method: it is the same current
+ * log page {@link sessionMessages} reads (see {@link readLogPage}), narrowed to
+ * the one turn that has not ended yet and then mapped to one-line rows. The
+ * conversation itself does not travel here -- committed user/assistant
+ * messages, step markers and every unrecognised event are skipped -- because
+ * the conversation screen already drew them from the summary page.
+ *
+ * Everything about the answer is bounded so it stays a small frame: at most
+ * {@link ACTIVITY_MAX_ENTRIES} rows, a byte budget of
+ * {@link ACTIVITY_MAX_BYTES}, 240-character text and one line each.
+ *
+ * @param ctx - a context observing `ctx.typertGateway`.
+ * @param sessionId - the session to inspect.
+ * @param maxEntries - how many rows the client wants; capped, default 200.
+ * @returns the running turn's rows, or an empty feed when nothing runs.
+ */
+export declare function sessionActivity(ctx: Context, sessionId: string, maxEntries?: number): Promise<SessionActivityResult>;
 /** A newly created or resumed session. */
 export interface CreateSessionResult {
     readonly sessionId: string;
