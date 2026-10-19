@@ -17,7 +17,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '../src/dsh.js'
 import { createSession } from '../src/bridge/sessions.js'
-import { listWorkspaces, resolveWorkspaceId } from '../src/bridge/workspaces.js'
+import { archiveSession, listWorkspaces, resolveWorkspaceId } from '../src/bridge/workspaces.js'
 
 /** One method call the plugin made. */
 interface Invocation {
@@ -33,6 +33,10 @@ interface RegistryLike {
   list?(): readonly unknown[]
   /** The workspace owning a canonical path, without creating one. */
   resolveByPath?(path: string): Promise<unknown>
+  /** The registry-global archive set, when this registry can say. */
+  archivedSessionIds?: readonly string[]
+  /** Archive one session; absent on a registry too old to have it. */
+  archiveSession?(sessionId: string, options?: { stopActivity?: boolean }): Promise<void>
 }
 
 /** A context whose `workspace/follow` yields a baseline with these workspaces. */
@@ -41,6 +45,8 @@ function context(options: {
   registry?: RegistryLike | null
   /** What `ctx.workspaceRegistry.list()` answers, when it is implemented. */
   registryList?: readonly unknown[]
+  /** What the registry reports as archived, when it can say. */
+  archivedSessionIds?: readonly string[]
   /** Whether the follow stream refuses outright. */
   throwOnStream?: boolean
   /** Whether closing the follow stream throws, as a carrier that died does. */
@@ -59,6 +65,9 @@ function context(options: {
             return { id: `ws-for-${path}` }
           },
           ...(options.registryList === undefined ? {} : { list: () => options.registryList ?? [] }),
+          ...(options.archivedSessionIds === undefined
+            ? {}
+            : { archivedSessionIds: options.archivedSessionIds }),
         }
       : options.registry
 
@@ -332,6 +341,125 @@ describe('the workspace list the phone draws from', () => {
     // the path, and the first one is not.
     const { ctx } = context({ registryList: [{ id: 'ws-1', path: '/a', title: 'A' }] })
     expect((await listWorkspaces(ctx)).items[0]).toEqual({ workspaceId: 'ws-1', path: '/a', title: 'A' })
+  })
+})
+
+describe('archiving a session', () => {
+  it('asks the registry to archive it, with no options the caller did not ask for', async () => {
+    // No `stopActivity` means the host must refuse a session that is still
+    // running. That refusal is the safety the phone's long-press menu relies
+    // on: archiving must not silently kill a turn somebody is watching.
+    const archived: Array<[string, unknown]> = []
+    const { ctx } = context({
+      registry: {
+        create: async () => ({ id: 'ws-unused' }),
+        archiveSession: async (sessionId, options) => {
+          archived.push([sessionId, options])
+        },
+      },
+    })
+
+    await archiveSession(ctx, { sessionId: 's1', stopActivity: false })
+    expect(archived).toEqual([['s1', undefined]])
+  })
+
+  it('passes stopActivity only when it is asked for', async () => {
+    const archived: Array<[string, unknown]> = []
+    const { ctx } = context({
+      registry: {
+        create: async () => ({ id: 'ws-unused' }),
+        archiveSession: async (sessionId, options) => {
+          archived.push([sessionId, options])
+        },
+      },
+    })
+
+    await archiveSession(ctx, { sessionId: 's1', stopActivity: true })
+    expect(archived).toEqual([['s1', { stopActivity: true }]])
+  })
+
+  it('refuses when the composition has no registry', async () => {
+    // There is nowhere to archive, so there is no success to report: the phone
+    // gets an error instead of a dropped row that reappears on the next refresh.
+    const { ctx } = context({ registry: null })
+    await expect(
+      archiveSession(ctx, { sessionId: 's1', stopActivity: false }),
+    ).rejects.toMatchObject({ code: 'REMOTE_ERROR' })
+  })
+
+  it('refuses when the registry is too old to archive', async () => {
+    const { ctx } = context({ registry: { create: async () => ({ id: 'ws-1' }) } })
+    await expect(
+      archiveSession(ctx, { sessionId: 's1', stopActivity: false }),
+    ).rejects.toMatchObject({ code: 'REMOTE_ERROR' })
+  })
+
+  it('surfaces the host refusal instead of swallowing it', async () => {
+    // What DSH throws for a running session or an unknown id. It is reported
+    // through the method table's guard as `REMOTE_ERROR`, with the host's own
+    // words in the message; the one thing it is never allowed to become is a
+    // resolved promise.
+    const { ctx } = context({
+      registry: {
+        create: async () => ({ id: 'ws-1' }),
+        archiveSession: async () => {
+          throw new Error("cannot archive session 's1': the session is active (turn)")
+        },
+      },
+    })
+    await expect(
+      archiveSession(ctx, { sessionId: 's1', stopActivity: false }),
+    ).rejects.toThrow(/the session is active/)
+  })
+})
+
+describe('hiding archived sessions in the workspace list', () => {
+  it('takes archived sessions out of each workspace membership', async () => {
+    // DSH's archive keeps the accounted slot -- that is what lets unarchiving
+    // restore the position -- so `sessionIds` still names the session and the
+    // filtering has to happen on the way out.
+    const { ctx } = context({
+      registryList: [
+        { id: 'ws-1', path: '/a', title: 'A', sessionIds: ['s1', 's2', 's3'] },
+        { id: 'ws-2', path: '/b', title: 'B', sessionIds: ['s4'] },
+      ],
+      archivedSessionIds: ['s2', 's4'],
+    })
+
+    const listed = await listWorkspaces(ctx)
+    expect(listed.items).toEqual([
+      { workspaceId: 'ws-1', path: '/a', title: 'A', sessionIds: ['s1', 's3'] },
+      // Every session filed here is archived. The list is still present and
+      // empty: the host did say what is filed here, it just has nothing to show.
+      { workspaceId: 'ws-2', path: '/b', title: 'B', sessionIds: [] },
+    ])
+    expect(listed.complete).toBe(true)
+  })
+
+  it('keeps membership absent when the source did not carry it', async () => {
+    // Absent means "the host said nothing", and hiding archived sessions must
+    // not turn that into "nothing is filed here" -- the phone tells them apart
+    // to decide whether it may fall back to matching on the path.
+    const { ctx } = context({
+      registryList: [{ id: 'ws-1', path: '/a', title: 'A' }],
+      archivedSessionIds: ['s1'],
+    })
+    expect((await listWorkspaces(ctx)).items[0]).toEqual({
+      workspaceId: 'ws-1',
+      path: '/a',
+      title: 'A',
+    })
+  })
+
+  it('leaves membership alone when the registry cannot answer the archive question', async () => {
+    // A registry from before the archive set existed is a composition that
+    // cannot archive either, so the list it gives is the list the phone always
+    // got. The alternative -- hiding nothing but pretending an empty archive
+    // set -- would be the same answer with less honesty.
+    const { ctx } = context({
+      registryList: [{ id: 'ws-1', path: '/a', title: 'A', sessionIds: ['s1', 's2'] }],
+    })
+    expect((await listWorkspaces(ctx)).items[0]?.sessionIds).toEqual(['s1', 's2'])
   })
 })
 

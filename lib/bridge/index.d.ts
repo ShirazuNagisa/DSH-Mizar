@@ -20,13 +20,29 @@ export interface HostFacts {
     readonly hostName: string;
     readonly home: string;
     readonly protocolVersion: number;
+    /**
+     * The `host:port` authorities the listener is bound to.
+     *
+     * A function, not an array, because it is read when `host.info` is answered
+     * rather than when the table is built: a rebind moves the listener to a
+     * different set of addresses underneath, and a cached list would keep naming
+     * where the host used to listen -- which is worse than saying nothing, because
+     * a phone probes these directly.
+     *
+     * Optional so compositions and tests from before the field keep compiling.
+     * Absent means the answer carries no `addresses` key at all: "this host cannot
+     * say" and "this host has no usable address" are different answers, and only
+     * the second justifies a phone giving up on the direct route.
+     */
+    readonly authorities?: () => readonly string[];
 }
 /**
  * Build the method table for one plugin mount.
  *
  * @param ctx - the plugin context, used for every DSH call.
  * @param facts - host identity reported to clients, including the state directory
- *   the upload staging area lives under.
+ *   the upload staging area lives under and, when the host can say, the bound
+ *   listener addresses.
  * @param broker - the interaction broker holding pending approvals and questions.
  * @param push - where a device's notification endpoint is recorded, when the host
  *   has push at all. Absent in compositions without a relay.

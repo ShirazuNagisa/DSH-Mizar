@@ -673,10 +673,12 @@ async function panelSection(context) {
   const uri = withCode?.pairing?.uri ?? ''
   const parsed = new URLSearchParams(uri.slice(uri.indexOf('?') + 1))
   check('the QR payload uses the mizar scheme', uri.startsWith('mizar://pair?'), uri)
-  // A QR must carry *an* address, but not necessarily a direct one. With a relay
-  // the listener binds loopback, and a loopback authority is deliberately left
-  // out -- a phone cannot reach 127.0.0.1 on the computer, and offering it would make
-  // every scan spend its direct-connection timeout before trying the relay.
+  // A QR must carry *an* address, but not necessarily a direct one. A host that
+  // binds loopback only (asked for explicitly, or no LAN interface found) has
+  // none to offer, and a loopback authority is deliberately left out -- a phone
+  // cannot reach 127.0.0.1 on the computer, and offering it would make every
+  // scan spend its direct-connection timeout before trying the relay. With the
+  // relay on and the default LAN bind, a direct authority is present.
   const authority = parsed.get('h')
   const relayBase = parsed.get('u')
   const direct = withCode?.authorities?.[0]

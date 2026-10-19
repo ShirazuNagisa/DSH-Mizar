@@ -50,20 +50,26 @@ interface Invocation {
  * Only the wire-contract fields are recorded — the real request also carries an
  * `AbortSignal`, which would make every exact comparison fail for no reason.
  * @param result - the value to return, or a function producing it.
+ * @param options - services to expose through `ctx.get`; a service that is
+ *   omitted leaves `ctx.get` itself absent, which is the old composition.
  * @returns the fake context and the recorded invocations.
  */
 function fakeContext(
   result: unknown | ((request: Invocation) => unknown),
-  options: { fileUploads?: unknown } = {},
+  options: { fileUploads?: unknown; workspaceRegistry?: unknown } = {},
 ): {
   ctx: Context
   calls: Invocation[]
 } {
   const calls: Invocation[] = []
+  const services: Record<string, unknown> = {}
+  if (options.fileUploads !== undefined) services['fileUploads'] = options.fileUploads
+  if (options.workspaceRegistry !== undefined) services['workspaceRegistry'] = options.workspaceRegistry
   const ctx = {
-    ...(options.fileUploads === undefined
-      ? {}
-      : { get: (name: string) => (name === 'fileUploads' ? options.fileUploads : undefined) }),
+    // `get`, not a property read: the plugin reaches for these services without
+    // declaring them in `inject`, so a composition that has one hands it over
+    // and one that does not gets `undefined` rather than a failure.
+    ...(Object.keys(services).length === 0 ? {} : { get: (name: string) => services[name] }),
     typertGateway: {
       invoke: async (request: Invocation) => {
         calls.push({
@@ -578,6 +584,7 @@ describe('method table', () => {
         'push.register',
         'push.unregister',
         'session.activity',
+        'session.archive',
         'session.cancel',
         'session.create',
         'session.list',
@@ -595,6 +602,57 @@ describe('method table', () => {
         'workspace.list',
       ].sort(),
     )
+  })
+
+  it('reports every address the host is listening on when it can say', async () => {
+    // The relay route tells the phone nothing about where the computer actually
+    // is, so a direct dial from a relayed connection depends on this answer.
+    const { ctx } = fakeContext({})
+    const table = createMethodTable(
+      ctx,
+      { ...facts, authorities: () => ['192.168.1.10:19390', '127.0.0.1:19390'] },
+      new InteractionBroker(),
+    )
+    await expect(table['host.info']?.(undefined, context)).resolves.toEqual({
+      hostId: 'h1',
+      hostName: 'mac',
+      home: '/home',
+      protocolVersion: 1,
+      addresses: ['192.168.1.10:19390', '127.0.0.1:19390'],
+    })
+  })
+
+  it('leaves addresses out entirely when the host cannot say', async () => {
+    // Absent and empty are different answers: absent is an old host, and the
+    // phone falls back to the address pairing gave it. Sending `[]` would be a
+    // claim that there is nowhere to dial.
+    const { ctx } = fakeContext({})
+    const info = (await createMethodTable(ctx, facts, new InteractionBroker())['host.info']?.(
+      undefined,
+      context,
+    )) as Record<string, unknown>
+    expect(info).toEqual({ hostId: 'h1', hostName: 'mac', home: '/home', protocolVersion: 1 })
+    expect('addresses' in info).toBe(false)
+  })
+
+  it('reads the addresses when host.info is answered, not when the table is built', async () => {
+    // A rebind swaps the listener's addresses under a table that is already
+    // built; a cached shape would name where the host used to listen.
+    const { ctx } = fakeContext({})
+    let bound: readonly string[] = ['127.0.0.1:19390']
+    const table = createMethodTable(
+      ctx,
+      { ...facts, authorities: () => bound },
+      new InteractionBroker(),
+    )
+    expect((await table['host.info']?.(undefined, context)) as { addresses?: string[] }).toMatchObject({
+      addresses: ['127.0.0.1:19390'],
+    })
+
+    bound = ['127.0.0.1:19391', '192.168.1.10:19391']
+    expect((await table['host.info']?.(undefined, context)) as { addresses?: string[] }).toMatchObject({
+      addresses: ['127.0.0.1:19391', '192.168.1.10:19391'],
+    })
   })
 
   it('hands push registrations to the binding, and the device id with them', async () => {
@@ -866,6 +924,159 @@ describe('method table', () => {
     )
     expect(await table['push.presence']?.({ foreground: false }, context)).toEqual({ accepted: true })
     expect(await table['push.unregister']?.({}, context)).toEqual({ unregistered: false })
+  })
+})
+
+describe('session.archive (method table)', () => {
+  const context = { deviceId: 'd1', deviceName: 'iPhone', remote: '127.0.0.1' }
+  const facts = { hostId: 'h1', hostName: 'mac', home: '/home', protocolVersion: 1 }
+
+  /**
+   * A registry that records what the bridge asked it to archive.
+   * @param archive - what the registry does when asked.
+   * @returns the fake service and the recorded calls.
+   */
+  function archivingRegistry(
+    archive: (sessionId: string, options?: unknown) => Promise<void> = async () => {},
+  ): { registry: Record<string, unknown>; calls: { sessionId: string; options: unknown }[] } {
+    const calls: { sessionId: string; options: unknown }[] = []
+    const registry = {
+      // `registryOf` recognises the service by `create`; the archive path then
+      // reaches for `archiveSession`.
+      create: async () => ({ id: 'unused' }),
+      archiveSession: async (sessionId: string, options?: unknown) => {
+        calls.push({ sessionId, options })
+        await archive(sessionId, options)
+      },
+    }
+    return { registry, calls }
+  }
+
+  it('archives through the registry and answers {archived: true}', async () => {
+    const { registry, calls } = archivingRegistry()
+    const { ctx } = fakeContext({}, { workspaceRegistry: registry })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    await expect(table['session.archive']?.({ sessionId: 's1' }, context)).resolves.toEqual({
+      archived: true,
+    })
+    // No options when nothing asked to stop work: the registry then refuses a
+    // running session, and refusing is the point of this gesture.
+    expect(calls).toEqual([{ sessionId: 's1', options: undefined }])
+  })
+
+  it('forwards stopActivity only when the request asks for it', async () => {
+    const { registry, calls } = archivingRegistry()
+    const { ctx } = fakeContext({}, { workspaceRegistry: registry })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    await table['session.archive']?.({ sessionId: 's1', stopActivity: true }, context)
+    await table['session.archive']?.({ sessionId: 's2', stopActivity: false }, context)
+    expect(calls).toEqual([
+      { sessionId: 's1', options: { stopActivity: true } },
+      { sessionId: 's2', options: undefined },
+    ])
+  })
+
+  it('refuses a running session as an error the app can show', async () => {
+    // What DSH throws when `stopActivity` was not asked for and the session is
+    // still working. The wire answer is an error, never a success the next
+    // refresh would contradict.
+    const { registry } = archivingRegistry(async (sessionId) => {
+      throw new Error(`cannot archive session '${sessionId}': the session is active (turn)`)
+    })
+    const { ctx } = fakeContext({}, { workspaceRegistry: registry })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    await expect(table['session.archive']?.({ sessionId: 's1' }, context)).rejects.toMatchObject({
+      code: 'REMOTE_ERROR',
+      message: expect.stringContaining('the session is active'),
+    })
+  })
+
+  it('refuses an unknown session the same way', async () => {
+    const { registry } = archivingRegistry(async (sessionId) => {
+      throw new Error(
+        `cannot archive session '${sessionId}': live sessions and session persistence hold no such session`,
+      )
+    })
+    const { ctx } = fakeContext({}, { workspaceRegistry: registry })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    await expect(table['session.archive']?.({ sessionId: 'gone' }, context)).rejects.toMatchObject({
+      code: 'REMOTE_ERROR',
+      message: expect.stringContaining('no such session'),
+    })
+  })
+
+  it('says so when the composition has no registry to archive in', async () => {
+    // Answering `{archived: true}` would tell the phone to drop a row the
+    // computer still has, and the next refresh would bring it back.
+    const { ctx } = fakeContext({})
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+    await expect(table['session.archive']?.({ sessionId: 's1' }, context)).rejects.toMatchObject({
+      code: 'REMOTE_ERROR',
+    })
+  })
+
+  it('requires a session id and a boolean stopActivity', async () => {
+    const { registry, calls } = archivingRegistry()
+    const { ctx } = fakeContext({}, { workspaceRegistry: registry })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    await expect(table['session.archive']?.({}, context)).rejects.toMatchObject({
+      code: 'MALFORMED_FRAME',
+    })
+    // Present but not a boolean is a mistake rather than an omission: reading
+    // `"yes"` as "do not stop" would turn a client bug into a refusal nobody can
+    // explain, and reading it as `true` would kill a running turn.
+    await expect(
+      table['session.archive']?.({ sessionId: 's1', stopActivity: 'yes' }, context),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+    await expect(table['session.archive']?.('s1', context)).rejects.toMatchObject({
+      code: 'MALFORMED_FRAME',
+    })
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('archived sessions (method table)', () => {
+  const context = { deviceId: 'd1', deviceName: 'iPhone', remote: '127.0.0.1' }
+  const facts = { hostId: 'h1', hostName: 'mac', home: '/home', protocolVersion: 1 }
+
+  it('leaves archived sessions out of session.list, keeping activity order', async () => {
+    // DSH's own `session/list` still returns them: the archive set is the
+    // workspace registry's, and the computer's sidebar filters it itself. A
+    // phone that drew the raw list would keep rows the operator put away.
+    const { ctx } = fakeContext(
+      {
+        items: [
+          { sessionId: 's-old', updatedAt: 1 },
+          { sessionId: 's-archived', updatedAt: 3 },
+          { sessionId: 's-new', updatedAt: 2 },
+        ],
+      },
+      { workspaceRegistry: { create: async () => ({ id: 'unused' }), archivedSessionIds: ['s-archived'] } },
+    )
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    const listed = (await table['session.list']?.({}, context)) as { items: { sessionId: string }[] }
+    expect(listed.items.map((row) => row.sessionId)).toEqual(['s-new', 's-old'])
+  })
+
+  it('leaves session.list alone when the composition cannot answer the archive question', async () => {
+    // A composition without a registry cannot archive either, so this is the
+    // list it always had -- an old phone on an old host must not change.
+    const { ctx } = fakeContext({
+      items: [
+        { sessionId: 's1', updatedAt: 1 },
+        { sessionId: 's2', updatedAt: 2 },
+      ],
+    })
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    const listed = (await table['session.list']?.({}, context)) as { items: { sessionId: string }[] }
+    expect(listed.items.map((row) => row.sessionId)).toEqual(['s2', 's1'])
   })
 })
 

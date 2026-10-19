@@ -40,7 +40,7 @@ import { invokeRemote, streamRemote } from './invoke.js'
 import { MethodError } from './method-error.js'
 import { buildStatsFrame, STATS_KEYS, type SessionStatsFrame } from './stats.js'
 import { enforcePromptLimits, filePartName, type PromptAttachment } from './uploads.js'
-import { resolveWorkspaceId } from './workspaces.js'
+import { archivedSessionIds, resolveWorkspaceId } from './workspaces.js'
 
 /** One row in the session list. */
 export interface SessionRow {
@@ -136,6 +136,16 @@ function toRow(value: unknown): SessionRow | null {
 /**
  * List the sessions DSH would show, newest activity first.
  *
+ * Sessions DSH has archived are left out. DSH's `session/list` does not know
+ * about the archive set -- that lives in the workspace registry, and the
+ * computer's own sidebar filters it itself -- so a phone drawing the raw list
+ * would keep showing rows the operator has already put away on the computer.
+ * The set is read at this boundary rather than inside the registry because
+ * archiving deliberately keeps the session everywhere else (log, workspace
+ * slot) and only hides it from the surfaces that draw lists. A composition
+ * without a registry keeps the unfiltered list it had before: it cannot archive
+ * either.
+ *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @returns the rows.
  */
@@ -147,9 +157,11 @@ export async function listSessions(ctx: Context): Promise<{ items: SessionRow[] 
     signal: AbortSignal.timeout(30_000),
   })) as { items?: readonly unknown[] } | undefined
 
+  const archived = archivedSessionIds(ctx)
   const items = (value?.items ?? [])
     .map(toRow)
     .filter((row): row is SessionRow => row !== null)
+    .filter((row) => archived === null || !archived.has(row.sessionId))
     .sort((a, b) => b.updatedAt - a.updatedAt)
 
   return { items }

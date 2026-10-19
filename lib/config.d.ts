@@ -3,9 +3,11 @@ import z from '@deepseek-ai/schemastery';
  * Bind target selection.
  *
  * `lan` binds every non-internal IPv4 address, which is what makes the plugin
- * work out of the box on a home network. `loopback` binds `127.0.0.1` only --
- * the posture to use with a relay, where the phone never dials this machine
- * directly. `addresses` binds exactly the configured literals.
+ * work out of the box on a home network -- including with the relay on, where a
+ * phone that is nearby should take the direct route instead of the tunnel.
+ * `loopback` binds `127.0.0.1` only: the explicit "nobody dials this machine
+ * directly" posture, put in the ordinary bind setting. `addresses` binds exactly
+ * the configured literals.
  */
 export declare const BIND_MODES: readonly ["lan", "loopback", "addresses"];
 /**
@@ -71,11 +73,26 @@ export interface Config {
          */
         publicUrl: string;
         /**
-         * Whether to bind loopback while the tunnel is up.
+         * Whether the relay forces the listener onto loopback.
          *
-         * On by default, and it is the point of the feature: with a tunnel the phone
-         * never needs to reach this machine directly, so leaving the listener on a
-         * LAN address exports it for no reason.
+         * Off by default, and that is a product decision made when the LAN link
+         * became something the app promises: a phone on the same network as this
+         * computer must be able to reach it directly. The direct route is what
+         * unlocks the metered features for free, and it is also cheaper for both
+         * sides than a relayed round trip. With this on -- and the relay is on by
+         * default -- the listener binds loopback whenever the tunnel is up, so
+         * `host.info` advertises no dialable address, the pairing QR carries no
+         * direct one, and the phone has no LAN route to find at all.
+         *
+         * Leaving the listener reachable on the LAN is the price. It is not an
+         * unauthenticated door: every connection is bearer-token authenticated, and
+         * pairing is rate-limited. This is also what the plugin already does with
+         * the relay off, which is the common case for anybody on a home network.
+         *
+         * Turn it on for the old posture -- a tunnel means nobody dials this
+         * machine directly, and the LAN features stay unavailable while everything
+         * still works over the relay. `bind.mode: loopback` is the same posture in
+         * the ordinary bind setting; either one alone is enough.
          */
         preferLoopback: boolean;
         reconnectBaseMs: number;
@@ -94,3 +111,20 @@ export interface Config {
     spike: boolean;
 }
 export declare const Config: z<Config>;
+/**
+ * The bind mode the listener actually uses for a given config.
+ *
+ * `relay.preferLoopback` is the one way the relay changes the bind, and it is
+ * off by default: a direct route to a phone on the same network is a feature of
+ * the product, not an accident of having no tunnel, so the listener keeps
+ * binding whatever `bind.mode` says while the tunnel is up. An explicit
+ * `bind.mode: loopback` is untouched by this -- it is the operator saying
+ * "nobody dials this machine directly" in the ordinary setting.
+ *
+ * The decision lives here rather than inline in the composition root so the
+ * tests can pin it without starting a listener, and so nobody re-derives it.
+ *
+ * @param config - the validated plugin config.
+ * @returns the mode to bind.
+ */
+export declare function listenerBindMode(config: Config): BindMode;

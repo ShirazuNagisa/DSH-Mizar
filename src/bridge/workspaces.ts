@@ -41,8 +41,9 @@
  * @module dsh-mizar/bridge/workspaces
  */
 import type { Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
-import type { Context } from '../dsh.js'
+import type { Context, SessionId } from '../dsh.js'
 import { streamRemote } from './invoke.js'
+import { MethodError } from './method-error.js'
 
 /** One workspace, as much of it as the phone needs. */
 export interface WorkspaceRow {
@@ -211,6 +212,101 @@ function registryOf(ctx: Context): WorkspaceRegistry | null {
 }
 
 /**
+ * The workspace registry, when it is new enough to archive sessions.
+ *
+ * Separate from {@link registryOf} because the two are different questions. A
+ * registry from before archival existed can still list workspaces, and the list
+ * has no fallback for hiding archived sessions; archival has no fallback at
+ * all. Answering `{archived: true}` from a host that cannot archive would tell
+ * the phone a session left the computer's list when it did not, so this is the
+ * one registry read that ends in a refusal instead of another service's answer.
+ *
+ * @param ctx - a context observing `ctx.workspaceRegistry`.
+ * @returns the registry, or `null` when this composition cannot archive.
+ */
+function archivingRegistryOf(ctx: Context): WorkspaceRegistry | null {
+  const registry = registryOf(ctx)
+  if (registry === null) return null
+  const candidate = registry as { archiveSession?: unknown }
+  return typeof candidate.archiveSession === 'function' ? registry : null
+}
+
+/**
+ * The session ids DSH has archived, or `null` when this composition cannot say.
+ *
+ * The archive set is registry-global (`WorkspaceRegistry.archivedSessionIds`),
+ * not a property of any workspace: archiving hides a session from every
+ * grouping surface while leaving its workspace accounting untouched, which is
+ * what lets unarchiving restore the position it had. So the phone's list
+ * methods have to apply it at the wire boundary -- DSH's own session list still
+ * returns those rows, and the computer's sidebar filters them itself.
+ *
+ * `null` rather than an empty set for "this host cannot answer": a composition
+ * without a registry keeps exactly the behaviour it had before this existed,
+ * and failing the whole list over a filter whose absence can only ever show one
+ * extra row would be a worse answer than the stale one.
+ *
+ * @param ctx - a context observing `ctx.workspaceRegistry`.
+ * @returns the archived ids, or `null` when they cannot be read.
+ */
+export function archivedSessionIds(ctx: Context): ReadonlySet<string> | null {
+  const registry = registryOf(ctx)
+  if (registry === null) return null
+  try {
+    // Not narrowed by `WorkspaceRegistry`'s declared type: the point of the
+    // check is the composition whose registry predates the getter, which the
+    // type cannot express because the peer dependency is new enough to have it.
+    const ids: unknown = (registry as { archivedSessionIds?: unknown }).archivedSessionIds
+    if (!Array.isArray(ids)) return null
+    return new Set(ids.filter((id): id is string => typeof id === 'string' && id !== ''))
+  } catch {
+    return null
+  }
+}
+
+/** One archive request, already narrowed from the wire payload. */
+export interface ArchiveSessionRequest {
+  readonly sessionId: string
+  /** Ask the host to stop the session's running work instead of refusing it. */
+  readonly stopActivity: boolean
+}
+
+/**
+ * Archive one session in DSH's own registry.
+ *
+ * Non-destructive on the host: the log stays, and so does the session's
+ * workspace slot. All that changes is the registry-global archive set that
+ * {@link listWorkspaces} and `listSessions` filter on -- which is why this is
+ * the only call here and why a refusal must surface as one.
+ *
+ * Without `stopActivity`, DSH refuses to archive a session that is still
+ * running, and that is the behaviour the phone relies on: archiving from a
+ * long-press menu must not silently kill a turn somebody is watching. With it,
+ * the registry writes the archive first and then asks the composed providers to
+ * stop the work; the archive is never rolled back by a provider that fails.
+ *
+ * @param ctx - a context observing `ctx.workspaceRegistry`.
+ * @param request - the session, and whether running work may be stopped.
+ * @throws MethodError when this composition has no registry to archive in.
+ */
+export async function archiveSession(ctx: Context, request: ArchiveSessionRequest): Promise<void> {
+  const registry = archivingRegistryOf(ctx)
+  if (registry === null) {
+    throw new MethodError(
+      'REMOTE_ERROR',
+      'session.archive: this composition has no workspace registry to archive sessions in',
+    )
+  }
+  // The wire carries a plain id and the registry brand is only knowable here;
+  // the registry validates existence itself, so the cast promises nothing this
+  // layer could keep.
+  await registry.archiveSession(
+    request.sessionId as SessionId,
+    request.stopActivity ? { stopActivity: true } : undefined,
+  )
+}
+
+/**
  * The registry's own list.
  *
  * Synchronous, so there is no timeout and nothing to await: the registry
@@ -300,6 +396,27 @@ async function listFromStream(ctx: Context): Promise<WorkspaceRow[] | null> {
 }
 
 /**
+ * One row with the archived sessions taken out of its membership.
+ *
+ * Absent membership stays absent: the source did not carry a list at all, and
+ * turning that into `[]` would tell the phone "nothing is filed here" about a
+ * workspace the host said nothing about. An empty *present* list is the real
+ * "nothing is filed here", including the case where every session filed in the
+ * workspace has been archived.
+ *
+ * @param row - the registry row.
+ * @param archived - the ids to hide.
+ * @returns the row as the phone should see it.
+ */
+function hideArchived(row: WorkspaceRow, archived: ReadonlySet<string>): WorkspaceRow {
+  if (row.sessionIds === undefined) return row
+  return {
+    ...row,
+    sessionIds: row.sessionIds.filter((sessionId) => !archived.has(sessionId)),
+  }
+}
+
+/**
  * List the workspaces DSH has, by directory.
  *
  * Returns an incomplete empty list rather than throwing when nothing can be
@@ -307,12 +424,28 @@ async function listFromStream(ctx: Context): Promise<WorkspaceRow[] | null> {
  * on their working directory — and `complete: false` means "keep doing that". A
  * failure here must not be able to remove a workspace somebody is using.
  *
+ * Archived sessions are filtered out of each row's `sessionIds`. That has to
+ * happen at this boundary rather than in the registry, because DSH's archive
+ * deliberately keeps the accounted slot: the membership is still true, it is
+ * just no longer part of what any list should show. The stream fallback is only
+ * reached without a registry -- which is a composition that cannot archive
+ * either -- so its baseline is taken as it is.
+ *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @returns the rows, and whether they are the whole list.
  */
 export async function listWorkspaces(ctx: Context): Promise<WorkspaceListResult> {
   const registry = readRegistry(ctx)
-  if (registry.kind === 'read') return { items: registry.rows, complete: true }
+  if (registry.kind === 'read') {
+    const archived = archivedSessionIds(ctx)
+    return {
+      items:
+        archived === null
+          ? registry.rows
+          : registry.rows.map((row) => hideArchived(row, archived)),
+      complete: true,
+    }
+  }
   // A registry that is there and would not answer is the end of it: the stream
   // is a different service that may hold an older set, and "complete" is what
   // the phone deletes rows on. See `readRegistry`.

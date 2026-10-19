@@ -427,6 +427,14 @@ describe('abort, expiry and cleanup', () => {
     const { store, root, clock } = await makeHarness()
     const begun = await store.begin('d1', fileRequest(4))
     clock.time += UPLOAD_TTL_MS + 1
+    // The sweep judges a directory no live record points at by its payload's
+    // **real** mtime, and the fake clock above cannot move that. Backdating the
+    // file keeps the test about the store's expiry rule rather than about how
+    // fast this machine creates a file: the one-millisecond margin used to pass
+    // or fail depending on load, because creating the payload in the same
+    // millisecond as the harness clock was a coin toss.
+    const old = new Date(clock.time - UPLOAD_TTL_MS - 60_000)
+    await utimes(join(root, begun.uploadId, 'payload'), old, old)
 
     await expect(
       store.chunk('d1', { uploadId: begun.uploadId, index: 0, data: Buffer.from('abcd').toString('base64') }),

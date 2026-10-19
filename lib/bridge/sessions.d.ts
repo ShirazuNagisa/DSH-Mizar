@@ -31,6 +31,16 @@ export declare const SESSION_PROJECTION_KEYS: readonly ["tokenUsage", "contextPr
 /**
  * List the sessions DSH would show, newest activity first.
  *
+ * Sessions DSH has archived are left out. DSH's `session/list` does not know
+ * about the archive set -- that lives in the workspace registry, and the
+ * computer's own sidebar filters it itself -- so a phone drawing the raw list
+ * would keep showing rows the operator has already put away on the computer.
+ * The set is read at this boundary rather than inside the registry because
+ * archiving deliberately keeps the session everywhere else (log, workspace
+ * slot) and only hides it from the surfaces that draw lists. A composition
+ * without a registry keeps the unfiltered list it had before: it cannot archive
+ * either.
+ *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @returns the rows.
  */

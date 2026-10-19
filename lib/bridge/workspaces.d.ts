@@ -37,12 +37,63 @@ export interface WorkspaceListResult {
     readonly complete: boolean;
 }
 /**
+ * The session ids DSH has archived, or `null` when this composition cannot say.
+ *
+ * The archive set is registry-global (`WorkspaceRegistry.archivedSessionIds`),
+ * not a property of any workspace: archiving hides a session from every
+ * grouping surface while leaving its workspace accounting untouched, which is
+ * what lets unarchiving restore the position it had. So the phone's list
+ * methods have to apply it at the wire boundary -- DSH's own session list still
+ * returns those rows, and the computer's sidebar filters them itself.
+ *
+ * `null` rather than an empty set for "this host cannot answer": a composition
+ * without a registry keeps exactly the behaviour it had before this existed,
+ * and failing the whole list over a filter whose absence can only ever show one
+ * extra row would be a worse answer than the stale one.
+ *
+ * @param ctx - a context observing `ctx.workspaceRegistry`.
+ * @returns the archived ids, or `null` when they cannot be read.
+ */
+export declare function archivedSessionIds(ctx: Context): ReadonlySet<string> | null;
+/** One archive request, already narrowed from the wire payload. */
+export interface ArchiveSessionRequest {
+    readonly sessionId: string;
+    /** Ask the host to stop the session's running work instead of refusing it. */
+    readonly stopActivity: boolean;
+}
+/**
+ * Archive one session in DSH's own registry.
+ *
+ * Non-destructive on the host: the log stays, and so does the session's
+ * workspace slot. All that changes is the registry-global archive set that
+ * {@link listWorkspaces} and `listSessions` filter on -- which is why this is
+ * the only call here and why a refusal must surface as one.
+ *
+ * Without `stopActivity`, DSH refuses to archive a session that is still
+ * running, and that is the behaviour the phone relies on: archiving from a
+ * long-press menu must not silently kill a turn somebody is watching. With it,
+ * the registry writes the archive first and then asks the composed providers to
+ * stop the work; the archive is never rolled back by a provider that fails.
+ *
+ * @param ctx - a context observing `ctx.workspaceRegistry`.
+ * @param request - the session, and whether running work may be stopped.
+ * @throws MethodError when this composition has no registry to archive in.
+ */
+export declare function archiveSession(ctx: Context, request: ArchiveSessionRequest): Promise<void>;
+/**
  * List the workspaces DSH has, by directory.
  *
  * Returns an incomplete empty list rather than throwing when nothing can be
  * read. The phone already draws workspaces without this — by grouping sessions
  * on their working directory — and `complete: false` means "keep doing that". A
  * failure here must not be able to remove a workspace somebody is using.
+ *
+ * Archived sessions are filtered out of each row's `sessionIds`. That has to
+ * happen at this boundary rather than in the registry, because DSH's archive
+ * deliberately keeps the accounted slot: the membership is still true, it is
+ * just no longer part of what any list should show. The stream fallback is only
+ * reached without a registry -- which is a composition that cannot archive
+ * either -- so its baseline is taken as it is.
  *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @returns the rows, and whether they are the whole list.

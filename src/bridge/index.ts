@@ -23,11 +23,11 @@ import {
   type ClientApprovalOutcome,
   type QuestionAnswerItem,
 } from './interactions.js'
-import { MethodError, optionalBoolean, optionalObject, optionalString, requireString } from './method-error.js'
+import { MethodError, optionalBoolean, optionalObject, optionalString, requireObject, requireString } from './method-error.js'
 import { modelCatalog, selectModel } from './models.js'
 import { permissionCatalog, setPermissionPreset } from './permissions.js'
 import type { PushBinding } from '../push/binding.js'
-import { listWorkspaces } from './workspaces.js'
+import { archiveSession, listWorkspaces } from './workspaces.js'
 import {
   cancelSession,
   createSession,
@@ -59,6 +59,21 @@ export interface HostFacts {
   readonly hostName: string
   readonly home: string
   readonly protocolVersion: number
+  /**
+   * The `host:port` authorities the listener is bound to.
+   *
+   * A function, not an array, because it is read when `host.info` is answered
+   * rather than when the table is built: a rebind moves the listener to a
+   * different set of addresses underneath, and a cached list would keep naming
+   * where the host used to listen -- which is worse than saying nothing, because
+   * a phone probes these directly.
+   *
+   * Optional so compositions and tests from before the field keep compiling.
+   * Absent means the answer carries no `addresses` key at all: "this host cannot
+   * say" and "this host has no usable address" are different answers, and only
+   * the second justifies a phone giving up on the direct route.
+   */
+  readonly authorities?: () => readonly string[]
 }
 
 /**
@@ -88,6 +103,34 @@ function readMode(payload: unknown): 'queue' | 'steer' {
     throw new MethodError('MALFORMED_FRAME', `session.prompt: mode must be "queue" or "steer", got "${mode}"`)
   }
   return mode
+}
+
+/**
+ * Read whether an archive may stop the session's running work.
+ *
+ * Absent is `false`, which is the gesture the phone's long-press menu performs:
+ * archive a session that is not running, and let the host refuse one that is.
+ * Silently killing a turn somebody is watching is not what "归档该会话" means.
+ *
+ * A present value that is not a boolean is a mistake rather than an omission.
+ * This call changes the host, and quietly reading garbage as "do not stop"
+ * would turn a client bug into a refusal an operator cannot explain.
+ *
+ * @param payload - the request payload.
+ * @returns whether the host may stop running work.
+ * @throws MethodError when the field is present but not a boolean.
+ */
+function readStopActivity(payload: unknown): boolean {
+  const record = requireObject(payload, 'session.archive')
+  const value = record['stopActivity']
+  if (value === undefined) return false
+  if (typeof value !== 'boolean') {
+    throw new MethodError(
+      'MALFORMED_FRAME',
+      'session.archive: payload."stopActivity" must be a boolean',
+    )
+  }
+  return value
 }
 
 /**
@@ -273,7 +316,8 @@ function readRegistration(payload: unknown): {
  *
  * @param ctx - the plugin context, used for every DSH call.
  * @param facts - host identity reported to clients, including the state directory
- *   the upload staging area lives under.
+ *   the upload staging area lives under and, when the host can say, the bound
+ *   listener addresses.
  * @param broker - the interaction broker holding pending approvals and questions.
  * @param push - where a device's notification endpoint is recorded, when the host
  *   has push at all. Absent in compositions without a relay.
@@ -300,12 +344,23 @@ export function createMethodTable(
     })
 
   const table: Record<string, MethodHandler> = {
-    /** Host identity and protocol facts. */
+    /**
+     * Host identity and protocol facts.
+     *
+     * `addresses`, when present, is the listener's own bound `host:port` list.
+     * It exists so a phone connected through the relay can learn where to try
+     * the computer directly: the relay route never tells it a LAN address, and
+     * probing the paired one again is not a scan.
+     *
+     * Additive and optional, so it needs no protocol version bump -- an old
+     * client ignores the key, and an old host simply does not send it.
+     */
     'host.info': async () => ({
       hostId: facts.hostId,
       hostName: facts.hostName,
       home: facts.home,
       protocolVersion: facts.protocolVersion,
+      ...(facts.authorities === undefined ? {} : { addresses: facts.authorities() }),
     }),
 
     /** Every session DSH would list, newest activity first. */
@@ -484,6 +539,27 @@ export function createMethodTable(
         requireString(payload, 'title', 'session.rename'),
       )
       return { renamed: true }
+    },
+
+    /**
+     * Archive a session, so it leaves every list -- here and on the computer.
+     *
+     * Non-destructive: the log stays and so does the session's workspace slot;
+     * the registry-global archive set is what the list methods filter on. A
+     * running session is refused unless `stopActivity` says the caller means to
+     * stop it, which is the behaviour the phone's long-press gesture relies on.
+     *
+     * A composition whose registry cannot archive answers with an error rather
+     * than a success: `{archived: true}` is a claim about the computer, and the
+     * next refresh would contradict it.
+     */
+    'session.archive': async (payload) => {
+      const stopActivity = readStopActivity(payload)
+      await archiveSession(ctx, {
+        sessionId: requireString(payload, 'sessionId', 'session.archive'),
+        stopActivity,
+      })
+      return { archived: true }
     },
 
     /** The model catalog the picker renders, with each model's reasoning levels. */

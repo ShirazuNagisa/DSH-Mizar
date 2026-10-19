@@ -11,7 +11,7 @@
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from './dsh.js'
-import { Config } from './config.js'
+import { Config, listenerBindMode } from './config.js'
 import type { Config as MizarConfig } from './config.js'
 import { registerAnswerers } from './bridge/answerers.js'
 import { DeliveryLedger } from './bridge/delivery.js'
@@ -29,6 +29,7 @@ import {
 import { NoopTransport, RelayTransport, type PushTransport } from './push/transport.js'
 import { MizarStore, resolveMizarHome } from './auth/store.js'
 import {
+  bindPlanForRelay,
   selectBindAddresses,
   snapshotInterfaces,
   type BindPlan,
@@ -88,7 +89,7 @@ const systemLocale = (() => {
  * code in place and every symptom unchanged. One line at boot turns that from a
  * guess into a fact.
  */
-const MIZAR_VERSION = '0.8.4'
+const MIZAR_VERSION = '0.8.5'
 
 /**
  * Services this plugin must observe before it activates.
@@ -171,18 +172,24 @@ async function startListener(
   // lines, for instance -- are the operator's business, not the store's.
   const store = await MizarStore.open(stateDir, (warning) => report(`state: ${warning}`))
 
-  // With a tunnel up, the phone never needs to reach this machine directly, so
-  // the listener goes to loopback and stops exporting itself onto whatever
-  // network the computer happens to be on. The tunnel still connects out normally --
-  // it talks to the listener over loopback, which is always reachable.
-  const bindMode: BindMode =
-    config.relay.enabled && config.relay.preferLoopback ? 'loopback' : config.bind.mode
+  // The relay does not force loopback (see `relay.preferLoopback`): a phone on
+  // the same network should take the direct route, which is what unlocks the LAN
+  // features, so the tunnel keeps whatever `bind.mode` the operator chose. The
+  // decision lives in `listenerBindMode`, next to the two settings it reads.
+  const bindMode: BindMode = listenerBindMode(config)
   if (bindMode !== config.bind.mode) {
     report(`relay enabled: binding ${bindMode} instead of ${config.bind.mode}`)
   }
 
+  // The plan is the configured bind plus the loopback socket the tunnel replays
+  // through. A `lan` bind alone gives the relay nowhere to forward a phone
+  // request to, so the tunnel would connect out and then fail every call.
+  // Loopback exposes nothing beyond this machine.
   const readPlan = (): BindPlan =>
-    selectBindAddresses(snapshotInterfaces(), bindMode, config.bind.addresses)
+    bindPlanForRelay(
+      selectBindAddresses(snapshotInterfaces(), bindMode, config.bind.addresses),
+      config.relay.enabled,
+    )
 
   // Wait for the requested mode to take effect before accepting a fallback. DSH
   // and the network both come up at login with nothing ordering them, and a
@@ -299,6 +306,12 @@ async function startListener(
   // authority when they send one, and this answers the requests that do not.
   const delivery = new DeliveryLedger()
 
+  // A stable handle the rest of the plugin reads through, so a rebind can swap
+  // the listener without every consumer holding a stale reference. Declared
+  // before the method table because `host.info` reports the addresses the
+  // listener is bound to, and the listener is created after the table.
+  const holder: { current: MizarListener | null } = { current: null }
+
   const methods = createMethodTable(
     ctx,
     {
@@ -306,15 +319,14 @@ async function startListener(
       hostName: hostname(),
       home: stateDir,
       protocolVersion: PROTOCOL_VERSION,
+      // Read through the holder when `host.info` is answered rather than here,
+      // so a rebind is reported without rebuilding the table.
+      authorities: () => holder.current?.authorities ?? [],
     },
     broker,
     push,
     delivery,
   )
-
-  // A stable handle the rest of the plugin reads through, so a rebind can swap
-  // the listener without every consumer holding a stale reference.
-  const holder: { current: MizarListener | null } = { current: null }
 
   const listener = await MizarListener.start({
     plan,

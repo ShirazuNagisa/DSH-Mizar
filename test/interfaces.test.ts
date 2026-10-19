@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   authorityOf,
+  bindPlanForRelay,
   LOOPBACK,
   selectBindAddresses,
   type InterfaceSnapshot,
@@ -74,6 +75,38 @@ describe('selectBindAddresses', () => {
     expect(plan.addresses).toEqual([LOOPBACK])
   })
 
+})
+
+describe('bindPlanForRelay', () => {
+  const lan = selectBindAddresses(snapshotOf([['en0', '192.168.1.24', 'IPv4']]), 'lan')
+
+  it('adds the loopback socket a tunnel replays through', () => {
+    // The relay client dials `127.0.0.1:<port>` for every phone request. A LAN
+    // plan alone has no such socket, so the tunnel would connect out and then
+    // fail every call it replayed -- with the logs still saying it was up.
+    expect(lan.addresses).toEqual(['192.168.1.24'])
+    expect(bindPlanForRelay(lan, true).addresses).toEqual(['192.168.1.24', LOOPBACK])
+  })
+
+  it('leaves the plan alone without a tunnel', () => {
+    // No relay, nothing to replay: a listener that is only meant to be on the
+    // LAN should not grow a socket nobody asked for.
+    expect(bindPlanForRelay(lan, false)).toBe(lan)
+  })
+
+  it('does not add loopback twice', () => {
+    const loopback = selectBindAddresses(snapshotOf([['en0', '192.168.1.24', 'IPv4']]), 'loopback')
+    expect(bindPlanForRelay(loopback, true)).toBe(loopback)
+  })
+
+  it('keeps the fallback flag, so a fallback still reads as one', () => {
+    // `isRequested` looks at `fellBack`, not at the addresses: adding the socket
+    // the tunnel needs must not turn a fallback into a requested plan.
+    const fallback = selectBindAddresses(snapshotOf([['lo0', '127.0.0.1', 'IPv4', true]]), 'lan')
+    const withRelay = bindPlanForRelay(fallback, true)
+    expect(withRelay.fellBack).toBe(true)
+    expect(withRelay.mode).toBe(fallback.mode)
+  })
 })
 
 describe('authorityOf', () => {

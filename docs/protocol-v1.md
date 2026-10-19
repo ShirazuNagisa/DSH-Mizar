@@ -23,6 +23,10 @@
 `HTTP_PREFIX = '/mizar/v1'`，定义在 `frames.ts`。监听端口默认 **19390**，与 DSH 自己的
 Web 端口（19388）分开——**插件不碰 DSH 原有的安全边界**。
 
+监听地址默认是这台电脑的**局域网地址**，中继开着时也一样（并且总会在 `127.0.0.1` 上留一个
+socket 给中继转发）。手机优先直连，直连不通再走中继；`bind.mode` 或 `relay.preferLoopback`
+可以把监听缩回 loopback，代价是**没有局域网直连**（手机永远走中继，局域网解锁不生效）。
+
 ---
 
 ## 配对
@@ -134,15 +138,15 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 
 ## 方法表
 
-24 个方法。`payload` 里的键：
+25 个方法。`payload` 里的键：
 
 ### 主机与会话
 
 | 方法 | payload | 返回 |
 |---|---|---|
-| `host.info` | — | 主机身份与绑定情况 |
-| `session.list` | `{}` | `{items: [SessionRow]}` |
-| `workspace.list` | `{}` | `{items: [WorkspaceRow], complete}` —— DSH **当前**拥有的工作区，按 DSH 自己的显示顺序（插件直接读 `ctx.workspaceRegistry.list()`，和电脑侧边栏同源），每个工作区带 `sessionIds`：DSH 认可的归属关系，只有主机知道，手机不该自己拿目录去猜。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话，手机再按目录分组就会一直留着它们。<br>`sessionIds` **缺省**和 `[]` 是两回事：`[]` 是「DSH 说这里没有会话」，缺省是「主机没说」，只有后者才允许退回按目录匹配。<br>`complete` 说这份清单**是不是完整读到了**：只有 `true` 才允许丢弃已经不在清单里的工作区，因为「主机答不上来」和「主机一个都没有」都是空数组。任何一条读不出来的记录都按「没答」处理（返回 `{items: [], complete: false}`）——主机还可以用 `workspace/follow` 的 baseline 兜底；两条路都不行时手机退回按目录分组。 |
+| `host.info` | — | 主机身份与绑定情况，含可选的 `addresses`（见下） |
+| `session.list` | `{}` | `{items: [SessionRow]}` —— DSH 会列出的会话，**不含已归档的**：归档集在工作区注册表里，DSH 自己的 `session/list` 不知道它，所以插件在出口处过滤。 |
+| `workspace.list` | `{}` | `{items: [WorkspaceRow], complete}` —— DSH **当前**拥有的工作区，按 DSH 自己的显示顺序（插件直接读 `ctx.workspaceRegistry.list()`，和电脑侧边栏同源），每个工作区带 `sessionIds`：DSH 认可的归属关系，只有主机知道，手机不该自己拿目录去猜；**已归档的会话不在其中**（DSH 的归档保留归属槽位，以便取消归档回到原位，所以过滤在插件出口做）。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话，手机再按目录分组就会一直留着它们。<br>`sessionIds` **缺省**和 `[]` 是两回事：`[]` 是「DSH 说这里没有会话」，缺省是「主机没说」，只有后者才允许退回按目录匹配。<br>`complete` 说这份清单**是不是完整读到了**：只有 `true` 才允许丢弃已经不在清单里的工作区，因为「主机答不上来」和「主机一个都没有」都是空数组。任何一条读不出来的记录都按「没答」处理（返回 `{items: [], complete: false}`）——主机还可以用 `workspace/follow` 的 baseline 兜底；两条路都不行时手机退回按目录分组。 |
 | `session.messages` | `sessionId`, `maxMessages?`, `beforeSeq?`, `afterSeq?`（见下） | `{sessionId, asOfSeq, records[], hasMore}` —— **只发总结，不发过程**。一页里只保留：`turn/start`、`turn/end`、每个 `step/start`（只用来数步骤，约 100 字节）、人写的 `user/message`，以及**每一轮里模型最后那条有正文的 `assistant/message`**。逐步叙述、工具调用/结果、流式 attempt，以及**还没结束的那一轮的中间回复**，全部不发 —— 后两项正是最大的一块。原因：手机端只按「总结 + 状态」渲染，全量历史经中继太吃服务器带宽。`asOfSeq`（分页切点）取自 `session/follow` 首帧的 `cursor`，这是 DSH 自己对 `throughSeq` 的定义（"Inclusive log cut obtained from the corresponding follow opening frame"），原来用 `session/projections` 的 `asOfSeq` 会滞后于日志头，导致刚发出的那一轮不在页里、手机上就没有「AI 正在工作」那一行。 |
 | `session.activity` | `sessionId`, `maxEntries?`（默认 200，最多 300） | `{sessionId, asOfSeq, turn, entries[], hasMore}` —— **只返回正在跑的那一轮的紧凑过程**，付费账户的「全量细节」来源：`entries` 里每行是 `{id, seq, at, kind, title, text}`，`kind` 为 `thinking` / `command` / `output` / `tool`，`text` 一行、最多 240 字符；没有正在跑的轮次时 `turn: null, entries: [], hasMore: false`。详细语义见下。 |
 | `session.stats` | `sessionId` | `{sessionId, asOfSeq, stats}` —— `stats` 里的每个字段来自主机各自的 projection，**谁有就答谁**：agent 还没跑过的会话没有 `context`（上下文占用）也没有 `title`（标题要等模型读完对话才有），只有 `tokenUsage` 一类。所以「这次的帧比上一帧少几个字段」是**正常回答**，不是失败——实测一台真主机上 12 个会话里有 4 个是这样（缺 `context, title`）。手机必须把新帧**合并**进旧帧（有新值用新值，没有的保留），直接替换会把屏幕上已经画出来的标题、模型、上下文用量抹掉。 |
@@ -150,6 +154,18 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `session.rename` | `sessionId`, `title` | `{renamed: true}` |
 | `session.prompt` | `sessionId`, `text?`, `attachmentIds?`, `requestId?`, `clientTimeZone?`, `mode?` | `{accepted, requestId}` —— `text` **在有附件时可省**;两者不能同时缺。`attachmentIds` 是 `upload.finish` 返回的 id,顺序就是 content 的顺序(文本在最前);附件怎么来见「附件上传」。 |
 | `session.cancel` | `sessionId` | `{accepted}` |
+| `session.archive` | `sessionId`, `stopActivity?` | `{archived: true}` |
+
+**`host.info` 的 `addresses` 是可选字段，老宿主不答。** 它是插件监听器**实际绑定**的每个 `host:port`（如 `192.168.1.10:19390`、`127.0.0.1:19390`），回答的是「这台电脑现在能从哪些地址拨到」。手机在中继连接上拿不到局域网地址，正是靠它才知道该往哪直连。**缺省不等于空数组**：缺省是「这台电脑的插件太旧，答不上来」，手机必须退回配对时已知的那个地址；`[]` 才是「现在没有任何可拨地址」。这是新增的可选字段，老客户端解码时忽略不认识的键，**不需要升 `PROTOCOL_VERSION`**。
+
+**`session.archive` 归档的是电脑上的会话，不是手机本地的一行。** 插件把它写进 DSH 工作区注册表的全局归档集（`ctx.workspaceRegistry.archiveSession`）。归档是**非破坏性**的：会话日志在，工作区归属槽位也在（取消归档能回到原来的位置），只是从此不再出现在任何列表里 —— 所以 `session.list` 和 `workspace.list` 的 `sessionIds` 都会把它滤掉，手机下次刷新就看不到那一行了。电脑端的侧边栏同样看不到。
+
+- **默认拒绝跑着的会话。** 不传 `stopActivity` 时，宿主会拒绝归档正在跑的会话，错误以 `REMOTE_ERROR` 回来（message 里写明是「会话仍在活动」还是「没有这个会话」），手机原样显示即可。插件**不会**为了让归档成功而偷偷停掉一轮正在跑的对话。
+- **`stopActivity: true` 才是「连跑着的一起停」**：注册表先落归档，再请求各 provider 停掉这一轮的工作；某个 provider 失败不会回滚归档。
+- **没有注册表就报错。** 没有工作区注册表的组合（老宿主）没有地方可归档，回 `REMOTE_ERROR`，**绝不假装成功**：`{archived: true}` 是关于那台电脑的断言，下一次刷新就会拆穿它。
+- `stopActivity` 传了但不是布尔值得到 `MALFORMED_FRAME`，不是静默当成 `false`：这是改宿主状态的调用，客户端 bug 应当报出来。
+
+`session.archive` 和 `host.info` 的 `addresses` 都是**新增**：老宿主对未知方法回 `NOT_IMPLEMENTED`（和 `session.activity` 一样，客户端据此判断电脑端插件太旧），老客户端不会调用它；`addresses` 是可选的，老客户端忽略不认识的键。所以**不需要升 `PROTOCOL_VERSION`**。
 
 **`session.messages` 的增量语义（省流）。** 手机每次刷新都可以带上「我读到哪」，插件只回那之后的新记录。三种取值含义不同：
 
