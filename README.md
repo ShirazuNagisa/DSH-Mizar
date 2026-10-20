@@ -135,6 +135,10 @@ DSH 自己的 Web 接口暴露出去（那是 DSH 的安全边界，插件不碰
   漂到 19391、19392，手机配对里保存的直连地址就永远失效了。现在一个进程只保留**一个**挂载：
   新挂载要等旧挂载完全释放监听之后才绑端口；网络变化导致监听地址改变时，隧道也会立刻用新
   地址重拨，并把监听端口的变化同步给隧道（否则隧道健康、手机请求却全部 502）。
+- **0.8.7 修了 0.8.6 单实例的漏洞。** 0.8.6 的注册表是模块级的，而 DSH 会在同一进程里多次
+  加载插件模块，每份副本各有一张空注册表——实测一个进程因此挂了 8 个监听（19390–19397）。
+  0.8.7 把注册表放到 `globalThis`（`Symbol.for('dsh-mizar.mount-registry')`），所有模块副本
+  共用同一个槽位，一个进程只剩一个监听。
 
 日志里对应 `relay: the tunnel has been silent for …s — redialling it`、
 `relay: the network changed — redialling the tunnel` 和 `relay: the listener moved to port …`。

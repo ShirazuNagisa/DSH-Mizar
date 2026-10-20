@@ -22,6 +22,34 @@
 //  Pure, so the ordering is tested without a plugin host or an open port.
 //
 
+/**
+ * The one registry every copy of this plugin in a process shares.
+ *
+ * Module-level state is not enough: the plugin can be loaded more than once in
+ * one process, and each load gets its own copy of this module -- which is how a
+ * single DSH process ended up with eight Mizar listeners (19390 through 19397)
+ * after 0.8.6 shipped a module-level registry. Each copy saw an empty slot and
+ * bound its own port, so the port a phone had saved was always one generation
+ * behind.
+ *
+ * `globalThis` is shared by every copy in the process, and `Symbol.for` gives
+ * the key a stable identity across them. The registry therefore outlives a
+ * module copy exactly as long as the process does, which is the lifetime that
+ * matters for a listening port.
+ *
+ * @returns the process-wide registry.
+ */
+export function sharedMountRegistry(): MountRegistry {
+  const key = Symbol.for('dsh-mizar.mount-registry')
+  const bag = globalThis as unknown as Record<symbol, MountRegistry | undefined>
+  let registry = bag[key]
+  if (registry === undefined) {
+    registry = new MountRegistry()
+    bag[key] = registry
+  }
+  return registry
+}
+
 /** Something that can be shut down once, asynchronously. */
 export interface Mounted {
   /** Release the listener, the tunnel and anything else this mount owns. */

@@ -39,7 +39,7 @@ import { awaitRequestedPlan, bindKey, isRequested, needsRebind } from './net/wat
 import { PROTOCOL_VERSION } from './protocol/frames.js'
 import { MizarListener } from './server/listener.js'
 import { RelayClient, phoneBaseURL } from './relay/client.js'
-import { MountRegistry, type Mounted } from './mount.js'
+import { sharedMountRegistry, type Mounted } from './mount.js'
 import { loadOrCreateTunnelSecret } from './relay/identity.js'
 import type { RelayClientState } from './relay/client.js'
 import { runSpike } from './spike.js'
@@ -90,7 +90,7 @@ const systemLocale = (() => {
  * code in place and every symptom unchanged. One line at boot turns that from a
  * guess into a fact.
  */
-const MIZAR_VERSION = '0.8.6'
+const MIZAR_VERSION = '0.8.7'
 
 /**
  * Services this plugin must observe before it activates.
@@ -588,7 +588,7 @@ async function startListener(
  * finished shutting down, so the port is free and the address a phone saved is
  * still the address the computer listens on.
  */
-const mounts = new MountRegistry()
+const mounts = sharedMountRegistry()
 
 /**
  * Mount the Mizar host half.

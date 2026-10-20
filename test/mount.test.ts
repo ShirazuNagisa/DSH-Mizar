@@ -9,8 +9,8 @@
 //  ordering is exactly what can be tested here.
 //
 
-import { describe, expect, it } from 'vitest'
-import { MountRegistry, type Mounted } from '../src/mount.js'
+import { afterEach, describe, expect, it } from 'vitest'
+import { MountRegistry, sharedMountRegistry, type Mounted } from '../src/mount.js'
 
 /** A mount that records what happened to it. */
 function mount(name: string, events: string[], delayMs = 0): Mounted {
@@ -23,6 +23,25 @@ function mount(name: string, events: string[], delayMs = 0): Mounted {
 }
 
 describe('MountRegistry', () => {
+  afterEach(() => {
+    delete (globalThis as unknown as Record<symbol, unknown>)[
+      Symbol.for('dsh-mizar.mount-registry')
+    ]
+  })
+
+  it('hands every module copy in the process the same registry', () => {
+    // A module loaded twice gets a second copy of this file but one globalThis;
+    // that is the whole mechanism. Without it each copy binds its own listener
+    // and the port count climbs (19390, 19391, ... 19397) on every remount.
+    const first = sharedMountRegistry()
+    expect(sharedMountRegistry()).toBe(first)
+    expect(
+      (globalThis as unknown as Record<symbol, unknown>)[
+        Symbol.for('dsh-mizar.mount-registry')
+      ],
+    ).toBe(first)
+  })
+
   it('disposes the previous mount before creating the next', async () => {
     const events: string[] = []
     const registry = new MountRegistry()
