@@ -24,6 +24,19 @@ export interface RelayClientOptions {
     readonly reconnectBaseMs?: number;
     /** Longest reconnect delay, in ms. */
     readonly reconnectMaxMs?: number;
+    /**
+     * How long the relay may stay silent before the tunnel is redialled, in ms.
+     *
+     * The relay pings every tunnel (`tunnelIdleMs / 3` in its own config, 30 s by
+     * default) precisely so that a half-open tunnel becomes a `close` it can act
+     * on. The computer has the mirror problem: a network change can blackhole the
+     * socket without the operating system ever reporting a close, and then the
+     * tunnel is gone at the relay while this side still says "connected" -- which
+     * is what left a phone's relay room unreachable for hours. Silence for longer
+     * than this window is treated as a dead tunnel and redialled. `0` disables the
+     * watchdog.
+     */
+    readonly watchdogMs?: number;
 }
 /** What the outside world can see about the tunnel. */
 export interface RelayClientState {
@@ -45,6 +58,12 @@ export interface RelayClientState {
 export interface RelaySocket {
     send(text: string): void;
     close(code?: number, reason?: string): void;
+    /**
+     * Drop the socket without a closing handshake, when the implementation has
+     * one. A half-open socket cannot complete a close handshake, so the watchdog
+     * needs this; a test stand-in may omit it and be closed with `close`.
+     */
+    terminate?(): void;
     on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): unknown;
     on(event: 'close', listener: (code: number, reason: Buffer) => void): unknown;
     on(event: 'error', listener: (error: Error) => void): unknown;
@@ -121,4 +140,26 @@ export declare class RelayClient {
     start(): void;
     /** Stop reconnecting and close the tunnel. */
     stop(): void;
+    /**
+     * Redial the tunnel now, keeping the reconnect loop.
+     *
+     * Used when the reason to redial is known here rather than discovered by the
+     * transport: the host's network changed, or the listener moved to a different
+     * port. The attempt counter is reset so the next socket is tried at the base
+     * delay rather than after a backoff earned by an unrelated failure.
+     *
+     * @param reason - why, for the operator's log.
+     */
+    reconnectNow(reason: string): void;
+    /**
+     * Point the replay target at a listener bound to a different port.
+     *
+     * Rebinding can land on a different port when the configured one was taken
+     * while the listener was moving. The tunnel was constructed with the port the
+     * listener had at startup; replaying to the old one would answer every phone
+     * request with a connection error over a tunnel that is otherwise healthy.
+     *
+     * @param port - the listener's current port.
+     */
+    setLocalPort(port: number): void;
 }

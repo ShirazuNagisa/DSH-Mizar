@@ -97,6 +97,8 @@ export interface Config {
         preferLoopback: boolean;
         reconnectBaseMs: number;
         reconnectMaxMs: number;
+        /** How long the relay may stay silent before the tunnel is redialled. */
+        watchdogMs: number;
     };
     pairing: {
         codeTtlSeconds: number;

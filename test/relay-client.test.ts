@@ -27,6 +27,8 @@ const FIXTURE = JSON.parse(
 /** A relay socket a test drives by hand. */
 class ScriptedSocket implements RelaySocket {
   readonly sent: string[] = []
+  /** Whether the client dropped this socket without a closing handshake. */
+  terminated = false
   #handlers: Record<string, ((...args: never[]) => void)[]> = {}
 
   send(text: string): void {
@@ -35,6 +37,11 @@ class ScriptedSocket implements RelaySocket {
 
   close(): void {
     /* nothing to release */
+  }
+
+  terminate(): void {
+    this.terminated = true
+    this.closed()
   }
 
   on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): unknown
@@ -372,6 +379,107 @@ describe('RelayClient', () => {
     created[0]?.closed()
     await vi.waitFor(() => expect(created.length).toBeGreaterThan(1))
     reconnecting.stop()
+  })
+
+  it('redials a tunnel the relay has stopped talking to', async () => {
+    // The half-open case from the report: the relay has dropped the room and no
+    // longer pings, while the local socket never sees a close -- a network
+    // change on the computer, most often. The watchdog is the only thing that
+    // notices, and without it the room stays dark forever.
+    const created: ScriptedSocket[] = []
+    const factory = (): RelaySocket => {
+      const next = new ScriptedSocket()
+      created.push(next)
+      return next
+    }
+    const silent = new RelayClient({
+      url: 'https://relay.example.com',
+      token: 'a-token',
+      localPort: listener.port,
+      log: () => undefined,
+      socketFactory: factory,
+      reconnectBaseMs: 5,
+      reconnectMaxMs: 10,
+      watchdogMs: 60,
+    })
+    silent.start()
+    expect(created).toHaveLength(1)
+    created[0]?.opened()
+    created[0]?.deliver({ t: 'welcome', room: 'ROOM1', protocolVersion: 1 })
+
+    await vi.waitFor(() => expect(created.length).toBeGreaterThan(1), { timeout: 2_000 })
+    // The half-open socket is dropped, not politely closed and left "connected".
+    expect(created[0]?.terminated).toBe(true)
+    silent.stop()
+  })
+
+  it('redials on demand when the network changes', async () => {
+    const created: ScriptedSocket[] = []
+    const factory = (): RelaySocket => {
+      const next = new ScriptedSocket()
+      created.push(next)
+      return next
+    }
+    const redial = new RelayClient({
+      url: 'https://relay.example.com',
+      token: 'a-token',
+      localPort: listener.port,
+      log: () => undefined,
+      socketFactory: factory,
+      reconnectBaseMs: 5,
+      reconnectMaxMs: 10,
+    })
+    redial.start()
+    created[0]?.opened()
+    created[0]?.deliver({ t: 'welcome', room: 'ROOM1', protocolVersion: 1 })
+
+    redial.reconnectNow('the network changed')
+    await vi.waitFor(() => expect(created.length).toBeGreaterThan(1))
+    expect(created[0]?.terminated).toBe(true)
+    redial.stop()
+  })
+
+  it('replays onto the listener after it moves to a different port', async () => {
+    const moved = await startListener()
+    try {
+      const created: ScriptedSocket[] = []
+      const factory = (): RelaySocket => {
+        const next = new ScriptedSocket()
+        created.push(next)
+        return next
+      }
+      const client = new RelayClient({
+        url: 'https://relay.example.com',
+        token: 'a-token',
+        localPort: listener.port,
+        log: () => undefined,
+        socketFactory: factory,
+        reconnectBaseMs: 5,
+        reconnectMaxMs: 10,
+      })
+      client.start()
+      created[0]?.opened()
+
+      // A rebind can land on another port. Replaying to the startup port would
+      // answer every phone request with a connection error over a healthy
+      // tunnel, which is worse than a redial.
+      client.setLocalPort(moved.port)
+      await vi.waitFor(() => expect(created.length).toBeGreaterThan(1))
+
+      created.at(-1)?.deliver({
+        t: 'req',
+        id: 'r1',
+        method: 'GET',
+        path: '/mizar/v1/hello',
+        headers: {},
+        body: null,
+      })
+      await vi.waitFor(() => expect(moved.requests.length).toBe(1))
+      expect(moved.requests[0]?.url).toBe('/mizar/v1/hello')
+      client.stop()
+    } finally {
+      await moved.close()
+    }
   })
 })
 

@@ -100,6 +100,8 @@ export interface Config {
     preferLoopback: boolean
     reconnectBaseMs: number
     reconnectMaxMs: number
+    /** How long the relay may stay silent before the tunnel is redialled. */
+    watchdogMs: number
   }
   pairing: {
     codeTtlSeconds: number
@@ -134,6 +136,15 @@ export const Config: z<Config> = z.object({
     preferLoopback: z.boolean().default(false),
     reconnectBaseMs: z.natural().default(1_000),
     reconnectMaxMs: z.natural().default(60_000),
+    /**
+     * How long the relay may stay silent before the tunnel is redialled, in ms.
+     *
+     * The relay pings every tunnel every `tunnelIdleMs / 3` (30 s with the
+     * relay's default 90 s idle window). Four missed pings is longer than any
+     * healthy relay's silence and short enough that a blackholed network cannot
+     * leave a dead room behind for hours. `0` disables the watchdog.
+     */
+    watchdogMs: z.natural().default(120_000),
   }),
   pairing: z.object({
     codeTtlSeconds: z.natural().default(300),
