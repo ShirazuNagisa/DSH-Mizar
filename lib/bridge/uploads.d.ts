@@ -16,6 +16,22 @@ export declare const UPLOAD_LIMITS: {
     readonly images: 4;
 };
 /**
+ * Resource quotas the staging area enforces on top of the documented limits.
+ *
+ * The per-prompt limits bound one message; these bound the desktop. Ported
+ * from XEPX2's PR #2. `reservedBytes` is the sum of what live uploads have
+ * declared; the reservation ends when the upload completes (its bytes then
+ * become an attachment, bounded at prompt time) or expires.
+ */
+export declare const UPLOAD_QUOTAS: {
+    /** Largest total of declared-but-unreceived bytes across all live uploads. */
+    readonly reservedBytes: number;
+    /** Most uploads in flight, across every device. */
+    readonly active: 100;
+    /** Most uploads in flight for one device. */
+    readonly perDevice: 10;
+};
+/**
  * Media types DSH accepts as image content.
  *
  * The durable prompt format is a raster image block, so anything else is not an
@@ -33,6 +49,8 @@ export interface UploadBeginRequest {
     readonly name: string;
     readonly mediaType: string;
     readonly byteSize: number;
+    /** Lowercase hex SHA-256 of the full payload, when the client declares it. */
+    readonly sha256?: string;
 }
 /** `upload.chunk` arguments after validation. */
 export interface UploadChunkRequest {
@@ -53,6 +71,19 @@ export interface UploadFinishResult {
     readonly name: string;
     readonly mediaType: string;
     readonly byteSize: number;
+}
+/** What `upload.capabilities` answers. */
+export interface UploadCapabilities {
+    readonly chunkBytes: number;
+    readonly imageBytes: number;
+    readonly fileBytes: number;
+    readonly promptBytes: number;
+    readonly attachments: number;
+    readonly images: number;
+    readonly expiresSeconds: number;
+    readonly imageMediaTypes: readonly string[];
+    /** Whether the host verifies a client-declared SHA-256. */
+    readonly sha256: boolean;
 }
 /**
  * One finished upload, as the session bridge consumes it.
@@ -90,6 +121,18 @@ export interface UploadStoreOptions {
     readonly chunkBytes?: number;
     /** Clock override, used by tests to age an upload without sleeping. */
     readonly now?: () => number;
+    /** Largest total of declared bytes across live uploads (tests shrink this). */
+    readonly maxReservedBytes?: number;
+    /** Most uploads in flight across every device (tests shrink this). */
+    readonly maxActiveUploads?: number;
+    /** Most uploads in flight for one device (tests shrink this). */
+    readonly maxDeviceUploads?: number;
+    /**
+     * Whether `begin` secures the staging roots before writing (tests pass
+     * `false` so a hundred cases do not each spawn the ACL tooling; the real
+     * behavior has its own test).
+     */
+    readonly secureRoots?: boolean;
 }
 /**
  * Read `upload.begin`'s payload.
@@ -160,6 +203,11 @@ export declare class UploadStore {
      * @param options - where uploads live and how long they last.
      */
     constructor(options: UploadStoreOptions);
+    /**
+     * The limits a client should obey, as this store enforces them.
+     * @returns the capability record `upload.capabilities` answers with.
+     */
+    capabilities(): UploadCapabilities;
     /**
      * Begin one upload.
      *
@@ -233,4 +281,44 @@ export declare class UploadStore {
      * @throws MethodError `MALFORMED_FRAME`, `ATTACHMENT_UNKNOWN`, `ATTACHMENT_TOO_LARGE` or `ATTACHMENT_UNSUPPORTED`.
      */
     resolveForPrompt(deviceId: string, sessionId: string, attachmentIds: readonly string[]): Promise<PromptAttachment[]>;
+}
+/**
+ * Refuses a `requestId` reused for a different attachment prompt.
+ *
+ * DSH deduplicates prompts by session and request id: the same key always
+ * returns the first answer. For a text prompt that is the client's own
+ * idempotency choice; for a prompt that carries attachments, the key plus the
+ * content is the contract — the same retry must carry the same text, the same
+ * attachments in the same order, the same mode and timezone, from the same
+ * device. Anything else is either a client bug or an attempt to borrow another
+ * request's acceptance, and it is refused rather than second-guessed.
+ *
+ * The ledger is memory-only and bounded: at most 1000 keys globally, 100 per
+ * device, each forgotten 30 minutes after it was last seen — the same bounds
+ * XEPX2's PR #2 chose, for the same reason: a restart is allowed to forget,
+ * because DSH's own persistence is the final guard against duplicates.
+ */
+export declare class PromptReplayGuard {
+    #private;
+    /**
+     * @param now - the clock, overridable for tests.
+     */
+    constructor(now?: () => number);
+    /**
+     * Record one attachment prompt, refusing a key reused with different content.
+     *
+     * @param deviceId - the authenticated device.
+     * @param sessionId - the target session.
+     * @param requestId - the client's idempotency key.
+     * @param content - everything that makes this prompt this prompt.
+     * @throws MethodError `ATTACHMENT_INVALID` when the key was seen with a
+     *   different device or content.
+     * @throws MethodError `UPLOAD_LIMIT_REACHED` when the ledger is full.
+     */
+    check(deviceId: string, sessionId: string, requestId: string, content: {
+        readonly text?: string;
+        readonly mode: 'queue' | 'steer';
+        readonly clientTimeZone?: string;
+        readonly attachmentIds: readonly string[];
+    }): void;
 }

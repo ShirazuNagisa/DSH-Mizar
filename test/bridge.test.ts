@@ -595,6 +595,7 @@ describe('method table', () => {
         'question.answer',
         'upload.abort',
         'upload.begin',
+        'upload.capabilities',
         'upload.chunk',
         'upload.finish',
         'session.messages',
@@ -1334,7 +1335,7 @@ describe('prompt attachments', () => {
 
   it('turns a finished image into an inline base64 content part', async () => {
     const { table, calls } = await attachmentTable({})
-    const bytes = Buffer.from('jpegdata')
+    const bytes = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('jpeg')])
     const finished = await uploadThroughTable(
       table,
       device,

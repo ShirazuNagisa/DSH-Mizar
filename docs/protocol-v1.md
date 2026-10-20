@@ -125,10 +125,13 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `UPLOAD_BAD_CHUNK` | chunk 乱序、与已收内容冲突,或不是规范 base64 | 从该 index 重发,或重传 |
 | `UPLOAD_TOO_LARGE` | 超过声明大小或大小上限 | 换更小的文件 |
 | `UPLOAD_INCOMPLETE` | `finish` 时字节数不够 | 补发缺的 chunk |
+| `UPLOAD_INTEGRITY` | 落盘字节与 `begin` 声明的 SHA-256 不符（声明了才会校验），upload 已作废 | 重新上传该文件 |
+| `UPLOAD_LIMIT_REACHED` | 暂存配额用尽：全局/单设备在传数量，或全局声明字节预留 | 等在传上传结束或 30 分钟 TTL 过期后重试 |
 | `ATTACHMENT_UNKNOWN` | 附件不存在、已过期,或不属于这台设备/这个会话 | 重新选择附件 |
 | `ATTACHMENT_TOO_LARGE` | 一次 prompt 的附件数量或总大小超限 | 减少附件 |
 | `ATTACHMENT_UNSUPPORTED` | 媒体类型不能变成 prompt 内容 | 换格式 |
 | `ATTACHMENT_FAILED` | 宿主保存文件或交给 DSH 时失败 | 重试;持续失败看宿主日志 |
+| `ATTACHMENT_INVALID` | 同一 `requestId` 被用于内容不同或设备不同的附件 prompt | 换一个新的 `requestId`;先确认上一条是否已送达 |
 
 > **`PAIRING_CODE_INVALID` / `EXPIRED` / `UNKNOWN` 对客户端回答是不同的，但审计日志里
 > 区分得更细**（含"已兑换"）。已经兑换过的码重放会被当成 `UNKNOWN`——**故意不告诉客户端
@@ -312,10 +315,11 @@ Read completed with an error Message too long
 
 | 方法 | payload | 返回 |
 |---|---|---|
-| `upload.begin` | `sessionId`, `kind`（`image` \| `file`）, `name`, `mediaType`, `byteSize` | `{uploadId, chunkBytes: 131072}` |
+| `upload.begin` | `sessionId`, `kind`（`image` \| `file`）, `name`, `mediaType`, `byteSize`, `sha256?` | `{uploadId, chunkBytes: 131072}` |
 | `upload.chunk` | `uploadId`, `index`（从 0 开始）, `data`（规范 base64） | `{received: index + 1}` |
 | `upload.finish` | `uploadId` | `{attachmentId, kind, name, mediaType, byteSize}` |
 | `upload.abort` | `uploadId` | `{aborted: true}` |
+| `upload.capabilities` | `{}` | `{chunkBytes, imageBytes, fileBytes, promptBytes, attachments, images, expiresSeconds, imageMediaTypes, sha256}` |
 
 规则:
 
@@ -335,9 +339,10 @@ Read completed with an error Message too long
   超过即 `UPLOAD_TOO_LARGE`,不必先传几十兆。单个 chunk 超过 128 KiB、或写入后超过声明
   的 `byteSize`,同样是 `UPLOAD_TOO_LARGE`;`finish` 时字节数不足则是
   `UPLOAD_INCOMPLETE`。
-- **30 分钟 TTL。** 未完成的 upload 和已完成的 attachment 都在最后一次触碰 30 分钟后
-  连同 `<stateDir>/uploads/<uploadId>/` 一起删除;插件重启同样会丢弃半成品。过期后的
-  id 一律按未知处理,客户端重新选文件即可。`<stateDir>` 是宿主的 Mizar 状态目录
+- **30 分钟 TTL,从起点绝对计时。** 未完成的 upload 从 `begin` 起、已完成的 attachment
+  从 `finish` 起,30 分钟后连同 `<stateDir>/uploads/<uploadId>/` 一起删除;重传 chunk
+  **不会**续期。插件重启同样会丢弃半成品。过期后的 id 一律按未知处理,客户端重新选
+  文件即可。`<stateDir>` 是宿主的 Mizar 状态目录
   (默认 `~/.dsh/.mizar`)。
 - **一次 prompt 的配额。** 最多 **8 个附件**、其中最多 **4 张图片**、全部附件合计
   ≤ **64 MiB**;超了是 `ATTACHMENT_TOO_LARGE`。图片的 `mediaType` 只接受
@@ -350,6 +355,21 @@ Read completed with an error Message too long
   `<stateDir>/attachments/`,并在 prompt 末尾追加一段可读文本
   `[File: name]` 加换行加绝对路径 —— 那是 agent 唯一能用的句柄,也是这个协议不要求
   每个宿主都实现上传存储的原因。
+- **暂存资源配额。** 全局最多 **100 个**在传 upload、单设备最多 **10 个**、全局声明字节
+  预留最多 **200 MiB**(上传完成即释放,过期由 TTL 清理);超了是 `UPLOAD_LIMIT_REACHED`。
+  一部失控的手机占不死桌面,也挤不掉别的设备。
+- **声明即校验。** `upload.begin` 可以带 `sha256`(小写十六进制,可选——现网 iOS 不发,
+  发了就校验):`finish` 时对落盘字节**整体重读**算摘要,不符是 `UPLOAD_INTEGRITY` 且该
+  upload 作废重传。图片在 `finish` 时核对魔数与 `mediaType` 一致(照片在手机端已统一
+  转码为 JPEG,不会误伤),不符是 `ATTACHMENT_UNSUPPORTED`。名字拒绝双向格式控制字符
+  (`U+202A–E`、`U+2066–9`、`U+061C`);落盘回退副本的文件名会拆掉 Windows 保留设备名
+  (如 `com1.txt` → `_com1.txt`)。
+- **暂存目录仅当前用户可见。** 两个暂存根在写入第一个字节前完成 ACL 收紧并验证
+  (Windows 用系统自带 PowerShell 重置为仅当前 SID 一条规则,POSIX `chmod 0700`);
+  失败即拒绝上传,fail-closed。父目录(`<stateDir>` 本身)不动,不提权。
+- **`upload.capabilities`。** 宿主把上面这些上限作为能力对象下发;客户端可以继续用
+  文档里的固定值,也可以先查询再决定。老宿主对未知方法回 `NOT_IMPLEMENTED`,与其它
+  `upload.*` 一致,不影响旧客户端。
 
 `upload.*` 四个方法、`session.prompt` 的 `text` 可选化与 `attachmentIds` 都是**新增**:
 老客户端不会调用它们;老宿主对未知方法回 `NOT_IMPLEMENTED`(这正是客户端判断「这台
@@ -362,6 +382,10 @@ Read completed with an error Message too long
 
 - **同一个 prompt 重试** → 复用同一个 `requestId`，宿主不会重复插入
 - **一条新的 prompt** → 必须用新的 `requestId`，否则宿主会把它当成重试而丢弃
+- **带附件的 prompt 多一条护栏**：同一个 `requestId` 必须绑定同样的内容（文本、附件
+  及其顺序、mode、时区）和同一台设备；换其中任何一个复用旧 id 会得到
+  `ATTACHMENT_INVALID`，而不是另一条消息的回执。账本在内存里保留 30 分钟、全局
+  1000 条 / 单设备 100 条。
 
 App 当前的实现是**每次发送都生成新的 UUID**，它不自动重试——所以用户手动再发一次同样的
 文字会被当作**一条新消息**，这是对的。但如果将来加入自动重试，**必须把 key 一起带上**，

@@ -20,6 +20,7 @@
  *
  * @module dsh-mizar/test/uploads
  */
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
@@ -29,12 +30,14 @@ import {
   enforcePromptLimits,
   parseUploadBegin,
   parseUploadChunk,
+  PromptReplayGuard,
   UploadStore,
   UPLOAD_LIMITS,
   UPLOAD_TTL_MS,
   type UploadBeginRequest,
   type UploadFinishResult,
 } from '../src/bridge/uploads.js'
+import { makePrivateDirectory } from '../src/bridge/private-directory.js'
 
 /** A store and the directories it owns, for one test. */
 interface Harness {
@@ -58,7 +61,13 @@ const harnesses: Harness[] = []
  * @returns the store and its directories.
  */
 async function makeHarness(
-  options: { ttlMs?: number; chunkBytes?: number } = {},
+  options: {
+    ttlMs?: number
+    chunkBytes?: number
+    maxReservedBytes?: number
+    maxActiveUploads?: number
+    maxDeviceUploads?: number
+  } = {},
 ): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'mizar-uploads-'))
   const root = join(dir, 'uploads')
@@ -69,6 +78,10 @@ async function makeHarness(
     attachmentsRoot,
     ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
     ...(options.chunkBytes === undefined ? {} : { chunkBytes: options.chunkBytes }),
+    ...(options.maxReservedBytes === undefined ? {} : { maxReservedBytes: options.maxReservedBytes }),
+    ...(options.maxActiveUploads === undefined ? {} : { maxActiveUploads: options.maxActiveUploads }),
+    ...(options.maxDeviceUploads === undefined ? {} : { maxDeviceUploads: options.maxDeviceUploads }),
+    secureRoots: false,
     now: () => clock.time,
   })
   const harness = { store, root, attachmentsRoot, dir, clock }
@@ -120,6 +133,11 @@ function fileRequest(byteSize: number, sessionId = 's1'): UploadBeginRequest {
 /** A request for a small photograph. */
 function imageRequest(byteSize: number, sessionId = 's1'): UploadBeginRequest {
   return { sessionId, kind: 'image', name: 'photo.jpg', mediaType: 'image/jpeg', byteSize }
+}
+
+/** Bytes that carry a real JPEG signature, so image fixtures survive finish's signature check. */
+function jpegBytes(): Buffer {
+  return Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(8)])
 }
 
 describe('the happy path', () => {
@@ -371,7 +389,7 @@ describe('limits', () => {
     const { store } = await makeHarness()
     const ids: string[] = []
     for (let index = 0; index < UPLOAD_LIMITS.images + 1; index += 1) {
-      const finished = await upload(store, 'd1', imageRequest(1), Buffer.from([index]))
+      const finished = await upload(store, 'd1', imageRequest(jpegBytes().length), jpegBytes())
       ids.push(finished.attachmentId)
     }
     await expect(store.resolveForPrompt('d1', 's1', ids)).rejects.toMatchObject({
@@ -541,5 +559,181 @@ describe('payload parsing', () => {
     expect(() => parseUploadChunk({ uploadId: 'u1', index: 0, data: 42 })).toThrow(
       expect.objectContaining({ code: 'MALFORMED_FRAME' }),
     )
+  })
+})
+
+describe('integrity, signatures and name hardening', () => {
+  it('accepts a finish whose stored bytes match the declared SHA-256', async () => {
+    const { store } = await makeHarness()
+    const bytes = Buffer.from('declared payload bytes')
+    const request: UploadBeginRequest = {
+      ...fileRequest(bytes.length),
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    }
+    const ref = await upload(store, 'd1', request, bytes)
+    expect(ref.byteSize).toBe(bytes.length)
+  })
+
+  it('retires an upload whose bytes do not match the declared SHA-256', async () => {
+    const { store } = await makeHarness()
+    const wrong = createHash('sha256').update(Buffer.from('not what arrives')).digest('hex')
+    const begun = await store.begin('d1', { ...fileRequest(4), sha256: wrong })
+    await store.chunk('d1', {
+      uploadId: begun.uploadId,
+      index: 0,
+      data: Buffer.from('abcd').toString('base64'),
+    })
+    await expect(store.finish('d1', begun.uploadId)).rejects.toMatchObject({ code: 'UPLOAD_INTEGRITY' })
+    // Retired: a retry sees an unknown upload, not a stale file that would
+    // fail the same way forever.
+    await expect(store.finish('d1', begun.uploadId)).rejects.toMatchObject({ code: 'UPLOAD_UNKNOWN' })
+  })
+
+  it('accepts an image whose bytes carry the declared media type signature', async () => {
+    const { store } = await makeHarness()
+    // A minimal PNG: the eight magic bytes plus four bytes of IHDR length.
+    const bytes = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(8)])
+    const ref = await upload(
+      store,
+      'd1',
+      { ...imageRequest(bytes.length), name: 'photo.png', mediaType: 'image/png' },
+      bytes,
+    )
+    expect(ref.kind).toBe('image')
+  })
+
+  it('refuses an image whose bytes do not match its media type signature', async () => {
+    const { store } = await makeHarness()
+    const begun = await store.begin('d1', { ...imageRequest(16), name: 'photo.png', mediaType: 'image/png' })
+    // JPEG bytes under a PNG label.
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(12)])
+    await store.chunk('d1', { uploadId: begun.uploadId, index: 0, data: jpeg.toString('base64') })
+    await expect(store.finish('d1', begun.uploadId)).rejects.toMatchObject({
+      code: 'ATTACHMENT_UNSUPPORTED',
+    })
+    await expect(store.finish('d1', begun.uploadId)).rejects.toMatchObject({ code: 'UPLOAD_UNKNOWN' })
+  })
+
+  it('refuses a name carrying bidirectional formatting characters', () => {
+    for (const evil of ['evil\u202epdf.pdf', 'a\u2066b\u2069.pdf', '\u061cnotes.txt']) {
+      expect(() => parseUploadBegin({ ...fileRequest(4), name: evil }), evil).toThrow(
+        expect.objectContaining({ code: 'MALFORMED_FRAME' }),
+      )
+    }
+    // An ordinary CJK name is untouched.
+    expect(parseUploadBegin({ ...fileRequest(4), name: '报告 最终版.pdf' }).name).toBe('报告 最终版.pdf')
+  })
+
+  it('defuses Windows reserved device names in fallback copies', async () => {
+    const { store } = await makeHarness()
+    const finished = await upload(store, 'd1', { ...fileRequest(1), name: 'com1.txt' }, Buffer.from('x'))
+    const [attachment] = await store.resolveForPrompt('d1', 's1', [finished.attachmentId])
+    const saved = await attachment.saveFallback()
+    expect(saved.split(sep).pop()).toBe('_com1.txt')
+  })
+})
+
+describe('staging quotas and absolute TTL', () => {
+  it('enforces the staging quotas before any bytes move', async () => {
+    const { store } = await makeHarness({ maxActiveUploads: 5, maxDeviceUploads: 2, maxReservedBytes: 10 })
+    await store.begin('d1', fileRequest(4))
+    await store.begin('d1', fileRequest(4))
+    // The per-device quota: two live uploads for d1 already.
+    await expect(store.begin('d1', fileRequest(4))).rejects.toMatchObject({ code: 'UPLOAD_LIMIT_REACHED' })
+    // Another device fits its per-device quota but the reserved-byte budget
+    // (8 declared + 4 more > 10) is gone.
+    await expect(store.begin('d2', fileRequest(4))).rejects.toMatchObject({ code: 'UPLOAD_LIMIT_REACHED' })
+  })
+
+  it('expires an upload at its begin-time deadline even while chunks arrive', async () => {
+    const { store, clock } = await makeHarness()
+    const begun = await store.begin('d1', fileRequest(CHUNK_BYTES * 2 + 4))
+    const fullChunk = Buffer.alloc(CHUNK_BYTES, 7)
+    await store.chunk('d1', { uploadId: begun.uploadId, index: 0, data: fullChunk.toString('base64') })
+    // Chunks keep flowing until one second before the deadline: a retry does
+    // not extend anything.
+    clock.time += UPLOAD_TTL_MS - 1000
+    await store.chunk('d1', { uploadId: begun.uploadId, index: 1, data: fullChunk.toString('base64') })
+    clock.time += 1001
+    await expect(
+      store.chunk('d1', {
+        uploadId: begun.uploadId,
+        index: 2,
+        data: Buffer.alloc(4, 7).toString('base64'),
+      }),
+    ).rejects.toMatchObject({ code: 'UPLOAD_UNKNOWN' })
+  })
+
+  it('answers upload.capabilities with the documented limits', async () => {
+    const { store } = await makeHarness()
+    const capabilities = store.capabilities()
+    expect(capabilities.chunkBytes).toBe(CHUNK_BYTES)
+    expect(capabilities.attachments).toBe(UPLOAD_LIMITS.attachments)
+    expect(capabilities.images).toBe(UPLOAD_LIMITS.images)
+    expect(capabilities.expiresSeconds).toBe(UPLOAD_TTL_MS / 1000)
+    expect(capabilities.sha256).toBe(true)
+    expect(capabilities.imageMediaTypes).toContain('image/png')
+  })
+})
+
+describe('private staging roots', () => {
+  it('secures the staging roots before the first byte lands, fail-closed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mizar-secure-'))
+    harnesses.push({ store: undefined as unknown as UploadStore, root: join(dir, 'uploads'), attachmentsRoot: join(dir, 'attachments'), dir, clock: { time: 0 } })
+    const store = new UploadStore({
+      root: join(dir, 'uploads'),
+      attachmentsRoot: join(dir, 'attachments'),
+      secureRoots: true,
+      now: () => Date.now(),
+    })
+    // The first begin runs the real securing (POSIX chmod, or on Windows the
+    // OS-supplied PowerShell ACL reset with its post-write verification) and
+    // only then creates bytes. A failure here fails the upload, not the
+    // privacy.
+    const begun = await store.begin('d1', fileRequest(4))
+    await store.abort('d1', begun.uploadId)
+    expect(await stat(join(dir, 'uploads'))).toBeTruthy()
+    // Securing is also directly usable and idempotent.
+    await makePrivateDirectory(join(dir, 'attachments'))
+    await makePrivateDirectory(join(dir, 'attachments'))
+  })
+})
+
+describe('prompt replay guard', () => {
+  const content = {
+    text: 'see attached',
+    mode: 'queue' as const,
+    clientTimeZone: 'Asia/Shanghai',
+    attachmentIds: ['a1', 'a2'],
+  }
+
+  it('accepts the same retry and refuses different content under one requestId', () => {
+    const clock = { time: Date.now() }
+    const guard = new PromptReplayGuard(() => clock.time)
+    guard.check('d1', 's1', 'r1', content)
+    // The lost-answer retry: identical content, identical device.
+    guard.check('d1', 's1', 'r1', content)
+    // Same key, different text: refused before any DSH side effect.
+    expect(() => guard.check('d1', 's1', 'r1', { ...content, text: 'changed' })).toThrow(
+      expect.objectContaining({ code: 'ATTACHMENT_INVALID' }),
+    )
+    // Same key from another device: refused for the same reason.
+    expect(() => guard.check('d2', 's1', 'r1', content)).toThrow(
+      expect.objectContaining({ code: 'ATTACHMENT_INVALID' }),
+    )
+    // Attachment order is content.
+    expect(() => guard.check('d1', 's1', 'r1', { ...content, attachmentIds: ['a2', 'a1'] })).toThrow(
+      expect.objectContaining({ code: 'ATTACHMENT_INVALID' }),
+    )
+  })
+
+  it('forgets entries after the TTL', () => {
+    const clock = { time: Date.now() }
+    const guard = new PromptReplayGuard(() => clock.time)
+    guard.check('d1', 's1', 'r1', content)
+    clock.time += UPLOAD_TTL_MS + 1
+    // Forgotten: the key may be minted fresh. DSH's own persistence remains
+    // the guard against a true duplicate message.
+    guard.check('d1', 's1', 'r1', content)
   })
 })

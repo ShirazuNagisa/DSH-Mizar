@@ -106,6 +106,32 @@ export const ERROR_CODES = [
   'ATTACHMENT_UNSUPPORTED',
   // Staging, saving or handing a file to DSH failed on the host.
   'ATTACHMENT_FAILED',
+  /**
+   * The stored bytes failed verification against what the client declared: the
+   * SHA-256 does not match a full re-read of the staging area. The upload is
+   * retired; the fix is to upload again.
+   *
+   * Ported from XEPX2's PR #2.
+   */
+  'UPLOAD_INTEGRITY',
+  /**
+   * A staging resource quota is exhausted: too many live uploads globally or
+   * for this device, or too many declared bytes reserved. Retry later, after
+   * prompts release them or the 30-minute TTL sweeps.
+   *
+   * Ported from XEPX2's PR #2.
+   */
+  'UPLOAD_LIMIT_REACHED',
+  /**
+   * A prompt's identity was reused with different content: the same
+   * `requestId` sent again with other text, attachments, mode, timezone, or
+   * from another device. The original request may or may not have landed;
+   * guessing would risk a duplicate message, so the client must pick a fresh
+   * `requestId`.
+   *
+   * Ported from XEPX2's PR #2.
+   */
+  'ATTACHMENT_INVALID',
 ] as const
 
 /** One failure code. */

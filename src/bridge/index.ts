@@ -38,7 +38,7 @@ import {
   sessionMessages,
   sessionStats,
 } from './sessions.js'
-import { parseUploadBegin, parseUploadChunk, UploadStore } from './uploads.js'
+import { parseUploadBegin, parseUploadChunk, PromptReplayGuard, UploadStore } from './uploads.js'
 
 /** Per-connection facts handed to a method. */
 export interface MethodContext {
@@ -386,6 +386,12 @@ export function createMethodTable(
       root: join(facts.home, 'uploads'),
       attachmentsRoot: join(facts.home, 'attachments'),
     })
+  // A prompt that carries attachments is retried with the same requestId when
+  // its answer is lost. That is safe only while the request is identical: DSH
+  // deduplicates by (session, requestId), so the same key with different
+  // content must be refused before it can borrow the first answer. Ported
+  // from XEPX2's PR #2.
+  const replayGuard = new PromptReplayGuard()
 
   const table: Record<string, MethodHandler> = {
     /**
@@ -537,6 +543,15 @@ export function createMethodTable(
           'session.prompt: payload."text" must be a non-empty string when no attachments are given',
         )
       }
+      const requestId = optionalString(payload, 'requestId')
+      if (attachmentIds.length > 0 && requestId !== undefined) {
+        replayGuard.check(context.deviceId, sessionId, requestId, {
+          text,
+          mode,
+          clientTimeZone: optionalString(payload, 'clientTimeZone'),
+          attachmentIds,
+        })
+      }
       const attachments =
         attachmentIds.length === 0
           ? []
@@ -546,7 +561,7 @@ export function createMethodTable(
         ...(text === undefined ? {} : { text }),
         ...(attachments.length === 0 ? {} : { attachments }),
         mode,
-        requestId: optionalString(payload, 'requestId'),
+        requestId,
         clientTimeZone: optionalString(payload, 'clientTimeZone'),
       })
     },
@@ -577,6 +592,15 @@ export function createMethodTable(
     /** Discard a half-sent upload and its bytes. */
     'upload.abort': async (payload, context) =>
       uploadStore.abort(context.deviceId, requireString(payload, 'uploadId', 'upload.abort')),
+
+    /**
+     * The attachment limits as this host enforces them.
+     *
+     * Additive and optional: a client may hardcode the documented numbers and
+     * never call this, but one that asks first survives a host that tunes
+     * them. Ported from XEPX2's PR #2.
+     */
+    'upload.capabilities': async () => uploadStore.capabilities(),
 
     /** Interrupt the running turn. */
     'session.cancel': async (payload) =>
