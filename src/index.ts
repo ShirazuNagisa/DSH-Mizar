@@ -130,7 +130,7 @@ const systemLocale = (() => {
  * code in place and every symptom unchanged. One line at boot turns that from a
  * guess into a fact.
  */
-const MIZAR_VERSION = '0.8.7'
+const MIZAR_VERSION = '0.8.8'
 
 /**
  * Services this plugin must observe before it activates.

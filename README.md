@@ -143,6 +143,22 @@ DSH 自己的 Web 接口暴露出去（那是 DSH 的安全边界，插件不碰
 日志里对应 `relay: the tunnel has been silent for …s — redialling it`、
 `relay: the network changed — redialling the tunnel` 和 `relay: the listener moved to port …`。
 
+### 付费账户的高带宽中继（0.8.8）
+
+付费账户的隧道现在会跟着订阅走：App 知道账户是否付费，插件不知道，所以由 App 调
+`relay.set` 请求电脑把隧道移到账号中继（`dshmizar-1.shirazu-nagisa.com`）；免费账户
+仍走 `dshmizar.shirazu-nagisa.com`，登录/登出或订阅到期时会自动切回。
+
+- 隧道令牌不变 ⇒ 房间不变，**已配对关系不受影响**，只是断开重拨。
+- 选择持久化在插件状态目录（`relay-override.json`，600），重启后继续生效。
+- 插件只接受两个公共中继，自建 `relay.url` 时该能力不出现；旧宿主回 `NOT_IMPLEMENTED`，
+  旧客户端不会调用，行为完全不变。
+- 切换前插件广播 `relay.changed`，其它已配对设备会更新保存的中继地址；离线的手机下次
+  连接时会用同一房间尝试另一个公共中继自愈。
+- 连接面板里的「高带宽服务器 / 免费版服务器」现在按**实际所在中继**显示，不再只看账户等级。
+
+协议细节（`relay.set`、`host.info.relay`、`relay.changed`）见 `docs/protocol-v1.md`。
+
 ### 对话只传总结
 
 一页历史里只保留这些：你的提问、每一轮的 `turn/start` 和 `turn/end`、每个 `step/start`
