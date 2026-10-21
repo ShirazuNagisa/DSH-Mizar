@@ -147,7 +147,8 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 
 | 方法 | payload | 返回 |
 |---|---|---|
-| `host.info` | — | 主机身份与绑定情况，含可选的 `addresses`（见下） |
+| `host.info` | — | 主机身份与绑定情况，含可选的 `addresses` 与 `relay`（见下） |
+| `relay.set` | `url` | `{url, room, baseURL}` —— 把电脑的隧道移到免费或付费中继。`url` 只接受两个公共中继（见下），否则 `MALFORMED_FRAME`；**token 不变，room 不变**，已配对关系不受影响。老宿主回 `NOT_IMPLEMENTED`。 |
 | `session.list` | `{}` | `{items: [SessionRow]}` —— DSH 会列出的会话，**不含已归档的**：归档集在工作区注册表里，DSH 自己的 `session/list` 不知道它，所以插件在出口处过滤。 |
 | `workspace.list` | `{}` | `{items: [WorkspaceRow], complete}` —— DSH **当前**拥有的工作区，按 DSH 自己的显示顺序（插件直接读 `ctx.workspaceRegistry.list()`，和电脑侧边栏同源），每个工作区带 `sessionIds`：DSH 认可的归属关系，只有主机知道，手机不该自己拿目录去猜；**已归档的会话不在其中**（DSH 的归档保留归属槽位，以便取消归档回到原位，所以过滤在插件出口做）。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话，手机再按目录分组就会一直留着它们。<br>`sessionIds` **缺省**和 `[]` 是两回事：`[]` 是「DSH 说这里没有会话」，缺省是「主机没说」，只有后者才允许退回按目录匹配。<br>`complete` 说这份清单**是不是完整读到了**：只有 `true` 才允许丢弃已经不在清单里的工作区，因为「主机答不上来」和「主机一个都没有」都是空数组。任何一条读不出来的记录都按「没答」处理（返回 `{items: [], complete: false}`）——主机还可以用 `workspace/follow` 的 baseline 兜底；两条路都不行时手机退回按目录分组。 |
 | `session.messages` | `sessionId`, `parentSessionId?`, `maxMessages?`, `beforeSeq?`, `afterSeq?`（见下） | `{sessionId, asOfSeq, records[], hasMore}` —— **只发总结，不发过程**。一页里只保留：`turn/start`、`turn/end`、每个 `step/start`（只用来数步骤，约 100 字节）、人写的 `user/message`，以及**每一轮里模型最后那条有正文的 `assistant/message`**。逐步叙述、工具调用/结果、流式 attempt，以及**还没结束的那一轮的中间回复**，全部不发 —— 后两项正是最大的一块。原因：手机端只按「总结 + 状态」渲染，全量历史经中继太吃服务器带宽。`asOfSeq`（分页切点）取自 `session/follow` 首帧的 `cursor`，这是 DSH 自己对 `throughSeq` 的定义（"Inclusive log cut obtained from the corresponding follow opening frame"），原来用 `session/projections` 的 `asOfSeq` 会滞后于日志头，导致刚发出的那一轮不在页里、手机上就没有「AI 正在工作」那一行。<br>`parentSessionId` 只在读**子代理的页**时传（见下「子代理的页」）。 |
@@ -160,6 +161,14 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `session.archive` | `sessionId`, `stopActivity?` | `{archived: true}` |
 
 **`host.info` 的 `addresses` 是可选字段，老宿主不答。** 它是插件监听器**实际绑定**的每个 `host:port`（如 `192.168.1.10:19390`、`127.0.0.1:19390`），回答的是「这台电脑现在能从哪些地址拨到」。手机在中继连接上拿不到局域网地址，正是靠它才知道该往哪直连。**缺省不等于空数组**：缺省是「这台电脑的插件太旧，答不上来」，手机必须退回配对时已知的那个地址；`[]` 才是「现在没有任何可拨地址」。这是新增的可选字段，老客户端解码时忽略不认识的键，**不需要升 `PROTOCOL_VERSION`**。
+
+**`host.info` 的 `relay` 与 `relay.set`：按账户把隧道移到付费中继。**
+付费账户的隧道应当走主力1（`https://dshmizar-1.shirazu-nagisa.com`），免费账户走主力0（`https://dshmizar.shirazu-nagisa.com`）。host 自己不知道账户是否付费，App 知道，所以由 App 调 `relay.set`：
+- `url` 必须是两个公共中继之一（去尾斜杠、只允许 origin）。host 把它持久化在状态目录的 `relay-override.json`，重启后继续使用；配置里写的是自建中继时这两个方法都不提供（老宿主行为）。
+- host 先回 `ok`（带着新的 `baseURL`），250 ms 后再断开旧隧道、连新中继；同时在切换前向所有已连接设备广播事件 `relay.changed`，`data` 与返回体同形。手机收到后更新 `PairedHost.baseURL` 并重连。
+- `host.info` 的 `relay` 字段是 `{url, room, baseURL}`，`baseURL` 在隧道拿到 room 前为 `null`；老客户端忽略它。
+- 切到付费中继后，同一台电脑上**免费账户的手机**会被付费中继的 gate 拒绝，这是预期行为；App 应在账户过期/登出时切回免费中继。
+- 纯加法：老宿主没有 `relay.set`/`relay` 字段，老 App 不调用；**不需要升 `PROTOCOL_VERSION`**。
 
 **`session.archive` 归档的是电脑上的会话，不是手机本地的一行。** 插件把它写进 DSH 工作区注册表的全局归档集（`ctx.workspaceRegistry.archiveSession`）。归档是**非破坏性**的：会话日志在，工作区归属槽位也在（取消归档能回到原来的位置），只是从此不再出现在任何列表里 —— 所以 `session.list` 和 `workspace.list` 的 `sessionIds` 都会把它滤掉，手机下次刷新就看不到那一行了。电脑端的侧边栏同样看不到。
 

@@ -1938,3 +1938,96 @@ describe('session.activity (method table)', () => {
     expect(calls.filter((call) => call.method === 'page')).toHaveLength(1)
   })
 })
+
+describe('relay selection over the wire', () => {
+  const context = { deviceId: 'd1', deviceName: 'iPhone', remote: '127.0.0.1' }
+  const facts = { hostId: 'h1', hostName: 'mac', home: '/home', protocolVersion: 1 }
+  const free = 'https://dshmizar.shirazu-nagisa.com'
+  const paid = 'https://dshmizar-1.shirazu-nagisa.com'
+
+  /** A host that can move between the two public relays, and remembers requests. */
+  function movable() {
+    const calls: string[] = []
+    let current = { url: free, room: 'ROOM1', baseURL: `${free}/r/ROOM1` }
+    return {
+      calls,
+      control: {
+        current: () => current,
+        set: async (url: string) => {
+          calls.push(url)
+          current = { url, room: 'ROOM1', baseURL: `${url}/r/ROOM1` }
+          return current
+        },
+      },
+    }
+  }
+
+  it('reports the relay facts in host.info when the host can move', async () => {
+    const { ctx } = fakeContext({})
+    const { control } = movable()
+    const table = createMethodTable(ctx, { ...facts, relay: control }, new InteractionBroker())
+    await expect(table['host.info']?.(undefined, context)).resolves.toEqual({
+      hostId: 'h1',
+      hostName: 'mac',
+      home: '/home',
+      protocolVersion: 1,
+      relay: { url: free, room: 'ROOM1', baseURL: `${free}/r/ROOM1` },
+    })
+  })
+
+  it('leaves relay out of host.info when the host cannot move', async () => {
+    const { ctx } = fakeContext({})
+    const info = (await createMethodTable(ctx, facts, new InteractionBroker())['host.info']?.(
+      undefined,
+      context,
+    )) as Record<string, unknown>
+    expect('relay' in info).toBe(false)
+  })
+
+  it('moves the tunnel to the requested public relay', async () => {
+    const { ctx } = fakeContext({})
+    const { control, calls } = movable()
+    const table = createMethodTable(ctx, { ...facts, relay: control }, new InteractionBroker())
+    await expect(table['relay.set']?.({ url: paid }, context)).resolves.toEqual({
+      url: paid,
+      room: 'ROOM1',
+      baseURL: `${paid}/r/ROOM1`,
+    })
+    expect(calls).toEqual([paid])
+  })
+
+  it('accepts the free relay and a trailing slash', async () => {
+    const { ctx } = fakeContext({})
+    const { control, calls } = movable()
+    const table = createMethodTable(ctx, { ...facts, relay: control }, new InteractionBroker())
+    await expect(table['relay.set']?.({ url: `${free}/` }, context)).resolves.toMatchObject({
+      url: free,
+    })
+    expect(calls).toEqual([free])
+  })
+
+  it('refuses a URL outside the allowlist before the host sees it', async () => {
+    const { ctx } = fakeContext({})
+    const { control, calls } = movable()
+    const table = createMethodTable(ctx, { ...facts, relay: control }, new InteractionBroker())
+    await expect(
+      table['relay.set']?.({ url: 'https://evil.example.com' }, context),
+    ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('refuses a payload without a url', async () => {
+    const { ctx } = fakeContext({})
+    const { control } = movable()
+    const table = createMethodTable(ctx, { ...facts, relay: control }, new InteractionBroker())
+    await expect(table['relay.set']?.({}, context)).rejects.toMatchObject({
+      code: 'MALFORMED_FRAME',
+    })
+  })
+
+  it('is absent when the host has no selectable relay', async () => {
+    const { ctx } = fakeContext({})
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+    expect(table['relay.set']).toBeUndefined()
+  })
+})

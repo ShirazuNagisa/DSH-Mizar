@@ -39,6 +39,7 @@ import {
   sessionStats,
 } from './sessions.js'
 import { parseUploadBegin, parseUploadChunk, PromptReplayGuard, UploadStore } from './uploads.js'
+import { canonicalRelayURL, isSelectableRelayURL } from '../relay/selection.js'
 
 /** Per-connection facts handed to a method. */
 export interface MethodContext {
@@ -52,6 +53,29 @@ export interface MethodContext {
 
 /** A wire method implementation. */
 export type MethodHandler = (payload: unknown, context: MethodContext) => Promise<unknown>
+
+/**
+ * Where this computer's tunnel currently points, as a phone reads it.
+ *
+ * `baseURL` is the address a phone should dial for this room (the relay origin
+ * plus `/r/<room>`), and is `null` until the relay has assigned a room.
+ */
+export interface HostRelayState {
+  /** The canonical relay origin the tunnel dials. */
+  readonly url: string
+  /** The room the relay assigned, once connected. */
+  readonly room: string | null
+  /** The base URL a phone should dial, or `null` before the first welcome. */
+  readonly baseURL: string | null
+}
+
+/** Move this computer's tunnel between the public relays, or report where it is. */
+export interface HostRelayControl {
+  /** Read the current relay facts. */
+  current(): HostRelayState
+  /** Remember and apply a new relay; the caller has already checked the allowlist. */
+  set(url: string): Promise<HostRelayState>
+}
 
 /** What the bridge needs from its host to answer `host.info`. */
 export interface HostFacts {
@@ -74,6 +98,15 @@ export interface HostFacts {
    * the second justifies a phone giving up on the direct route.
    */
   readonly authorities?: () => readonly string[]
+
+  /**
+   * Relay control, when this host may be moved between the two public relays.
+   *
+   * Absent for a self-hosted relay: there is no account tier to move between,
+   * so `relay.set` is not in the method table and an old-style host answers
+   * `NOT_IMPLEMENTED` exactly as it would for any other method it does not know.
+   */
+  readonly relay?: HostRelayControl
 }
 
 /**
@@ -392,6 +425,7 @@ export function createMethodTable(
   // content must be refused before it can borrow the first answer. Ported
   // from XEPX2's PR #2.
   const replayGuard = new PromptReplayGuard()
+  const relay = facts.relay
 
   const table: Record<string, MethodHandler> = {
     /**
@@ -411,7 +445,36 @@ export function createMethodTable(
       home: facts.home,
       protocolVersion: facts.protocolVersion,
       ...(facts.authorities === undefined ? {} : { addresses: facts.authorities() }),
+      ...(relay === undefined ? {} : { relay: relay.current() }),
     }),
+
+    /**
+     * Move this computer's tunnel to the free or the paid relay.
+     *
+     * The phone asks because only the phone knows the account tier; the host
+     * owns the allowlist and the persistence so a paired device cannot point
+     * this computer's tunnel at an arbitrary server. The tunnel credential is
+     * unchanged, so the room is unchanged and every existing pairing survives;
+     * what changes is the address a phone dials, and the answer carries it.
+     *
+     * Additive, so no protocol version bump: an old host answers
+     * `NOT_IMPLEMENTED`, which is how the app knows to keep its current relay.
+     */
+    ...(relay === undefined
+      ? {}
+      : {
+          'relay.set': async (payload: unknown) => {
+            const requested = requireString(payload, 'url', 'relay.set')
+            const canonical = canonicalRelayURL(requested)
+            if (canonical === null || !isSelectableRelayURL(canonical)) {
+              throw new MethodError(
+                'MALFORMED_FRAME',
+                'relay.set: payload."url" must be the free or the paid relay',
+              )
+            }
+            return relay.set(canonical)
+          },
+        }),
 
     /** Every session DSH would list, newest activity first. */
     'session.list': async () => listSessions(ctx),

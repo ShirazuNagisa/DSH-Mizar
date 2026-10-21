@@ -18,6 +18,16 @@ export declare const BIND_MODES: readonly ["lan", "loopback", "addresses"];
  * other setting changes.
  */
 export declare const PUBLIC_RELAY_URL = "https://dshmizar.shirazu-nagisa.com";
+/**
+ * The account relay — the paid tier's high-bandwidth relay.
+ *
+ * It is also the only relay that can verify an account session, so the app
+ * points its account API here regardless of which tunnel this computer uses.
+ * A paid account asks the host to move its tunnel here; see `relay.set`.
+ */
+export declare const ACCOUNT_RELAY_URL = "https://dshmizar-1.shirazu-nagisa.com";
+/** The two public relays a phone may move this computer between. */
+export declare const SELECTABLE_RELAY_URLS: readonly string[];
 export type BindMode = (typeof BIND_MODES)[number];
 export interface Config {
     enabled: boolean;
