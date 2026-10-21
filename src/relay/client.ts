@@ -172,6 +172,16 @@ const HOP_BY_HOP = new Set([
 ])
 
 /**
+ * How long one replayed request may wait on the local listener.
+ *
+ * The relay fails a forwarded request at `requestTimeoutMs` (30 s by default);
+ * answering before that -- even with an error -- is the host's side of the same
+ * contract. A wedged listener otherwise holds the id open for nothing, and the
+ * phone learns the truth a round trip later than it could.
+ */
+const REPLAY_TIMEOUT_MS = 25_000
+
+/**
  * Turn a relay URL into the WebSocket URL for the tunnel.
  *
  * @param url - `https://relay.example.com`, `wss://…`, or either with a path.
@@ -573,6 +583,10 @@ export class RelayClient {
         headers: forwardable(frame.headers),
         ...(body === undefined ? {} : { body }),
         redirect: 'manual',
+        // Abort before the relay's own request timeout: the catch below turns
+        // this into an error frame the phone receives, rather than silence the
+        // relay answers for with a 502.
+        signal: AbortSignal.timeout(REPLAY_TIMEOUT_MS),
       })
       const payload = Buffer.from(await response.arrayBuffer())
       const headers: Record<string, string> = {}
