@@ -503,6 +503,49 @@ function turnOf(event: Record<string, unknown>): unknown {
 const FOLLOW_TIMEOUT_MS = 30_000
 
 /**
+ * The durable address DSH reads one log by.
+ *
+ * An ordinary session is addressed by its id alone. A delegated child is **not**
+ * a session as far as the history API is concerned: `session/follow` and
+ * `session/page` refuse `{kind: 'session'}` for a log whose header says
+ * `origin: 'subagent'` --
+ *
+ *     session/agent-busy: subagent Sessions require their durable parent address
+ *
+ * -- and require the child to be named through its parent instead. The failure
+ * is raised before any log is read, so a phone that only knew a session id could
+ * never page a child's history at all; that is why the parent travels with the
+ * request.
+ *
+ * The mode is `'unknown'` on purpose: `session/list` carries the child's lineage
+ * but not its delegation mode (`one-shot` or `continuable`), and the host treats
+ * `unknown` as "either" rather than as a mismatch. Guessing a mode would trade a
+ * readable page for a `subagent/unauthorized`.
+ */
+type SessionLogAddress =
+  | { readonly kind: 'session'; readonly sessionId: string }
+  | {
+      readonly kind: 'subagent'
+      readonly parentSessionId: string
+      readonly childSessionId: string
+      readonly mode: 'unknown'
+    }
+
+/**
+ * Address one session's log, as a child when its parent is known.
+ *
+ * @param sessionId - the session whose log is being read.
+ * @param parentSessionId - the parent of a delegated child, or absent for an
+ *   ordinary conversation (and for a fork, which is a session of its own).
+ * @returns the address to send.
+ */
+function logAddress(sessionId: string, parentSessionId?: string): SessionLogAddress {
+  return parentSessionId === undefined
+    ? { kind: 'session', sessionId }
+    : { kind: 'subagent', parentSessionId, childSessionId: sessionId, mode: 'unknown' }
+}
+
+/**
  * The log cut, from the opening frame of `session/follow`.
  *
  * **Why the stream, and not the projection read it replaces.** `throughSeq` is
@@ -530,17 +573,17 @@ const FOLLOW_TIMEOUT_MS = 30_000
  * leak that only shows up after an hour of use.
  *
  * @param ctx - a context observing `ctx.typertGateway`.
- * @param sessionId - the session to open.
+ * @param address - the durable address to open; see {@link logAddress}.
  * @returns the cursor, or `null` when the host would not answer this way.
  */
-async function followCursor(ctx: Context, sessionId: string): Promise<number | null> {
+async function followCursor(ctx: Context, address: SessionLogAddress): Promise<number | null> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), FOLLOW_TIMEOUT_MS)
   try {
     const iterable = await streamRemote(ctx, {
       namespace: 'session',
       method: 'follow',
-      args: { request: { address: { kind: 'session', sessionId } } },
+      args: { request: { address } },
       signal: controller.signal,
     })
     const iterator = iterable[Symbol.asyncIterator]()
@@ -638,6 +681,8 @@ interface LogPage {
  * @param sessionId - the session to read.
  * @param maxMessages - how many messages to ask for; absent uses the host default.
  * @param beforeSeq - the exclusive upper bound, for paging backwards.
+ * @param parentSessionId - the parent of a delegated child; absent reads the
+ *   session as a session. See {@link logAddress}.
  * @returns the page, or `null` when the session has no log to read.
  */
 async function readLogPage(
@@ -645,8 +690,10 @@ async function readLogPage(
   sessionId: string,
   maxMessages?: number,
   beforeSeq?: number,
+  parentSessionId?: string,
 ): Promise<LogPage | null> {
-  const cut = (await followCursor(ctx, sessionId)) ?? (await projectionsCut(ctx, sessionId))
+  const address = logAddress(sessionId, parentSessionId)
+  const cut = (await followCursor(ctx, address)) ?? (await projectionsCut(ctx, sessionId))
   if (cut === null) {
     // No cut, no page: the session has no log to read.
     return null
@@ -657,7 +704,7 @@ async function readLogPage(
     method: 'page',
     args: {
       request: {
-        address: { kind: 'session', sessionId },
+        address,
         throughSeq: cut,
         // The lower bound. Without it a page starts at the beginning of the log,
         // which for a session with any history means a conversation view made
@@ -693,6 +740,10 @@ async function readLogPage(
  * @param afterSeq - the log position the caller already holds; only records
  *   after it travel. Ignored together with `beforeSeq`, because a page paged
  *   backwards is not a page of new records.
+ * @param parentSessionId - the parent of a delegated child. Supplying it is what
+ *   makes a child's history readable at all: without it the host refuses the
+ *   read outright (`session/agent-busy`), because a child is not addressable as
+ *   a session. See {@link logAddress}.
  * @returns the page, or no records when the session is unknown.
  */
 export async function sessionMessages(
@@ -701,8 +752,9 @@ export async function sessionMessages(
   maxMessages?: number,
   beforeSeq?: number,
   afterSeq?: number,
+  parentSessionId?: string,
 ): Promise<SessionMessagesResult> {
-  const page = await readLogPage(ctx, sessionId, maxMessages, beforeSeq)
+  const page = await readLogPage(ctx, sessionId, maxMessages, beforeSeq, parentSessionId)
   if (page === null) {
     return { sessionId, asOfSeq: null, records: [], hasMore: false }
   }

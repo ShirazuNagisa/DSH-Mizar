@@ -72,9 +72,13 @@ export declare function sessionStats(ctx: Context, sessionId: string): Promise<S
  * @param afterSeq - the log position the caller already holds; only records
  *   after it travel. Ignored together with `beforeSeq`, because a page paged
  *   backwards is not a page of new records.
+ * @param parentSessionId - the parent of a delegated child. Supplying it is what
+ *   makes a child's history readable at all: without it the host refuses the
+ *   read outright (`session/agent-busy`), because a child is not addressable as
+ *   a session. See {@link logAddress}.
  * @returns the page, or no records when the session is unknown.
  */
-export declare function sessionMessages(ctx: Context, sessionId: string, maxMessages?: number, beforeSeq?: number, afterSeq?: number): Promise<SessionMessagesResult>;
+export declare function sessionMessages(ctx: Context, sessionId: string, maxMessages?: number, beforeSeq?: number, afterSeq?: number, parentSessionId?: string): Promise<SessionMessagesResult>;
 /** One page of a session's log. */
 export interface SessionMessagesResult {
     readonly sessionId: string;

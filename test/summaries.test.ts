@@ -250,6 +250,48 @@ describe('the page cut', () => {
     expect(closed()).toBe(1)
   })
 
+  it('addresses a delegated child through its parent, on both reads', async () => {
+    // DSH refuses a child's log read with `session/agent-busy` -- "subagent
+    // Sessions require their durable parent address" -- before it touches the
+    // log, so a request that named only the child could never page it. The mode
+    // is `unknown` because the list carries lineage but not delegation mode, and
+    // the host treats `unknown` as either rather than as a mismatch.
+    const { ctx, wire } = fakeGateway({
+      frames: [{ type: 'snapshot', cursor: 9, records: [] }],
+    })
+
+    await sessionMessages(ctx, 'child-1', undefined, undefined, undefined, 'parent-1')
+
+    const child = {
+      kind: 'subagent',
+      parentSessionId: 'parent-1',
+      childSessionId: 'child-1',
+      mode: 'unknown',
+    }
+    expect(wire.streams[0]).toEqual({
+      namespace: 'session',
+      method: 'follow',
+      args: { request: { address: child } },
+    })
+    const page = wire.invokes.find((call) => call.method === 'page')
+    expect((page?.args['request'] as { address?: unknown }).address).toEqual(child)
+  })
+
+  it('keeps a fork addressed as a session, because a fork is not a child', async () => {
+    // A fork carries a parent and is the operator's own conversation: it is
+    // addressable as a session, and claiming a parent for it would describe a
+    // log that is not a subagent's.
+    const { ctx, wire } = fakeGateway({
+      frames: [{ type: 'snapshot', cursor: 3, records: [] }],
+    })
+
+    await sessionMessages(ctx, 'fork-1')
+
+    expect(wire.streams[0]?.args).toEqual({
+      request: { address: { kind: 'session', sessionId: 'fork-1' } },
+    })
+  })
+
   it('reads exactly one frame, because a second one activates the agent', async () => {
     // Measured on a live host: a cold session's list row is
     // `running: false, agentAvailable: false` before the stream opens, after its

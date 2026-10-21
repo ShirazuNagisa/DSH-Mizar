@@ -457,6 +457,11 @@ export function createMethodTable(
       const before = fields?.['beforeSeq']
       const after = fields?.['afterSeq']
       const sessionId = requireString(payload, 'sessionId', 'session.messages')
+      // A delegated child is not addressable as a session: the host refuses the
+      // read with `session/agent-busy` unless the child is named through its
+      // parent. The phone knows the lineage from `session.list` and sends it
+      // back here, so the address can be rebuilt on the way in.
+      const parentSessionId = optionalString(payload, 'parentSessionId')
       const explicit = typeof after === 'number' && Number.isFinite(after) ? after : undefined
       // `null` is the phone saying it holds nothing -- a reinstall, a cleared
       // cache. Silence is not that claim: it is a request with no cursor, which
@@ -472,6 +477,7 @@ export function createMethodTable(
         typeof limit === 'number' ? limit : undefined,
         typeof before === 'number' ? before : undefined,
         explicit ?? remembered,
+        parentSessionId,
       )
     },
 

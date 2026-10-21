@@ -571,6 +571,29 @@ describe('method table', () => {
     ).rejects.toMatchObject({ code: 'WRITER_HELD' })
   })
 
+  it('reads a delegated child through its parent, and a session as itself', async () => {
+    // DSH will not address a child as a session -- it answers `session/agent-busy`
+    // and refuses the read before touching the log -- so the parent the phone
+    // learned from `session.list` has to survive the bridge intact.
+    const { ctx, calls } = fakeContext((request: Invocation) =>
+      request.method === 'projections'
+        ? { asOfSeq: 5, values: {} }
+        : { records: [], hasMore: false },
+    )
+    const table = createMethodTable(ctx, facts, new InteractionBroker())
+
+    await table['session.messages']?.({ sessionId: 'child', parentSessionId: 'parent' }, context)
+    await table['session.messages']?.({ sessionId: 'top' }, context)
+
+    const addresses = calls
+      .filter((call) => call.method === 'page')
+      .map((call) => (call.args['request'] as { address?: unknown }).address)
+    expect(addresses).toEqual([
+      { kind: 'subagent', parentSessionId: 'parent', childSessionId: 'child', mode: 'unknown' },
+      { kind: 'session', sessionId: 'top' },
+    ])
+  })
+
   it('exposes every documented method', () => {
     const { ctx } = fakeContext({})
     expect(Object.keys(createMethodTable(ctx, facts, new InteractionBroker())).sort()).toEqual(
