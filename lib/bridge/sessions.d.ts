@@ -180,10 +180,16 @@ export interface SessionActivityResult {
  *   newest one. Requires `turn`.
  * @param turn - the running turn a backwards page belongs to. Ignored without
  *   `beforeSeq`, because a forward read names its own turn.
+ * @param parentSessionId - the parent of a delegated child. The activity read
+ *   opens the same log the same way `session.messages` does, so a child named
+ *   bare is refused with `session/agent-busy` before anything is read; the
+ *   parent is what makes a child's activity readable at all. No shipped
+ *   client polls a child's activity yet -- the parameter is the pure addition
+ *   that keeps a future poller from reintroducing the refused read.
  * @returns the running turn's rows, or an empty feed when nothing runs.
  * @throws MethodError when `beforeSeq` is given without `turn`.
  */
-export declare function sessionActivity(ctx: Context, sessionId: string, maxEntries?: number, beforeSeq?: number, turn?: number): Promise<SessionActivityResult>;
+export declare function sessionActivity(ctx: Context, sessionId: string, maxEntries?: number, beforeSeq?: number, turn?: number, parentSessionId?: string): Promise<SessionActivityResult>;
 /** A newly created or resumed session. */
 export interface CreateSessionResult {
     readonly sessionId: string;
@@ -221,6 +227,13 @@ export declare function createSession(ctx: Context, options: {
     sessionId?: string;
     agentPreset?: string;
 }): Promise<CreateSessionResult>;
+/** Fork only a proven completed response boundary, never a guessed latest turn. */
+export declare function forkSession(ctx: Context, options: {
+    sessionId: string;
+    atSeq: number;
+}): Promise<{
+    sessionId: string;
+}>;
 /** Acceptance of a prompt. */
 export interface PromptResult {
     /** Always true when the call succeeds; the host rejects rather than queues silently. */

@@ -598,6 +598,7 @@ describe('method table', () => {
     const { ctx } = fakeContext({})
     expect(Object.keys(createMethodTable(ctx, facts, new InteractionBroker())).sort()).toEqual(
       [
+        'account.balance',
         'approval.answer',
         'host.info',
         'interactions.pending',
@@ -610,6 +611,7 @@ describe('method table', () => {
         'session.archive',
         'session.cancel',
         'session.create',
+        'session.fork',
         'session.list',
         'session.model.set',
         'session.permission.set',
@@ -642,6 +644,7 @@ describe('method table', () => {
       hostName: 'mac',
       home: '/home',
       protocolVersion: 1,
+      plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1'] },
       addresses: ['192.168.1.10:19390', '127.0.0.1:19390'],
     })
   })
@@ -655,7 +658,7 @@ describe('method table', () => {
       undefined,
       context,
     )) as Record<string, unknown>
-    expect(info).toEqual({ hostId: 'h1', hostName: 'mac', home: '/home', protocolVersion: 1 })
+    expect(info).toEqual({ hostId: 'h1', hostName: 'mac', home: '/home', protocolVersion: 1, plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1'] } })
     expect('addresses' in info).toBe(false)
   })
 
@@ -1971,6 +1974,7 @@ describe('relay selection over the wire', () => {
       hostName: 'mac',
       home: '/home',
       protocolVersion: 1,
+      plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1'] },
       relay: { url: free, room: 'ROOM1', baseURL: `${free}/r/ROOM1` },
     })
   })

@@ -41,7 +41,7 @@ describe('the session page budget', () => {
     // trimming the full log first lets per-step narration fill the budget and
     // evict the prompt it was narrating. `summaries.test.ts` pins the behaviour;
     // this pins the order it depends on.
-    expect(SOURCE).toContain('const summarized = summaryRecords(records)')
+    expect(SOURCE).toContain('const summarized = await summaryRecords(records)')
     expect(SOURCE).toContain('records: withinBudget(fresh)')
     // And the incremental filter sits between the two: an old record that
     // survived the summary must not spend bytes the new ones need.

@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import type { Context } from '../dsh.js'
 import { isLiveActivityToken } from '../auth/devices.js'
 import { deliverQuestionAnswers } from './answerers.js'
+import { accountBalance } from './balance.js'
 import type { DeliveryLedger } from './delivery.js'
 import { toMethodError } from './errors.js'
 import {
@@ -31,6 +32,7 @@ import { archiveSession, listWorkspaces } from './workspaces.js'
 import {
   cancelSession,
   createSession,
+  forkSession,
   listSessions,
   promptSession,
   renameSession,
@@ -444,9 +446,13 @@ export function createMethodTable(
       hostName: facts.hostName,
       home: facts.home,
       protocolVersion: facts.protocolVersion,
+      plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1'] },
       ...(facts.authorities === undefined ? {} : { addresses: facts.authorities() }),
       ...(relay === undefined ? {} : { relay: relay.current() }),
     }),
+
+    /** Native official-account wallets; no account grant or identity leaves the host. */
+    'account.balance': async (payload) => accountBalance(ctx, payload),
 
     /**
      * Move this computer's tunnel to the free or the paid relay.
@@ -589,6 +595,19 @@ export function createMethodTable(
         cwd: optionalString(args, 'cwd'),
         sessionId: optionalString(args, 'sessionId'),
         agentPreset: optionalString(args, 'agentPreset'),
+      })
+    },
+
+    /** Fork the exact completed-turn prefix selected by the phone. */
+    'session.fork': async (payload) => {
+      const args = requireObject(payload, 'session.fork')
+      const atSeq = args['atSeq']
+      if (typeof atSeq !== 'number' || !Number.isSafeInteger(atSeq) || atSeq < 0) {
+        throw new MethodError('MALFORMED_FRAME', 'session.fork: payload."atSeq" must be a non-negative safe integer')
+      }
+      return forkSession(ctx, {
+        sessionId: requireString(payload, 'sessionId', 'session.fork'),
+        atSeq,
       })
     },
 

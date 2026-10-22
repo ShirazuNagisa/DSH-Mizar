@@ -529,3 +529,54 @@ MIZAR_WRITE_FIXTURES=1 scripts/dev.sh smoke   # 重新捕获
 以及"哪些记录能活下来"三件事，此前两边都只能去读桥的源码，而两种语言读同一段源码正是上次
 漂移的方式。现在它是一份真实抓下来的页，两边的测试都断言它。
 
+## DeepSeek 官方账户余额（可选增量能力）
+
+`host.info` 可附带 `plugin: {id: "dsh-mizar", capabilities: ["deepseek.balance.v1"]}`。
+缺少标记、其他插件或旧插件不代表余额为零，客户端不得发起 `account.balance`。
+标记只证明插件实现了此方法，不证明宿主已登录或当前账户有余额。
+
+`account.balance` 请求：
+
+```json
+{"client":{"version":"0.9.5","locale":"zh-Hans","timezoneOffsetSeconds":28800}}
+```
+
+宿主先探测原生严格端点 `account/getState` 与 `account/getBalance`，再以 owner peer 调用。
+只接受官方 `https://platform.deepseek.com/top_up`（无凭据、端口、query、fragment），
+不查询 API-key REST、不依据会话当前 provider/model 推断登录。响应为以下互斥形状：
+
+```json
+{"status":"unsupported"}
+{"status":"signed-out"}
+{"status":"unavailable"}
+{"status":"ready","wallets":[{"currency":"CNY","balance":"12.3400"}],"bonusWallets":[{"currency":"CNY","balance":"1e-8"}],"topUpURL":"https://platform.deepseek.com/top_up"}
+```
+
+`wallets` 是充值钱包，`bonusWallets` 是赠金钱包；按 CNY/USD 分开展示，不相加、不换汇。
+金额是原样十进制字符串（含科学计数法），合法真实 `"0"` 可显示，但非法、缺失或失败绝不默认零。
+ready 需要非空充值钱包、合法币种/金额、官方链接，不能仅凭 `credential-stored`。
+
+原生 `getBalance` 自身捕获 credential lifetime，grant 切换时返回 null；Mizar 不读取 grant，
+也不自行比较或传输账户身份。ready 返回后仅同步白名单校验并立即返回，**不再 await getState**，
+避免在原生 lifetime 检查后扩大 A→B 切换窗口；余额是原生查询时的快照，不承诺后台实时更新。
+只有 null/failed 时重新 `getState`：若明确 signed-out 则回 signed-out，否则 unavailable。
+无效钱包直接 unavailable，不把切换中临时不可用误报为未登录。
+同为 credential-stored 的账号切换隔离只在原生 getBalance lifetime 检查范围内成立，
+不是前后状态字符串比较；账户可在快照返回后改变，需要显式刷新获取新快照。
+原生状态、attempt、profile、token、凭据及账户身份不进入响应或日志。
+
+客户端断线/换连接立即清空余额；同 host 重连亦为不同连接。每次刷新递增请求代次并清旧值，
+旧连接或旧刷新迟到响应不得覆盖新状态。请求异常、解码失败、超时显示失败而非旧余额。
+充值入口仅 ready 时显示，打开固定官方网页，不执行充值请求或传递凭据。
+
+### 已结束轮次总结工具栏与分支
+
+`session.messages` 的 `turn/end.data` 可向后兼容携带：
+
+- `mizarTokenUsage`：官方 `deriveTurnTokenUsage` 的精确完整轮次结果（含 `totalTokens`）；只对原始连续 `turn/start` 至 `turn/end` 窗口折叠，缺生命周期、用量或页边界不完整时省略。不是会话累计 meter 的差值，也不估算零。
+- `mizarBranchUnavailable`：完整窗口中最后文本总结后有工具活动、非文本回答、重试或错误则为 true；窗口不完整时省略，表示 unknown，不能伪称 blocked 或 safe。同一精确 endSeq 的缓存已证元数据不会被部分页的 unknown 抹掉。旧插件没有此字段时客户端保守禁用并说明需刷新/升级，不假装支持。
+
+`session.fork` 请求必须携带 `{sessionId, atSeq}`，`atSeq` 是所选轮次的真实 inclusive `turn/end.seq`，不是总结 seq、轮次数字或当前最新轮。服务端验证该边界存在、窗口完整及总结之后没有不合法尾部，再调用 DSH `session/fork`；失败绝不省略 atSeq 或改用最新边界。响应 `{sessionId}` 是继承真实上下文的新会话，由现有会话列表/历史/选择流程打开。源会话正在运行不妨碍对合法历史轮次分支。
+
+客户端复制完整原始总结；无总结、运行中或仅推断结束不显示工具栏。token 只读，缺值显示不可用。时间取总结消息时间，本地时区固定24h：今天 `HH:mm`，同年 `M月d日 HH:mm`，跨年 `yyyy年M月d日 HH:mm`；缺时间不可替换为当前时间。分支请求中禁用连点；切换源会话、主机或连接后迟到响应不得强制导航。
+

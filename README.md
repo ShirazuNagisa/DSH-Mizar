@@ -159,6 +159,32 @@ DSH 自己的 Web 接口暴露出去（那是 DSH 的安全边界，插件不碰
 
 协议细节（`relay.set`、`host.info.relay`、`relay.changed`）见 `docs/protocol-v1.md`。
 
+### 完成回复的用量、分支与账户余额（0.8.9）
+
+手机端在「已完成」的回复下多了一行工具栏（复制 / 分支 / token 用量 / 本地时间），并新增了
+账户余额页。数据都由插件按 DSH 自己的语义给出，缺数据就是 unknown，绝不估算或补零：
+
+- **整轮用量 `mizarTokenUsage`** 挂在 `turn/end.data` 上。只折叠原始连续 `turn/start` →
+  `turn/end` 窗口，用官方 `deriveTurnTokenUsage` 的纯函数；构建时把它打进
+  `lib/bridge/turn-usage-fold.js`，安装后的插件不依赖宿主的 token-meter 运行时。页边界
+  不完整或缺少生命周期时省略该字段，客户端显示不可用。
+- **能否分支 `mizarBranchUnavailable`**：这一轮总结之后还有工具活动、非文本回答、重试或
+  错误时为 true；窗口不完整时省略（unknown），不伪称安全。旧插件没有这个字段，客户端
+  保守禁用并提示刷新/升级。
+- **按轮分支 `session.fork`**：请求带 `atSeq`（所选轮次真实的 inclusive `turn/end.seq`），
+  插件先验证该边界存在、窗口完整、总结之后没有非法尾部，再调用 DSH 的 `session/fork`。
+  验证失败直接报错，不会退化成「用最新轮」。
+- **官方账户余额 `account.balance`**：只有 `host.info.plugin.capabilities` 含
+  `deepseek.balance.v1` 时客户端才调用。插件只走宿主原生账户端点，不读 API-key REST、
+  不传输凭据或账户身份；金额是原样十进制字符串，unsupported / signed-out / unavailable
+  与真实的 `0` 严格区分，失败绝不显示为零。充值入口只会打开固定的官方
+  `https://platform.deepseek.com/top_up`，插件不发起任何充值请求。
+- **子代理 activity**：`session.activity` 增加 `parentSessionId`，子会话按父会话的地址读
+  日志，与 `session.messages` 的寻址方式一致。
+
+协议细节（`account.balance`、`mizarTokenUsage`/`mizarBranchUnavailable`、`session.fork`）见
+`docs/protocol-v1.md`。
+
 ### 对话只传总结
 
 一页历史里只保留这些：你的提问、每一轮的 `turn/start` 和 `turn/end`、每个 `step/start`

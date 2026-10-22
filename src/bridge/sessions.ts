@@ -352,7 +352,62 @@ function assistantText(event: Record<string, unknown>): string | null {
  * @param records - one page, oldest first, exactly as the gateway returned it.
  * @returns the records worth sending.
  */
-function summaryRecords(records: readonly unknown[]): unknown[] {
+type UsageFold = typeof import('@deepseek-ai/dsh-token-meter/client').deriveTurnTokenUsage
+let usageFold: Promise<UsageFold | undefined> | undefined
+function loadUsageFold(): Promise<UsageFold | undefined> {
+  // Local published bundle: missing/broken accounting never breaks session reads.
+  return usageFold ??= import('./turn-usage-fold.js').then((module) => module.deriveTurnTokenUsage).catch(() => undefined)
+}
+
+/** Keep only complete contiguous turn-local windows; never sum a paged fragment. */
+function turnWindows(records: readonly unknown[]): Map<unknown, Record<string, unknown>[]> {
+  const windows = new Map<unknown, Record<string, unknown>[]>()
+  let current: Record<string, unknown>[] = []
+  let turn: unknown
+  let previous: number | undefined
+  for (const record of records) {
+    const event = eventOf(record)
+    if (event === null) continue
+    const seq = event['seq']
+    if (event['type'] === 'turn/start') {
+      current = []
+      turn = turnOf(event)
+      previous = undefined
+    }
+    if (turn === undefined) continue
+    if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || (previous !== undefined && seq !== previous + 1)) {
+      current = []; turn = undefined; previous = undefined; continue
+    }
+    current.push(event)
+    previous = seq
+    if (event['type'] === 'turn/end') {
+      if (turnOf(event) === turn) windows.set(turn, current)
+      current = []; turn = undefined; previous = undefined
+    }
+  }
+  return windows
+}
+
+/** Desktop tail rule: the last text must also be the last transcript content. */
+function branchUnavailable(events: readonly Record<string, unknown>[]): boolean {
+  let closing: number | undefined
+  let latest: number | undefined
+  for (const event of events) {
+    const seq = event['seq']
+    if (typeof seq !== 'number') continue
+    const type = event['type']
+    if (type === 'assistant/message') {
+      latest = seq
+      if (assistantText(event) !== null) closing = seq
+    } else if (type === 'tool/call' || (type === 'tool/result' && event['surfaceOp'] === 'append') || type === 'llm/retry'
+      || (type === 'turn/end' && (event['data'] as { reason?: { kind?: string } } | undefined)?.reason?.kind === 'error')) latest = seq
+  }
+  return closing === undefined || latest !== closing
+}
+
+async function summaryRecords(records: readonly unknown[]): Promise<unknown[]> {
+  const derive = await loadUsageFold()
+  const windows = turnWindows(records)
   /** Assistant messages that are their turn's last word, and have one. */
   const summaries = new Set<unknown>()
   const ended = new Set<unknown>()
@@ -395,6 +450,23 @@ function summaryRecords(records: readonly unknown[]): unknown[] {
     // is appended. See {@link withAttachmentPlaceholders}.
     .map((record) => {
       const event = eventOf(record)
+      if (event?.['type'] === 'turn/end') {
+        const events = windows.get(turnOf(event))
+        // A partial page cannot establish branch safety either. Re-reading a
+        // complete turn may upgrade this metadata, but never invents usage.
+        let usage: ReturnType<UsageFold>
+        try { usage = events === undefined ? undefined : derive?.(events as unknown as Parameters<UsageFold>[0]) } catch { usage = undefined }
+        const enriched = {
+          ...event,
+          data: {
+            ...(event['data'] as Record<string, unknown>),
+            ...(events === undefined ? {} : { mizarBranchUnavailable: branchUnavailable(events) }),
+            ...(usage === undefined ? {} : { mizarTokenUsage: usage }),
+          },
+        }
+        return typeof (record as { event?: unknown }).event === 'object'
+          ? { ...(record as Record<string, unknown>), event: enriched } : enriched
+      }
       return event?.['type'] === 'user/message' ? withAttachmentPlaceholders(record, event) : record
     })
 }
@@ -760,7 +832,7 @@ export async function sessionMessages(
   }
 
   const records = page.records
-  const summarized = summaryRecords(records)
+  const summarized = await summaryRecords(records)
   // Only what the phone does not already hold. Filtered after the summary and
   // before the budget, for the same two reasons in opposite directions: the
   // summary decides which records are worth sending at all, and an old record
@@ -1355,14 +1427,17 @@ function cappedActivityEntries(
  * @param ctx - a context observing `ctx.typertGateway`.
  * @param sessionId - the session to inspect.
  * @param maxEntries - how many rows the client wants; capped, default 200.
+ * @param parentSessionId - the parent of a delegated child, naming the log
+ *   through its lineage. See {@link logAddress}.
  * @returns the running turn's rows, or an empty feed when nothing runs.
  */
 async function currentActivity(
   ctx: Context,
   sessionId: string,
   maxEntries: number | undefined,
+  parentSessionId: string | undefined,
 ): Promise<SessionActivityResult> {
-  const page = await readLogPage(ctx, sessionId, ACTIVITY_PAGE_MESSAGES)
+  const page = await readLogPage(ctx, sessionId, ACTIVITY_PAGE_MESSAGES, undefined, parentSessionId)
   if (page === null) {
     // No cut, no page: the session has no log to read.
     return { sessionId, asOfSeq: null, turn: null, entries: [], hasMore: false, oldestSeq: null }
@@ -1417,6 +1492,8 @@ async function currentActivity(
  * @param beforeSeq - read the page before this log position.
  * @param turn - the running turn the page belongs to.
  * @param maxEntries - how many rows the client wants; capped, default 200.
+ * @param parentSessionId - the parent of a delegated child, naming the log
+ *   through its lineage. See {@link logAddress}.
  * @returns the turn's rows in that page, oldest first.
  */
 async function olderActivity(
@@ -1425,8 +1502,9 @@ async function olderActivity(
   beforeSeq: number,
   turn: number,
   maxEntries: number | undefined,
+  parentSessionId: string | undefined,
 ): Promise<SessionActivityResult> {
-  const page = await readLogPage(ctx, sessionId, ACTIVITY_PAGE_MESSAGES, beforeSeq)
+  const page = await readLogPage(ctx, sessionId, ACTIVITY_PAGE_MESSAGES, beforeSeq, parentSessionId)
   if (page === null) {
     // The session is unknown, or has no readable log. The turn is echoed
     // because the caller named it, and `hasMore: false` is the stop it needs.
@@ -1490,6 +1568,12 @@ async function olderActivity(
  *   newest one. Requires `turn`.
  * @param turn - the running turn a backwards page belongs to. Ignored without
  *   `beforeSeq`, because a forward read names its own turn.
+ * @param parentSessionId - the parent of a delegated child. The activity read
+ *   opens the same log the same way `session.messages` does, so a child named
+ *   bare is refused with `session/agent-busy` before anything is read; the
+ *   parent is what makes a child's activity readable at all. No shipped
+ *   client polls a child's activity yet -- the parameter is the pure addition
+ *   that keeps a future poller from reintroducing the refused read.
  * @returns the running turn's rows, or an empty feed when nothing runs.
  * @throws MethodError when `beforeSeq` is given without `turn`.
  */
@@ -1499,6 +1583,7 @@ export async function sessionActivity(
   maxEntries?: number,
   beforeSeq?: number,
   turn?: number,
+  parentSessionId?: string,
 ): Promise<SessionActivityResult> {
   if (beforeSeq !== undefined) {
     // The wire refuses this pair in the other order too; here it is a caller
@@ -1506,9 +1591,9 @@ export async function sessionActivity(
     if (turn === undefined) {
       throw new MethodError('MALFORMED_FRAME', 'session.activity: a backwards page needs a turn')
     }
-    return olderActivity(ctx, sessionId, beforeSeq, turn, maxEntries)
+    return olderActivity(ctx, sessionId, beforeSeq, turn, maxEntries, parentSessionId)
   }
-  return currentActivity(ctx, sessionId, maxEntries)
+  return currentActivity(ctx, sessionId, maxEntries, parentSessionId)
 }
 
 /** A newly created or resumed session. */
@@ -1584,6 +1669,35 @@ export async function createSession(
     sessionId: value.sessionId,
     agentPreset: typeof value.agentPreset === 'string' ? value.agentPreset : null,
   }
+}
+
+/** Fork only a proven completed response boundary, never a guessed latest turn. */
+export async function forkSession(
+  ctx: Context,
+  options: { sessionId: string; atSeq: number },
+): Promise<{ sessionId: string }> {
+  if (!Number.isSafeInteger(options.atSeq) || options.atSeq < 0 || options.atSeq >= Number.MAX_SAFE_INTEGER) {
+    throw new MethodError('MALFORMED_FRAME', 'The branch boundary is not a safe log position.')
+  }
+  const page = await readLogPage(ctx, options.sessionId, 1000, options.atSeq + 1)
+  const end = page?.records.map(eventOf).find((event) => event?.['seq'] === options.atSeq)
+  if (end?.['type'] !== 'turn/end') {
+    throw new MethodError('REMOTE_ERROR', 'The selected completed turn boundary could not be verified. Refresh the conversation and try again.')
+  }
+  const events = turnWindows(page?.records ?? []).get(turnOf(end))
+  if (events === undefined || branchUnavailable(events)) {
+    throw new MethodError('REMOTE_ERROR', 'This response cannot be branched: its complete closing boundary is unavailable or later tool activity or an error follows it.')
+  }
+  const value = await invokeRemote(ctx, {
+    namespace: 'session',
+    method: 'fork',
+    args: { request: { sessionId: options.sessionId, atSeq: options.atSeq } },
+    signal: AbortSignal.timeout(60_000),
+  }) as { sessionId?: unknown } | undefined
+  if (typeof value?.sessionId !== 'string' || value.sessionId === '') {
+    throw new MethodError('REMOTE_ERROR', 'session.fork returned no session id')
+  }
+  return { sessionId: value.sessionId }
 }
 
 /** Acceptance of a prompt. */

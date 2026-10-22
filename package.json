@@ -1,6 +1,6 @@
 {
   "name": "dsh-mizar",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "description": "Remote monitoring and guidance for DSH agents — host plugin backing the DSH-Mizar iOS app.",
   "license": "GPL-3.0-only",
   "type": "module",
@@ -17,8 +17,8 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node client/build.mjs",
-    "build:host": "tsc -p tsconfig.json",
+    "build": "npm run build:host && node client/build.mjs",
+    "build:host": "tsc -p tsconfig.json && node scripts/build-turn-usage.mjs",
     "build:client": "node client/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit",
     "test": "vitest run",

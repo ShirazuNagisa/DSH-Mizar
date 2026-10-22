@@ -17,7 +17,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '../src/dsh.js'
-import { sessionActivity, sessionMessages } from '../src/bridge/sessions.js'
+import { forkSession, sessionActivity, sessionMessages } from '../src/bridge/sessions.js'
 
 /** One gateway invocation as the bridge issues it. */
 interface Invocation {
@@ -95,6 +95,7 @@ function fakeGateway(script: Script = {}): { ctx: Context; wire: Wire; closed: (
       if (request.method === 'projections') {
         return script.projections === undefined ? { asOfSeq: 7, values: {} } : script.projections
       }
+      if (request.method === 'fork') return { sessionId: 'branch-child' }
       if (request.method === 'page') {
         return {
           records: script.pageRecords ?? pageRecordsOf(frames),
@@ -275,6 +276,33 @@ describe('the page cut', () => {
     })
     const page = wire.invokes.find((call) => call.method === 'page')
     expect((page?.args['request'] as { address?: unknown }).address).toEqual(child)
+  })
+
+  it('addresses a child activity page through its parent, the way messages does', async () => {
+    // The activity read opens the same log the same way, so a child named bare
+    // would earn the same refusal. No shipped client polls a child's activity
+    // yet; the parameter is the pure addition that keeps a future poller from
+    // reintroducing the refused read.
+    const { ctx, wire } = fakeGateway({
+      frames: [{ type: 'snapshot', cursor: 9, records: [] }],
+    })
+
+    await sessionActivity(ctx, 'child-1', undefined, undefined, undefined, 'parent-1')
+    await sessionActivity(ctx, 'top-1')
+
+    const child = {
+      kind: 'subagent',
+      parentSessionId: 'parent-1',
+      childSessionId: 'child-1',
+      mode: 'unknown',
+    }
+    const address = (call: Invocation | undefined) =>
+      (call?.args['request'] as { address?: unknown }).address
+    expect(address(wire.streams[0])).toEqual(child)
+    expect(address(wire.invokes.find((call) => call.method === 'page'))).toEqual(child)
+    expect(wire.streams[1]?.args).toEqual({
+      request: { address: { kind: 'session', sessionId: 'top-1' } },
+    })
   })
 
   it('keeps a fork addressed as a session, because a fork is not a child', async () => {
