@@ -122,3 +122,47 @@ macOS 上有意义，已随 iOS 客户端移到独立仓库，不构成 Windows 
 
 **必须重启 DSH**：bundles 在启动时解析，插件行由 bundle patch 插入。回滚＝还原备份的两个文件并删除
 `node_modules/dsh-mizar`。
+
+## npm 覆盖安装的 pnpm 竞态（2026-10-23）
+
+一台 Windows 11 机器把插件从旧版覆盖安装到 0.8.9 时失败，报错就是用户看到的这条：
+
+```
+[ERR_PNPM_ENOENT] [importPackage C:\Users\guoqi\.dsh\profiles\desktop\node_modules\dsh-mizar]
+ENOENT: no such file or directory, scandir
+  '...\node_modules\dsh-mizar_tmp_17328_1\node_modules'
+```
+
+排查结论：
+
+- **不是包的问题。** 0.8.9 的 npm tarball 和 0.8.8 只差 4 个新文件（`lib/bridge/balance.*`、
+  `lib/bridge/turn-usage-fold.*`）加 `package.json` 的版本/脚本两处；registry 记录的
+  `sha512-vTJJdYtf…` 与实际下载内容的 sha512 一致。用 DSH 自带的 pnpm 11.28.5 和 profile 模板
+  的 `nodeLinker: hoisted` + `autoInstallPeers: false`，在 macOS 上验过两条路都 exit 0：
+  干净目录 `add dsh-mizar@0.8.9`、已有 0.8.8 时 `add dsh-mizar@0.8.9`（覆盖路径）。
+- **是 pnpm 在 Windows 上替换已有包目录的竞态。** hoisted 安装覆盖旧目录时，pnpm 先把新包解到
+  `<pkg>_tmp_<pid>_<thread>` 再改名（`importWithStaging` → `moveOrMergeModulesDirs`）；Windows 上
+  改名遇到文件锁/杀毒扫描会走 merge 分支，而 staging 里的 `node_modules` 不存在，于是
+  `readdirSync` 直接 ENOENT。上游同签名记录：[pnpm#6961](https://github.com/pnpm/pnpm/issues/6961)
+  （Windows only、版本更新时出现、清理 store/node_modules 后才恢复）；相关的老竞态
+  [#12880](https://github.com/pnpm/pnpm/issues/12880)（已在 11.25.0 修，症状是另一处 `_tmp_`
+  rename）、[#5672](https://github.com/pnpm/pnpm/issues/5672)。同类现象在另一个 DSH 插件上也有
+  记录并靠自动重试解决：[dsh-TUI#225](https://github.com/ccch1mneyyy/dsh-TUI/issues/225)。
+- **DSH 侧没有可改的地方，但可以绕过。** 0.2.1-rc.2 的 plugin-manager 在 pnpm 失败后会回滚
+  `package.json`/`pnpm-lock.yaml`，但**不回滚 `node_modules`**（其已知限制里也写明失败安装可能
+  留下半成品文件），所以重试可能继续撞上同一个半成品目录。可靠做法是退出 DSH 后删掉
+  `node_modules/dsh-mizar` 和 `dsh-mizar_tmp_*`，目标目录不存在时 pnpm 走直装路径，不进入
+  上述 staging 分支。用户级命令写在 README「Windows: 覆盖安装/升级报 `ERR_PNPM_ENOENT`」一节。
+- **根治位置**：DSH 插件管理器对 `ERR_PNPM_ENOENT` + `_tmp_`/`importPackage` 特征的失败自动
+  重试一次（dsh-TUI 的做法），或升级内置 pnpm。插件包无法规避：报错发生在 pnpm 把包搬进
+  profile 的阶段，插件内容还没被解包。
+
+本轮验证记录（macOS、DSH 自带工具链）：
+
+| 操作 | 结果 |
+|---|---|
+| 空 profile `pnpm add dsh-mizar@0.8.9`（pnpm 11.28.5，hoisted） | exit 0，装成 0.8.9，2 个包（dsh-mizar + ws） |
+| 已有 0.8.8 的 profile `pnpm add dsh-mizar@0.8.9` | exit 0，覆盖为 0.8.9，无 `*_tmp_*` 残留 |
+| registry tarball sha512 与实际内容比对 | 一致 |
+| 0.8.8 ↔ 0.8.9 tarball 内容 diff | 仅 4 个新 lib 文件 + package.json 版本/脚本 |
+

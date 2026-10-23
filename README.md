@@ -67,6 +67,52 @@ dsh plugin --profile desktop add /path/to/dsh-mizar-0.8.4.tgz
 
 > GUI 的安装框走的是本机默认 registry;镜像没同步时,用上面的 CLI 命令更稳。
 
+### Windows: 覆盖安装/升级报 `ERR_PNPM_ENOENT ... dsh-mizar_tmp_*`
+
+Windows 上**覆盖已有旧版**时(profile 里已经有 `dsh-mizar`),pnpm 的 hoisted 安装会先把新包解到
+`node_modules\dsh-mizar_tmp_<pid>_<n>`,再替换旧目录;这一步在 Windows 上会撞上文件锁 /
+杀毒软件扫描的竞态,报:
+
+```
+[ERR_PNPM_ENOENT] [importPackage C:\Users\<you>\.dsh\profiles\desktop\node_modules\dsh-mizar]
+ENOENT: no such file or directory, scandir '...\node_modules\dsh-mizar_tmp_<pid>_<n>\node_modules'
+```
+
+这是 **pnpm 在 Windows + `nodeLinker: hoisted` 下替换包目录的已知竞态**,不是 npm 包损坏:
+[#6961](https://github.com/pnpm/pnpm/issues/6961) 是同一串报错(讨论里在 11.27+ 的新版 Windows
+上没能复现);其他 DSH 插件也遇到过并靠重试解决([dsh-TUI#225](https://github.com/ccch1mneyyy/dsh-TUI/issues/225))。
+同一份 0.8.9 tarball 在 macOS 上,用 DSH 自带的 pnpm 11.28.5 和同样的 hoisted 配置,
+**全新安装**和 **0.8.8 → 0.8.9 覆盖升级**都能装好,registry 的 sha512 也与包内容一致。
+
+DSH 0.2.1-rc.2 的插件管理器在 pnpm 失败后会回滚 `package.json` 和 `pnpm-lock.yaml`;
+**`node_modules` 不会被回滚**(DSH 自己的已知限制里也写了失败安装可能留下半成品文件),
+所以重试可能继续撞上同一个半成品目录。按顺序处理:
+
+1. **原样重试一次**。这是竞态,第二次通常就成功:
+   ```sh
+   dsh plugin --profile desktop add dsh-mizar@0.8.9
+   ```
+2. 仍报同一个 `_tmp_` 错误:先**完全退出 DSH**(任务栏托盘也要退出),在 PowerShell 里清掉
+   半成品目录再装。目标目录不存在时 pnpm 走的是不会触发该竞态的直装路径:
+   ```powershell
+   $p = "$env:USERPROFILE\.dsh\profiles\desktop"
+   Remove-Item -Recurse -Force "$p\node_modules\dsh-mizar" -ErrorAction SilentlyContinue
+   Get-ChildItem "$p\node_modules" -Directory -Filter "dsh-mizar_tmp_*" | Remove-Item -Recurse -Force
+   dsh plugin --profile desktop add dsh-mizar@0.8.9
+   ```
+3. 确认版本,然后重启 DSH(插件只在启动时加载):
+   ```powershell
+   (Get-Content "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-mizar\package.json" | ConvertFrom-Json).version
+   # 输出 0.8.9 才是装对了
+   ```
+
+图形界面安装同理:先重试一次;还失败就先退出 DSH、按上面清目录,再从界面装。
+三步之后仍不行时,把 `%USERPROFILE%\.dsh\profiles\desktop\.plugin-manager\logs` 里最新的日志
+留下来——里面有 pnpm 的完整输出,可以直接看出是下载、校验还是链接哪一步失败。
+
+> 根治在 DSH 的插件管理器给它做一次自动重试(或者升级内置 pnpm),插件包本身没有可改的地方:
+> 报错发生在 pnpm 把包搬进 profile 的那一步,插件还没被解包。
+
 ### 版本必须与 DSH 对齐
 
 DSH 会**精确比对**插件声明的 `@deepseek-ai/dsh-*` 与运行时版本，不匹配时安装会被拒绝：
