@@ -1,5 +1,5 @@
 import type { Context } from '../dsh.js';
-import { type SessionStatsFrame } from './stats.js';
+import { type ContextPressureView, type SessionStatsFrame } from './stats.js';
 import { type PromptAttachment } from './uploads.js';
 /** One row in the session list. */
 export interface SessionRow {
@@ -101,6 +101,19 @@ export interface SessionMessagesResult {
      */
     readonly records: readonly unknown[];
     readonly hasMore: boolean;
+    /**
+     * Context-window occupancy and its breakdown, as of this read.
+     *
+     * Always present: every page carries it, full and incremental both, so the
+     * figure above the composer updates with whatever refresh the screen runs
+     * rather than only with a separate `session.stats` read an incremental
+     * refresh never makes. Same derivation as `session.stats`'s `context` field
+     * (see the `buildContextPressure` call in {@link readLogPage}); `null` when
+     * the host has no `contextPressure` projection to answer from -- absent is
+     * unknown, never zero. Additive: an older client ignores the key and an older
+     * host omits it, so this needs no protocol version change.
+     */
+    readonly context: ContextPressureView | null;
 }
 /** One compact line of a running turn's process. */
 export interface SessionActivityEntry {

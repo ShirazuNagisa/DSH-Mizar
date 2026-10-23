@@ -485,6 +485,7 @@ describe('the page cut', () => {
       asOfSeq: null,
       records: [],
       hasMore: false,
+      context: null,
     })
     expect(wire.invokes.map((call) => call.method)).toEqual(['projections'])
   })
@@ -506,6 +507,80 @@ describe('the page cut', () => {
       maxMessages: 25,
     })
     expect(result.hasMore).toBe(true)
+  })
+})
+
+describe('the context figure on a page', () => {
+  // What the composer's occupancy ring and its detail popover draw. The figure
+  // used to arrive only from `session.stats`, and an incremental refresh -- the
+  // refresh an open screen actually runs -- never asked for one, so a running
+  // turn's context use was frozen at whatever the last full load saw.
+  const pressure = { contextWindow: 128_000, projectedTokens: 64_000, pressureTokens: 60_000 }
+  const breakdown = { systemTokens: 1_000, toolsTokens: 2_000, messageTokens: 3_000 }
+  const expected = {
+    window: 128_000,
+    pressureTokens: 60_000,
+    projectedTokens: 64_000,
+    percent: 50,
+    breakdown: { systemTokens: 1_000, toolsTokens: 2_000, messageTokens: 3_000 },
+  }
+
+  it('rides on a full page from the follow opening frame, with no extra read', async () => {
+    const { ctx, wire } = fakeGateway({
+      frames: [{
+        type: 'snapshot',
+        cursor: 41,
+        records: [],
+        projections: { asOfSeq: 41, values: { contextPressure: pressure, contextBreakdown: breakdown } },
+      }],
+    })
+
+    const result = await sessionMessages(ctx, 's1')
+
+    expect(result.context).toEqual(expected)
+    // The opening frame already carried the baseline. A second projections read
+    // here is exactly the cost this file refuses to pay when the stream answers.
+    expect(wire.invokes.map((call) => call.method)).toEqual(['page'])
+  })
+
+  it('rides on an incremental page too, so a polling refresh keeps it current', async () => {
+    const { ctx } = fakeGateway({
+      frames: [{
+        type: 'snapshot',
+        cursor: 41,
+        records: [],
+        projections: { asOfSeq: 41, values: { contextPressure: pressure, contextBreakdown: breakdown } },
+      }],
+      pageRecords: [],
+    })
+
+    // The data-saving refresh: only records after the cursor travel, but the
+    // occupancy figure and its breakdown still come with the page.
+    const result = await sessionMessages(ctx, 's1', undefined, undefined, 40)
+
+    expect(result.context).toEqual(expected)
+  })
+
+  it('comes from the projections reply when the stream will not open', async () => {
+    const { ctx, wire } = fakeGateway({
+      streamThrows: true,
+      projections: { asOfSeq: 12, values: { contextPressure: pressure, contextBreakdown: breakdown } },
+    })
+
+    const result = await sessionMessages(ctx, 's1')
+
+    expect(result.context).toEqual(expected)
+    expect(wire.invokes.map((call) => call.method)).toEqual(['projections', 'page'])
+  })
+
+  it('says unknown rather than zero when the host has no context projection', async () => {
+    // An older host, or a deployment without the token-meter: absent is
+    // unknown. A zero here would draw an empty context window as a fact.
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 2, records: [] }] })
+
+    const result = await sessionMessages(ctx, 's1')
+
+    expect(result.context).toBeNull()
   })
 })
 

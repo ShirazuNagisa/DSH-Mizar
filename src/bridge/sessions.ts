@@ -38,7 +38,7 @@ import type { Context } from '../dsh.js'
 import { recordSeq } from './delivery.js'
 import { invokeRemote, streamRemote } from './invoke.js'
 import { MethodError } from './method-error.js'
-import { buildStatsFrame, STATS_KEYS, type SessionStatsFrame } from './stats.js'
+import { buildContextPressure, buildStatsFrame, STATS_KEYS, type ContextPressureView, type SessionStatsFrame } from './stats.js'
 import { enforcePromptLimits, filePartName, type PromptAttachment } from './uploads.js'
 import { archivedSessionIds, resolveWorkspaceId } from './workspaces.js'
 
@@ -644,11 +644,15 @@ function logAddress(sessionId: string, parentSessionId?: string): SessionLogAddr
  * session live for as long as the request, and one subscription per refresh is a
  * leak that only shows up after an hour of use.
  *
+ * The same frame also carries the projection baseline, which is where
+ * {@link readLogPage} gets the page's context figure. It is the read a page
+ * already pays for; the context figure costs no second one.
+ *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @param address - the durable address to open; see {@link logAddress}.
- * @returns the cursor, or `null` when the host would not answer this way.
+ * @returns the opening frame, or `null` when the host would not answer this way.
  */
-async function followCursor(ctx: Context, address: SessionLogAddress): Promise<number | null> {
+async function followOpening(ctx: Context, address: SessionLogAddress): Promise<ProjectionBaseline | null> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), FOLLOW_TIMEOUT_MS)
   try {
@@ -661,12 +665,20 @@ async function followCursor(ctx: Context, address: SessionLogAddress): Promise<n
     const iterator = iterable[Symbol.asyncIterator]()
     try {
       const first = await iterator.next()
-      const frame = first.value as { type?: unknown; cursor?: unknown } | undefined
+      const frame = first.value as {
+        type?: unknown
+        cursor?: unknown
+        projections?: unknown
+      } | undefined
       // Only a snapshot is a cut. An event frame first would mean the stream
       // opened mid-log, and paging at a cursor taken from the middle of one is
       // how half a turn ends up on the screen.
       if (frame === undefined || frame.type !== 'snapshot') return null
-      return typeof frame.cursor === 'number' && Number.isFinite(frame.cursor) ? frame.cursor : null
+      if (typeof frame.cursor !== 'number' || !Number.isFinite(frame.cursor)) return null
+      // The same frame carries the projection baseline, which is where the
+      // page's context figure comes from -- no second read. See
+      // {@link projectionValues}.
+      return { cut: frame.cursor, values: projectionValues(frame.projections) }
     } finally {
       // Closes the stream. Without it the subscription outlives the request.
       // Best effort: a carrier that dies while being closed must not turn an
@@ -697,8 +709,37 @@ async function followCursor(ctx: Context, address: SessionLogAddress): Promise<n
  */
 const READ_TIMEOUT_MS = 30_000
 
+/** A cut and the projection values read at it. */
+interface ProjectionBaseline {
+  /** The inclusive log cut, or `null` when the host named none. */
+  readonly cut: number | null
+  /** Every projection value available at that cut; empty when none came back. */
+  readonly values: Readonly<Record<string, unknown>>
+}
+
 /**
- * The log cut, from a `session/projections` read.
+ * Projection values from a baseline-shaped object, or an empty set.
+ *
+ * Both reads that can name the cut -- the follow opening frame and the
+ * `session/projections` fallback -- carry the projection baseline. The page
+ * derives the context figure from those values rather than paying for another
+ * projections read on every refresh, which is the read this file already
+ * refuses to make when the stream answers. A host that sends no baseline (or
+ * an older one without the context projections) yields no values, and with
+ * them no context figure: unknown, never zero.
+ *
+ * @param value - a projection baseline, or anything else.
+ * @returns its `values` object, or an empty record.
+ */
+function projectionValues(value: unknown): Readonly<Record<string, unknown>> {
+  const values = (value as { values?: unknown } | null | undefined)?.values
+  return typeof values === 'object' && values !== null
+    ? (values as Record<string, unknown>)
+    : {}
+}
+
+/**
+ * The log cut and projection values, from a `session/projections` read.
  *
  * The fallback, for a host that cannot open a follow stream -- older than the
  * endpoint, or composed without a stream carrier -- and for a first frame that
@@ -708,9 +749,9 @@ const READ_TIMEOUT_MS = 30_000
  *
  * @param ctx - a context observing `ctx.typertGateway`.
  * @param sessionId - the session to read.
- * @returns the cut, or `null` when the session is unknown.
+ * @returns the cut (or `null` when the session is unknown) and its values.
  */
-async function projectionsCut(ctx: Context, sessionId: string): Promise<number | null> {
+async function projectionsAt(ctx: Context, sessionId: string): Promise<ProjectionBaseline> {
   const value = (await invokeRemote(ctx, {
     namespace: 'session',
     method: 'projections',
@@ -718,7 +759,10 @@ async function projectionsCut(ctx: Context, sessionId: string): Promise<number |
     signal: AbortSignal.timeout(READ_TIMEOUT_MS),
   })) as { asOfSeq?: unknown } | null | undefined
 
-  return typeof value?.asOfSeq === 'number' && Number.isFinite(value.asOfSeq) ? value.asOfSeq : null
+  return {
+    cut: typeof value?.asOfSeq === 'number' && Number.isFinite(value.asOfSeq) ? value.asOfSeq : null,
+    values: projectionValues(value),
+  }
 }
 
 /** One raw page of a session's log, as the host returned it. */
@@ -729,6 +773,11 @@ interface LogPage {
   readonly records: readonly unknown[]
   /** Whether the host says older records exist before this page. */
   readonly hasMore: boolean
+  /**
+   * Context-window occupancy and breakdown at the page's cut, or `null` when
+   * the host answered from a baseline without the context projections.
+   */
+  readonly context: ContextPressureView | null
 }
 
 /**
@@ -742,9 +791,12 @@ interface LogPage {
  * spans a long tool run still returns the requests around it rather than a
  * window of deltas.
  *
- * The cut comes from {@link followCursor}, and from {@link projectionsCut} when
+ * The cut comes from {@link followOpening}, and from {@link projectionsAt} when
  * that cannot answer. Works for a cold session: neither read activates an agent,
- * which was measured for the follow path before it was adopted here.
+ * which was measured for the follow path before it was adopted here. Both reads
+ * already carry the projection baseline, which is where the page's
+ * {@link LogPage.context} comes from -- the page does not make a second
+ * projections read for it.
  *
  * Shared by {@link sessionMessages} and {@link sessionActivity}: both start from
  * exactly the same current page, and only differ in what they keep from it.
@@ -765,7 +817,8 @@ async function readLogPage(
   parentSessionId?: string,
 ): Promise<LogPage | null> {
   const address = logAddress(sessionId, parentSessionId)
-  const cut = (await followCursor(ctx, address)) ?? (await projectionsCut(ctx, sessionId))
+  const baseline = (await followOpening(ctx, address)) ?? (await projectionsAt(ctx, sessionId))
+  const cut = baseline.cut
   if (cut === null) {
     // No cut, no page: the session has no log to read.
     return null
@@ -794,6 +847,10 @@ async function readLogPage(
     cut,
     records: Array.isArray(value?.records) ? value.records : [],
     hasMore: value?.hasMore === true,
+    // The same derivation `session.stats` uses for its `context` field: the
+    // full and incremental page alike carries the occupancy and its breakdown,
+    // so a refresh the open screen actually runs keeps the figure current.
+    context: buildContextPressure(baseline.values['contextPressure'], baseline.values['contextBreakdown']),
   }
 }
 
@@ -828,7 +885,7 @@ export async function sessionMessages(
 ): Promise<SessionMessagesResult> {
   const page = await readLogPage(ctx, sessionId, maxMessages, beforeSeq, parentSessionId)
   if (page === null) {
-    return { sessionId, asOfSeq: null, records: [], hasMore: false }
+    return { sessionId, asOfSeq: null, records: [], hasMore: false, context: null }
   }
 
   const records = page.records
@@ -853,6 +910,9 @@ export async function sessionMessages(
           return seq === null || seq > floor
         })
 
+  // Carried by the same read that named the cut, so neither the full nor the
+  // incremental refresh pays for an extra projections read: see
+  // {@link projectionValues}.
   return {
     sessionId,
     asOfSeq: page.cut,
@@ -861,6 +921,7 @@ export async function sessionMessages(
     // dropped a line later.
     records: withinBudget(fresh),
     hasMore: page.hasMore,
+    context: page.context,
   }
 }
 
@@ -886,6 +947,19 @@ export interface SessionMessagesResult {
    */
   readonly records: readonly unknown[]
   readonly hasMore: boolean
+  /**
+   * Context-window occupancy and its breakdown, as of this read.
+   *
+   * Always present: every page carries it, full and incremental both, so the
+   * figure above the composer updates with whatever refresh the screen runs
+   * rather than only with a separate `session.stats` read an incremental
+   * refresh never makes. Same derivation as `session.stats`'s `context` field
+   * (see the `buildContextPressure` call in {@link readLogPage}); `null` when
+   * the host has no `contextPressure` projection to answer from -- absent is
+   * unknown, never zero. Additive: an older client ignores the key and an older
+   * host omits it, so this needs no protocol version change.
+   */
+  readonly context: ContextPressureView | null
 }
 
 /** One compact line of a running turn's process. */
