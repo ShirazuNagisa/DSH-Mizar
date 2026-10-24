@@ -6,7 +6,7 @@
 # plugin version bump; the only open question is whether it also costs a
 # migration. This answers that every six hours:
 #
-#   pinned version == newest rc        -> nothing to do
+#   pin covers the newest rc            -> nothing to do
 #   typecheck green against the new rc -> a pull request you merge
 #   typecheck red                      -> an issue with the compiler's words
 #
@@ -50,17 +50,21 @@ jobs:
           set -euo pipefail
           published=$(npm view @deepseek-ai/dsh-base dist-tags --json | node -e \
             'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).next))')
-          # The plugin's peer pin marks which runtime it targets; every
+          # The plugin's peer range marks which runtimes it targets; every
           # @deepseek-ai/dsh-* package is released in lockstep with it.
           pinned=$(node -e 'console.log(require("./package.json").peerDependencies["@deepseek-ai/dsh-api-gateway"])')
           echo "published=$published" >> "$GITHUB_OUTPUT"
           echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
-          if [ "$published" = "$pinned" ]; then
+          # Ranges, not strings: a pin like ">=0.2.1-rc.2 <0.2.2" already covers
+          # the rc.3 it was widened for, and only a genuinely new line (0.2.2,
+          # 0.3.0) should re-arm this watch. semver's prerelease rules apply, so
+          # rc.3 satisfies a range whose >= comparator sits on the same tuple.
+          if npx --yes semver@7 "$published" -r "$pinned" >/dev/null 2>&1; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Already targeting DSH \`$pinned\`; nothing newer is published." >> "$GITHUB_STEP_SUMMARY"
+            echo "Pinned \`$pinned\` already covers DSH \`$published\`; nothing to do." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Pinned \`$pinned\`, published \`$published\` -- probing." >> "$GITHUB_STEP_SUMMARY"
+            echo "Pinned \`$pinned\` does not cover published \`$published\` -- probing." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Bump to the published rc and try to compile against it
@@ -153,6 +157,16 @@ jobs:
         run: |
           set -uo pipefail
           next='${{ steps.versions.outputs.published }}'
+          title="DSH $next breaks the plugin: migration needed"
+          # One issue per rc, not one per run: the watch fires every six hours
+          # and would otherwise bury the inbox in copies of the same compiler
+          # output. A failing gh call skips this run rather than duplicating.
+          open=$(gh issue list --state open --label dsh-upgrade \
+            --search "\"$title\" in:title" --json number --jq 'length')
+          if [ "$open" != "0" ]; then
+            echo "An issue for \`$next\` is already open; not filing a duplicate." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           {
             echo "DSH \`$next\` is out and this plugin does not come through cleanly."
             echo
@@ -181,10 +195,11 @@ jobs:
             echo 'migrate, `npm run build` so the committed `lib/` matches, then bump.'
           } > /tmp/issue-body.md
           gh issue create \
-            --title "DSH $next breaks the plugin: migration needed" \
+            --title "$title" \
             --body-file /tmp/issue-body.md \
             --label dsh-upgrade || true
           echo "Issue filed for \`$next\`: migration needed." >> "$GITHUB_STEP_SUMMARY"
-          # Also leave the run red: a scheduled run's failure is emailed to the
-          # person who last touched this file, which is half the point.
+          # Leave the first failure red: a scheduled run's failure is emailed to
+          # the person who last touched this file. Repeats stay quiet above --
+          # the open issue is the standing reminder.
           exit 1
