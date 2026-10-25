@@ -1,0 +1,54 @@
+{
+  "agreement" : {
+    "localPublicKeyHex" : "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a",
+    "localSecretHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "remotePublicKeyHex" : "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+    "sharedSecretHex" : "3f9a4e4c7c6fb48f3e48acc97ae2ab3ca560286d046b7b7f6c51f57b04f67240"
+  },
+  "clientHello" : {
+    "connectionId" : "18364758544493064720",
+    "endpointId" : "JmM5_sOYm8d-797r7zGoGszcvCTjo5xly2rgwYdVDxo",
+    "ephemeralPublicKeyHex" : "9e7dd5ab75b0c8a00c567359055b3e617507280541981a56751e31a9c96ad232",
+    "handshakeMessageHex" : "01fedcba98765432109e7dd5ab75b0c8a00c567359055b3e617507280541981a56751e31a9c96ad2324a6d4d355f734f596d38642d37393772377a476f47737a637643546a6f35786c793272677759645644786f",
+    "packetHex" : "4d5a503101fedcba9876543210008c9e7dd5ab75b0c8a00c567359055b3e617507280541981a56751e31a9c96ad2322b4a6d4d355f734f596d38642d37393772377a476f47737a637643546a6f35786c793272677759645644786fc0914f44bc86d6e72b95bfee4a87dc8f9ced08cb0f029a572dac358cc02febf79ecd405355024ae2bebc8f2635bbae00989129e09ec8e7b13e895ceb6e04f705",
+    "signatureHex" : "c0914f44bc86d6e72b95bfee4a87dc8f9ced08cb0f029a572dac358cc02febf79ecd405355024ae2bebc8f2635bbae00989129e09ec8e7b13e895ceb6e04f705"
+  },
+  "control" : {
+    "ackHex" : "4d5a503106fedcba9876543210000d03000000030000000400000005",
+    "closeHex" : "4d5a503105fedcba9876543210000403627965",
+    "keepaliveHex" : "4d5a503104fedcba98765432100000"
+  },
+  "data" : {
+    "acks" : [
+      3,
+      4,
+      5
+    ],
+    "authenticatedDataHex" : "4d5a503103fedcba98765432100030000000070000000b",
+    "connectionId" : "18364758544493064720",
+    "messageLength" : 11,
+    "packetHex" : "4d5a503103fedcba9876543210003000000007030000000300000004000000050000000b81ec4965d3b45456aba223c8e25ef8616f934d5ea88e462a82228e",
+    "packetNumber" : 7,
+    "plaintextHex" : "68656c6c6f206d697a6172",
+    "sealedHex" : "81ec4965d3b45456aba223c8e25ef8616f934d5ea88e462a82228e"
+  },
+  "identity" : {
+    "endpointId" : "u0RiZ0v8WjsxqlLOOUajpIV-q7ENSxezP1MpJskIUfU",
+    "messageHex" : "61206d6573736167652074686520686f7374207369676e6564",
+    "purpose" : "mizar-net/host/v1",
+    "secretHex" : "1111111111111111111111111111111111111111111111111111111111111111",
+    "shortId" : "QD264STB",
+    "signatureHex" : "66130ca0c4c3926eece58523b07f2542d5dce4188d31e66ab4490980ce6e77bc6ab45713874da92773c405c9cdb5a26aa1f08d0617726fb069531cda28ca1e05"
+  },
+  "note" : "MizarNet wire fixture · emitted by MizarKitTests MizarNetFixtureEmitter · byte patterns, not secrets",
+  "session" : {
+    "acceptorToDialerKeyHex" : "f0a0ec6089fcf90a4750143949c583024465266c56983f743a04b19e76320400",
+    "dialerToAcceptorKeyHex" : "efd9147aff98b5759eab3bcd0ff083a160b1484f7bf7f29aa6abe2cc0dd65080",
+    "localEndpointId" : "JmM5_sOYm8d-797r7zGoGszcvCTjo5xly2rgwYdVDxo",
+    "remoteEndpointId" : "u0RiZ0v8WjsxqlLOOUajpIV-q7ENSxezP1MpJskIUfU",
+    "saltHex" : "bc9e74ea33dca9b034912ee208f14df292a9fb5416124886813921d5b54d98d8",
+    "sharedSecretHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+  },
+  "signatureNote" : "Ed25519 signatures are randomized; verify them, do not compare them",
+  "version" : 1
+}
