@@ -27,6 +27,7 @@ import { lookup } from 'node:dns/promises'
 import { candidate, CandidateKind, punchAddresses, sortedByPriority, type Candidate } from './candidate.js'
 import { deriveIdentity, ephemeralKeyPair, verifySignature, type EndpointIdentity } from './crypto.js'
 import { STANDARD_POLICY, type Policy } from './policy.js'
+import { openPortMapping, type PortMapper, type PortMappingOptions } from './portmap.js'
 import { Session, type Health, type Stream } from './session.js'
 import { DatagramSocket, type Address, type Datagram } from './socket.js'
 import {
@@ -117,6 +118,13 @@ export class Engine {
   private readonly stunPending = new Map<string, string>()
   private readonly stunResults = new Map<string, Address>()
 
+  /** The router mapping in force, if one was granted. */
+  private mapper?: PortMapper
+  /** The address a mapping was paired with — the STUN-observed one. */
+  private mappedAddress?: string
+  private mappedCandidate?: Candidate
+  private mappingTimer?: NodeJS.Timeout
+
   private closed = false
   private receiveLoop?: Promise<void>
 
@@ -141,6 +149,14 @@ export class Engine {
     policy?: Policy
     stunServers?: readonly string[]
     socket?: DatagramSocket
+    /**
+     * Ask the router for a forwarded port. The highest-value traversal work
+     * there is: a forwarded port makes a symmetric NAT reachable, which no
+     * amount of punching can.
+     */
+    portMapping?: Omit<PortMappingOptions, 'internalPort'>
+    /** A mapper supplied by the caller — how a test stands in for a router. */
+    portMapper?: PortMapper
   }): Promise<Engine> {
     const policy = options.policy ?? STANDARD_POLICY
     const socket = options.socket ?? (await DatagramSocket.bind(0))
@@ -150,6 +166,15 @@ export class Engine {
     )
     engine.receiveLoop = engine.runReceiveLoop()
     await engine.gatherReflexiveCandidates()
+
+    if (options.portMapper !== undefined) {
+      await engine.adoptPortMapping(options.portMapper, 0)
+    } else if (options.portMapping !== undefined) {
+      const mapper = await openPortMapping({ ...options.portMapping, internalPort: socket.localPort })
+      if (mapper !== null) {
+        await engine.adoptPortMapping(mapper, options.portMapping.lifetimeSeconds ?? 0)
+      }
+    }
     return engine
   }
 
@@ -277,6 +302,15 @@ export class Engine {
     this.closed = true
     for (const timer of this.commitTimers.values()) clearInterval(timer)
     this.commitTimers.clear()
+    if (this.mappingTimer !== undefined) clearInterval(this.mappingTimer)
+    this.mappingTimer = undefined
+    if (this.mapper !== undefined) {
+      // Delete the mapping rather than leaving it to expire: a forwarded port
+      // nobody uses is a door left open on the router.
+      await this.mapper.remove().catch(() => undefined)
+      await this.mapper.close().catch(() => undefined)
+      this.mapper = undefined
+    }
     for (const session of [...this.sessions.values()]) await session.close('the engine shut down')
     this.sessions.clear()
     this.sessionOrder.length = 0
@@ -641,6 +675,81 @@ export class Engine {
     const mapped = parseBindingResponse(data, transactionId(data))
     if (mapped === null) return
     this.stunResults.set(server, { address: mapped.ip, port: mapped.port })
+  }
+
+  // MARK: - Port mapping
+
+  /**
+   * Adopt a granted mapping as a candidate.
+   *
+   * A mapping is only half an address: the port is what the router forwards,
+   * the address is what STUN saw. Pairing them is the point — the pair is
+   * reachable even when the NAT is symmetric, because the router is now
+   * forwarding instead of filtering.
+   */
+  private async adoptPortMapping(mapper: PortMapper, lifetimeSeconds: number): Promise<void> {
+    const external = this.reflexiveCandidates[0]
+    if (external === undefined) {
+      // No external address to pair the port with. The mapping would be a door
+      // with no address on it, so hand it back rather than leak it.
+      await mapper.remove().catch(() => undefined)
+      await mapper.close().catch(() => undefined)
+      return
+    }
+    let mapping = mapper.current
+    try {
+      mapping ??= await mapper.map(this.socket.localPort, lifetimeSeconds)
+    } catch {
+      await mapper.close().catch(() => undefined)
+      return
+    }
+    this.mapper = mapper
+    this.mappedAddress = external.address
+    this.installMappedCandidate(external.address, mapping.externalPort)
+    if (mapping.lifetimeSeconds > 0) {
+      // Renew at half the lease: a router that expires a mapping while a
+      // session is using it looks exactly like a dead network.
+      this.mappingTimer = setInterval(
+        () => void this.renewMapping(),
+        Math.max(1000, mapping.lifetimeSeconds * 500),
+      )
+      this.mappingTimer.unref?.()
+    }
+  }
+
+  private installMappedCandidate(address: string, port: number): void {
+    if (this.mappedCandidate !== undefined) {
+      const previous = this.mappedCandidate
+      const index = this.reflexiveCandidates.findIndex((entry) => sameCandidate(entry, previous))
+      if (index >= 0) this.reflexiveCandidates.splice(index, 1)
+    }
+    // Local preference 1 puts it above the raw reflexive candidate it shares a
+    // kind with: this one is forwarded, so it works from places that one does
+    // not.
+    const entry = candidate(CandidateKind.ServerReflexive, address, port, 1)
+    this.mappedCandidate = entry
+    this.reflexiveCandidates.push(entry)
+  }
+
+  private async renewMapping(): Promise<void> {
+    const mapper = this.mapper
+    const address = this.mappedAddress
+    if (mapper === undefined || address === undefined) return
+    try {
+      const mapping = await mapper.renew()
+      this.installMappedCandidate(address, mapping.externalPort)
+    } catch {
+      // The router forgot us. Stop advertising a door that is no longer there,
+      // and stop the timer: a router that refused once will refuse again.
+      if (this.mappingTimer !== undefined) clearInterval(this.mappingTimer)
+      this.mappingTimer = undefined
+      const current = this.mappedCandidate
+      if (current !== undefined) {
+        const index = this.reflexiveCandidates.findIndex((entry) => sameCandidate(entry, current))
+        if (index >= 0) this.reflexiveCandidates.splice(index, 1)
+        this.mappedCandidate = undefined
+      }
+    }
   }
 
   // MARK: - Sessions

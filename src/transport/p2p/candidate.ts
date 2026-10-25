@@ -11,12 +11,19 @@
 
 import type { Address } from './socket.js'
 
-/** Where a candidate came from. */
+/**
+ * Where a candidate came from.
+ *
+ * The values are the ones that travel in signaling, and they must match
+ * `MizarNetCandidate.Kind`'s raw values exactly (`serverReflexive`, not the
+ * `srflx` ICE prints): Swift decodes the enum by raw value, so a mismatch is
+ * not a degraded candidate — it is a signal that fails to decode at all.
+ */
 export enum CandidateKind {
   /** An address on the sender's own network. */
   Host = 'host',
-  /** The address a STUN server observed. */
-  ServerReflexive = 'srflx',
+  /** The public side of a NAT, as observed by a STUN server or a port mapping. */
+  ServerReflexive = 'serverReflexive',
   /** A relay endpoint — the fallback that always works. */
   Relay = 'relay',
 }
@@ -52,10 +59,17 @@ const TYPE_PREFERENCE: Readonly<Record<CandidateKind, number>> = {
  * @param kind - where the address came from.
  * @param address - the host.
  * @param port - the port.
+ * @param localPreference - breaks ties inside a kind; a forwarded port uses 1
+ *   so it is tried before the raw reflexive address it shares a kind with.
  * @returns the candidate.
  */
-export function candidate(kind: CandidateKind, address: string, port: number): Candidate {
-  return { kind, address, port, priority: (TYPE_PREFERENCE[kind] << 24) + 1 }
+export function candidate(kind: CandidateKind, address: string, port: number, localPreference = 0): Candidate {
+  return {
+    kind,
+    address,
+    port,
+    priority: (TYPE_PREFERENCE[kind] << 24) + ((localPreference & 0xffff) << 8) + 1,
+  }
 }
 
 /**

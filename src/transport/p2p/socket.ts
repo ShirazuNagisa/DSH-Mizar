@@ -104,6 +104,39 @@ export class DatagramSocket {
     }
   }
 
+  /**
+   * Wait for one datagram, and give up after a while.
+   *
+   * For a request/response exchange — NAT-PMP — where the reader owns the
+   * socket for the length of one question. Not interchangeable with
+   * {@link events}: a socket has one reader, and mixing the two would split
+   * datagrams by timing.
+   *
+   * @param milliseconds - the budget; omitted means wait forever.
+   * @returns the datagram, or `null` when the budget ran out or the socket closed.
+   */
+  next(milliseconds?: number): Promise<Datagram | null> {
+    const queued = this.queue.shift()
+    if (queued !== undefined) return Promise.resolve(queued)
+    if (this.closed) return Promise.resolve(null)
+    return new Promise<Datagram | null>((resolve) => {
+      let timer: NodeJS.Timeout | undefined
+      const waiter = (value: Datagram | null): void => {
+        if (timer !== undefined) clearTimeout(timer)
+        resolve(value)
+      }
+      this.waiters.push(waiter)
+      if (milliseconds !== undefined) {
+        timer = setTimeout(() => {
+          const index = this.waiters.indexOf(waiter)
+          if (index >= 0) this.waiters.splice(index, 1)
+          resolve(null)
+        }, Math.max(0, milliseconds))
+        timer.unref?.()
+      }
+    })
+  }
+
   /** Close the socket and drain the reader. */
   close(): Promise<void> {
     if (this.closed) return Promise.resolve()
