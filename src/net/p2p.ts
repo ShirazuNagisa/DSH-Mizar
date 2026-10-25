@@ -175,12 +175,11 @@ export class P2PService {
     const engine = await Engine.create({
       identity,
       policy: options.policy ?? STANDARD_POLICY,
-      // No STUN by default: binding a socket is cheap, but asking a stranger
-      // where this computer appears from is a decision the operator has not
-      // made yet. With none configured the endpoint advertises host candidates
-      // only, which is the LAN case; a relayed phone still reaches this host the
-      // way it always did. Turning it on is the next step of the rollout, and
-      // it will point at a STUN endpoint this project runs.
+      // No default here on purpose: this is the seam a test uses to stay
+      // offline, and the production caller passes what `resolveStunServers`
+      // worked out from its config. An empty list is a supported answer -- host
+      // candidates only, which is the LAN case, with the relay carrying every
+      // remote session the way it always did.
       stunServers: options.stunServers ?? [],
       ...(options.portMapping === undefined ? {} : { portMapping: options.portMapping }),
     })

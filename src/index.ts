@@ -11,7 +11,7 @@
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from './dsh.js'
-import { Config, listenerBindMode } from './config.js'
+import { Config, listenerBindMode, resolveStunServers } from './config.js'
 import type { Config as MizarConfig } from './config.js'
 import { registerAnswerers } from './bridge/answerers.js'
 import { DeliveryLedger } from './bridge/delivery.js'
@@ -466,7 +466,14 @@ async function startListener(
   // Started before the listener because the listener advertises the signal
   // path; started at all because the desktop is the side being dialled, so it
   // has to be listening before any phone tries.
-  const p2p = await P2PService.start({ tunnelSecret: tunnelToken, log: report }).catch(
+  const p2p = await P2PService.start({
+    tunnelSecret: tunnelToken,
+    stunServers: resolveStunServers(config),
+    ...(config.net.portMapping
+      ? { portMapping: { lifetimeSeconds: config.net.portMappingLeaseSeconds } }
+      : {}),
+    log: report,
+  }).catch(
     (error: unknown) => {
       report(`p2p: the direct path did not start — ${describe(error)}`)
       return null
