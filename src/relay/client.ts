@@ -64,6 +64,19 @@ export interface RelayClientOptions {
    * watchdog.
    */
   readonly watchdogMs?: number
+  /**
+   * How often the tunnel is pinged at the protocol level, in ms. `0` disables.
+   *
+   * The silence watchdog above asks "has the relay sent anything", and the
+   * relay's own pings keep that question answered even when nothing else
+   * moves. A connection broken in one direction only -- a proxy that kept the
+   * local socket while its upstream died -- therefore looks alive here: the
+   * relay's pings arrive, and every frame this side writes vanishes. The phone
+   * then sits on a session where each request times out with "did not answer
+   * in time", which is exactly the screen this exists to end. A ping that
+   * cannot come back as a pong is that break, and it is worth redialling for.
+   */
+  readonly pingIntervalMs?: number
 }
 
 /** What the outside world can see about the tunnel. */
@@ -93,10 +106,18 @@ export interface RelaySocket {
    * needs this; a test stand-in may omit it and be closed with `close`.
    */
   terminate?(): void
+  /**
+   * Send a protocol-level ping, when the implementation has one. `ws` answers
+   * these at the library level, so a pong is proof the round trip works rather
+   * than proof the far end's application is busy; a test stand-in may omit it
+   * and is then left to the silence watchdog alone.
+   */
+  ping?(): void
   on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): unknown
   on(event: 'close', listener: (code: number, reason: Buffer) => void): unknown
   on(event: 'error', listener: (error: Error) => void): unknown
   on(event: 'open', listener: () => void): unknown
+  on(event: 'pong', listener: () => void): unknown
 }
 
 /**
@@ -266,6 +287,11 @@ export class RelayClient {
   /** How long silence from the relay is tolerated before a redial. */
   readonly #watchdogMs: number
   #watchdog: NodeJS.Timeout | undefined
+  /** How often this side pings the tunnel, and how that is scheduled. */
+  readonly #pingIntervalMs: number
+  #pingTimer: NodeJS.Timeout | undefined
+  /** Pings sent since the last pong; a round trip resets it. */
+  #pingsSincePong = 0
   /** When the last frame from the relay arrived, on any clock change. */
   #lastFrameAt = 0
   /** Phone WebSockets currently bridged through this tunnel, by tunnel id. */
@@ -281,6 +307,7 @@ export class RelayClient {
     this.#localPort = options.localPort
     this.#localOrigin = `http://${this.#localHost}:${this.#localPort}`
     this.#watchdogMs = options.watchdogMs ?? 120_000
+    this.#pingIntervalMs = options.pingIntervalMs ?? 15_000
   }
 
   /** The relay connection's current state. */
@@ -298,6 +325,7 @@ export class RelayClient {
     this.#stopped = false
     this.#lastFrameAt = Date.now()
     this.#armWatchdog()
+    this.#armPing()
     this.#connect()
   }
 
@@ -308,6 +336,8 @@ export class RelayClient {
     this.#timer = undefined
     if (this.#watchdog !== undefined) clearInterval(this.#watchdog)
     this.#watchdog = undefined
+    if (this.#pingTimer !== undefined) clearInterval(this.#pingTimer)
+    this.#pingTimer = undefined
     this.#closeStreams('the tunnel is shutting down')
     this.#socket?.close(1000, 'shutting down')
     this.#socket = null
@@ -370,10 +400,16 @@ export class RelayClient {
       }) as unknown as RelaySocket)
     this.#socket = socket
     this.#lastFrameAt = Date.now()
+    this.#pingsSincePong = 0
 
     socket.on('open', () => {
       this.#lastFrameAt = Date.now()
       this.#options.log(`relay: connected to ${url}`)
+    })
+    socket.on('pong', () => {
+      // A pong is the one proof that a frame this side wrote came back, which
+      // is the question the ping loop asks and the silence watchdog cannot.
+      this.#pingsSincePong = 0
     })
     socket.on('message', (data: Buffer) => {
       this.#lastFrameAt = Date.now()
@@ -431,6 +467,40 @@ export class RelayClient {
       `relay: the tunnel has been silent for ${Math.round(silent / 1000)}s — redialling it`,
     )
     this.#drop('no traffic from the relay inside the watchdog window')
+  }
+
+  /**
+   * Start the ping loop.
+   *
+   * The companion to the silence watchdog above: that one notices the relay
+   * going quiet, this one notices this side going unheard. Together they cover
+   * a socket broken in either direction, which a single question cannot.
+   */
+  #armPing(): void {
+    if (this.#pingTimer !== undefined || this.#pingIntervalMs <= 0) return
+    this.#pingTimer = setInterval(() => this.#checkPing(), this.#pingIntervalMs)
+    this.#pingTimer.unref?.()
+  }
+
+  /** Redial a tunnel that has stopped answering pings. */
+  #checkPing(): void {
+    if (this.#stopped) return
+    const socket = this.#socket
+    if (socket === null || typeof socket.ping !== 'function') return
+    // Two pings may go unanswered before the tunnel is called dead: one may
+    // legitimately be lost to ordinary jitter, and a false positive costs a
+    // redial while a false negative costs a phone that keeps timing out.
+    if (this.#pingsSincePong >= 2) {
+      this.#options.log('relay: the tunnel is not answering pings — redialling it')
+      this.#drop('the tunnel stopped answering pings')
+      return
+    }
+    this.#pingsSincePong += 1
+    try {
+      socket.ping()
+    } catch {
+      // A ping that throws is a socket already gone; `close` owns recovery.
+    }
   }
 
   /**

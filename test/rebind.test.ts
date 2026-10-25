@@ -154,4 +154,59 @@ describe('MizarListener.rebind', () => {
 
     await listener.stop()
   })
+
+  it('restores the previous addresses when the new ones cannot be bound', async () => {
+    // The failure that left a phone with "connected to the server, but not to
+    // the computer" for good: a network change moved the plan to addresses that
+    // vanished before the bind landed, the bind failed, and the listener was
+    // left with nothing -- so the relay's replay died with ECONNREFUSED long
+    // after the network settled. A failed move must put service back.
+    //
+    // 203.0.113.1 is TEST-NET-3: it never belongs to an interface anywhere, so
+    // binding it fails with EADDRNOTAVAIL on every platform.
+    const listener = await startOn('127.0.0.1')
+    const applied = await listener.rebind(planFor('203.0.113.1'))
+
+    expect(applied.addresses).toEqual(['127.0.0.1'])
+    expect(listener.bound).toBe(true)
+    expect(await isListening('127.0.0.1', listener.port)).toBe(true)
+
+    const response = await fetch(`http://127.0.0.1:${listener.port}/mizar/v1/hello`)
+    expect(response.status).toBe(200)
+
+    await listener.stop()
+  })
+
+  it('skips an address that vanished and binds the rest', async () => {
+    // The race the skip exists for: the plan is read from a network snapshot
+    // and one of its addresses is gone before the bind lands. Failing the whole
+    // bind on that is what dropped the listener every time one interface
+    // renegotiated.
+    const store = await MizarStore.open(dir)
+    const listener = await MizarListener.start({
+      plan: {
+        addresses: ['203.0.113.1', '127.0.0.1'],
+        mode: 'addresses',
+        fellBack: false,
+        reason: 'test',
+      },
+      port: 0,
+      portFallback: false,
+      store,
+      pairingTtlSeconds: 300,
+      maxAttemptsPerMinute: 5,
+      heartbeatMs: 15_000,
+      pongTimeoutMs: 20_000,
+      log: () => {},
+    })
+
+    // Only the address that still exists is advertised -- a phone must never
+    // be handed an authority nothing answers on.
+    expect(listener.bound).toBe(true)
+    expect(listener.addresses).toEqual(['127.0.0.1'])
+    expect(listener.authorities).toEqual([`127.0.0.1:${listener.port}`])
+    expect(await isListening('127.0.0.1', listener.port)).toBe(true)
+
+    await listener.stop()
+  })
 })

@@ -131,7 +131,7 @@ const systemLocale = (() => {
  * code in place and every symptom unchanged. One line at boot turns that from a
  * guess into a fact.
  */
-const MIZAR_VERSION = '0.8.11'
+const MIZAR_VERSION = '0.8.12'
 
 /**
  * Services this plugin must observe before it activates.
@@ -144,12 +144,35 @@ const MIZAR_VERSION = '0.8.11'
 export const inject = ['typert', 'typertGateway', 'sessionProjections', 'sessions']
 
 /**
+ * How long a rebind that did not take is left alone before it is tried again.
+ *
+ * Every attempt drops whatever sessions the listener has, and a plan that
+ * stays unbindable would otherwise drop them on every poll tick -- a phone
+ * that keeps reconnecting into a machine that keeps forgetting it.
+ */
+const REBIND_RETRY_MS = 5_000
+
+/**
  * Watch the bind plan and rebind when the host's addresses change.
  *
  * Covers the case the startup wait cannot: the network changed long after DSH
  * started, reconnected after a reboot, or moved to a different address. Without
  * this the listener would sit on loopback forever and the phone would simply
  * never reach it.
+ *
+ * Three things this learned from a listener that died in the field and took
+ * every phone request down with it:
+ *
+ *   - A plan change is confirmed by a second look before it is acted on. One
+ *     tick of interfaces flapping -- a VPN renegotiating -- is not a network
+ *     change worth dropping every connected phone for.
+ *   - A listener with nothing bound is rebound at once, whatever the plan
+ *     says. "Nothing bound" is the one state the phone cannot recover from:
+ *     the relay replays into this listener and every request dies with
+ *     `ECONNREFUSED` long after the network has settled.
+ *   - What is reported is what happened. The rebind now restores service on
+ *     failure, so "staying on" is only true when the old plan really is still
+ *     serving -- and the key recorded is the plan actually in effect.
  *
  * @param config - plugin configuration.
  * @param readPlan - reads the current plan.
@@ -166,25 +189,55 @@ function startBindWatcher(
   onRebound?: (listener: MizarListener) => void,
 ): void {
   let current = bindKey(initial)
+  /** The key seen once and awaiting its confirmation tick, if any. */
+  let pending: string | null = null
+  /** Epoch milliseconds before which a failed rebind is not attempted again. */
+  let retryAfter = 0
 
   const timer = setInterval(() => {
     void (async () => {
-      const next = readPlan()
-      if (!needsRebind(current, next)) return
+      if (signal.aborted) return
       const listener = holder.current
       if (listener === null) return
+      const next = readPlan()
+      const key = bindKey(next)
 
-      report(`network changed — rebinding from [${current}] to [${bindKey(next)}]`)
+      if (!listener.bound) {
+        // The worst state there is; no confirmation, no backoff.
+        pending = null
+        report('the listener had nothing bound — binding again')
+      } else {
+        if (!needsRebind(current, next)) {
+          pending = null
+          return
+        }
+        // Wait one tick for the plan to say the same thing twice.
+        if (pending !== key) {
+          pending = key
+          return
+        }
+        if (Date.now() < retryAfter) return
+        report(`network changed — rebinding from [${current}] to [${key}]`)
+      }
+
       try {
-        await listener.rebind(next)
-        current = bindKey(next)
+        const applied = await listener.rebind(next)
+        current = bindKey(applied)
+        pending = null
         // A rebind that lands on a different port has just moved the tunnel's
         // replay target, and a network change is exactly when the outbound
         // tunnel should be redialled from the new address rather than left on a
-        // path the operating system no longer has.
+        // path the operating system no longer has. `setLocalPort` is a no-op
+        // when the port did not move, so this is safe for a rebind that only
+        // restored service.
         onRebound?.(listener)
+        if (current !== key) {
+          retryAfter = Date.now() + REBIND_RETRY_MS
+          report(`the new addresses would not bind — serving [${current}] instead`)
+        }
       } catch (error) {
-        report(`rebind failed, staying on [${current}] — ${describe(error)}`)
+        retryAfter = Date.now() + REBIND_RETRY_MS
+        report(`rebind failed and nothing is bound — ${describe(error)}`)
       }
     })()
   }, Math.max(1000, config.bind.pollMs))

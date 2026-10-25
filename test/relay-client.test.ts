@@ -29,6 +29,8 @@ class ScriptedSocket implements RelaySocket {
   readonly sent: string[] = []
   /** Whether the client dropped this socket without a closing handshake. */
   terminated = false
+  /** How many protocol-level pings the client asked for. */
+  pingCount = 0
   #handlers: Record<string, ((...args: never[]) => void)[]> = {}
 
   send(text: string): void {
@@ -44,10 +46,15 @@ class ScriptedSocket implements RelaySocket {
     this.closed()
   }
 
+  ping(): void {
+    this.pingCount += 1
+  }
+
   on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): unknown
   on(event: 'close', listener: (code: number, reason: Buffer) => void): unknown
   on(event: 'error', listener: (error: Error) => void): unknown
   on(event: 'open', listener: () => void): unknown
+  on(event: 'pong', listener: () => void): unknown
   on(event: string, listener: (...args: never[]) => void): unknown {
     this.#handlers[event] = [...(this.#handlers[event] ?? []), listener]
     return this
@@ -63,6 +70,11 @@ class ScriptedSocket implements RelaySocket {
   /** Simulate the socket opening. */
   opened(): void {
     for (const handler of this.#handlers['open'] ?? []) handler()
+  }
+
+  /** Simulate the relay answering a ping. */
+  ponged(): void {
+    for (const handler of this.#handlers['pong'] ?? []) handler()
   }
 
   /** Simulate the socket closing. */
@@ -411,6 +423,70 @@ describe('RelayClient', () => {
     // The half-open socket is dropped, not politely closed and left "connected".
     expect(created[0]?.terminated).toBe(true)
     silent.stop()
+  })
+
+  it('redials a tunnel that stops answering pings', async () => {
+    // The other half of a half-open socket: the relay's pings still arrive, so
+    // the silence watchdog stays quiet, while every frame this side writes goes
+    // into a black hole -- a proxy that kept the local socket after its
+    // upstream died. A phone on that tunnel sees each request time out, and
+    // only a ping that cannot come back notices.
+    const created: ScriptedSocket[] = []
+    const factory = (): RelaySocket => {
+      const next = new ScriptedSocket()
+      created.push(next)
+      return next
+    }
+    const unheard = new RelayClient({
+      url: 'https://relay.example.com',
+      token: 'a-token',
+      localPort: listener.port,
+      log: () => undefined,
+      socketFactory: factory,
+      reconnectBaseMs: 5,
+      reconnectMaxMs: 10,
+      pingIntervalMs: 20,
+    })
+    unheard.start()
+    created[0]?.opened()
+    // The relay keeps talking -- its own pings arrive -- so silence never
+    // triggers; only the unanswered pings do.
+    const noise = setInterval(() => created[0]?.deliver({ t: 'ping', id: 'x' }), 15)
+    await vi.waitFor(() => expect(created.length).toBeGreaterThan(1), { timeout: 2_000 })
+    clearInterval(noise)
+    expect(created[0]?.terminated).toBe(true)
+    expect(created[0]?.pingCount).toBeGreaterThan(0)
+    unheard.stop()
+  })
+
+  it('leaves a tunnel that answers pings alone', async () => {
+    const created: ScriptedSocket[] = []
+    const factory = (): RelaySocket => {
+      const next = new ScriptedSocket()
+      created.push(next)
+      return next
+    }
+    const healthy = new RelayClient({
+      url: 'https://relay.example.com',
+      token: 'a-token',
+      localPort: listener.port,
+      log: () => undefined,
+      socketFactory: factory,
+      reconnectBaseMs: 5,
+      reconnectMaxMs: 10,
+      pingIntervalMs: 20,
+    })
+    healthy.start()
+    created[0]?.opened()
+    // Answer every ping as `ws` does at the library level.
+    const ponger = setInterval(() => {
+      if ((created[0]?.pingCount ?? 0) > 0) created[0]?.ponged()
+    }, 5)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    clearInterval(ponger)
+    expect(created).toHaveLength(1)
+    expect(created[0]?.terminated).toBe(false)
+    healthy.stop()
   })
 
   it('redials on demand when the network changes', async () => {
