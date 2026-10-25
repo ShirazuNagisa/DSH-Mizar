@@ -107,7 +107,7 @@ fixture 里的种子是字节图案，不是秘密；里面的签名各是一份
 | `stun.ts` | 完成：RFC 5389 绑定事务、XOR-MAPPED-ADDRESS、未知属性按长度跳过 |
 | `session.ts` | 完成：分片重组（按包号顺序）、ACK（25ms 独立定时器 + 捎带）、重传（300ms 起翻倍、8 次）、22s 保活、66s 空闲判降级 |
 | `engine.ts` | 完成：候选收集、轮次打洞、接受方回打、最小连接 id 调和、拨号预算、意图声明 |
-| 端口映射（UPnP-IGD / NAT-PMP） | **未做**——桌面是接受方，这是提高直连率最有效的一环 |
+| `portmap.ts` | 完成：UPnP-IGD（SSDP + SOAP）与 NAT-PMP，引擎在绑定后申请映射、续租、关闭时删除（见 §7） |
 
 `policy.ts` 里的数字与 `MizarNetPathPolicy.standard` 逐项一致——两端的打洞节奏必须
 同一个数量级，否则一边已经放弃、另一边还在发包。
@@ -130,3 +130,75 @@ cd dsh && MIZAR_P2P_INTEROP=1 npx vitest run test/p2p-interop.test.ts
 
 默认门控（`MIZAR_P2P_INTEROP=1` 才跑）：它需要 Swift 工具链和一次 `swift build`，
 不该成为日常单测的前置条件。
+
+## 7. 端口映射：对称 NAT 的唯一解
+
+矩阵里有一条判决是硬的：**对称型接受方打不通**。它的映射随目的地址变化，任何一方
+从 STUN 学到的地址对它自己都不成立——再多打洞轮次也改变不了这一点。
+
+能改变的是「不去问 NAT」。端口映射是向路由器提一个请求：把这个 UDP 端口永久转发给我。
+路由器一旦答应，这个端点对所有拨号方都可达，锥型也好、对称也好。这是当前提高直连率
+最有效的一环，也是唯一能救对称接受方的手段。
+
+两种协议，因为家用路由器只会说其中一种：
+
+| 协议 | 发现 | 请求 | 备注 |
+|---|---|---|---|
+| **UPnP-IGD** | SSDP 组播到 239.255.255.250:1900，读 `LOCATION` | HTTP + SOAP `AddPortMapping` | 家用路由器最常见；拒绝是 HTTP 500 + `UPnPError` 里的错误码（718 = 端口已被占用） |
+| **NAT-PMP** | 无，直接问网关的 5351 端口 | 12 字节二进制请求 | 更简单，一次往返；Apple 路由器与部分厂商支持 |
+
+### 7.1 它自己做不到的一件事
+
+两种协议都不返回**外部 IP**：NAT-PMP 的映射响应只有端口，IGD 还要额外调一次
+`GetExternalIPAddress`。所以映射只提供一半地址——另一半（公网 IP）仍然来自 STUN。
+
+引擎因此把两者配对：`(STUN 观测到的地址, 路由器转发的端口)`。这个组合才是拨号方
+真正能用的候选。没有 STUN 就没有外部地址，此时映射会被**主动撤销**而不是留在路由器上：
+一个没人用的转发口，就是一扇开着的门。
+
+### 7.2 失败是常态，不是错误
+
+关掉 UPnP 的路由器、公司网关、封锁组播的访客 Wi-Fi——这些都返回 `null`，
+打洞照原样进行。测试把三种情况都钉住了：网关答应、网关拒绝（错误码要能被读出来）、
+网关根本不回（3 次重试共 750ms 后放弃）。
+
+### 7.3 租约与拆除
+
+`NewLeaseDuration: 0` / NAT-PMP lifetime 0 表示「永久」，但很多路由器会自己裁剪成
+较短租约。所以映射按**半租约**续租，并且在引擎关闭时显式删除——不留一个没人用的
+转发口在路由器上。
+
+## 8. 桌面侧接线（插件）
+
+`src/net/p2p.ts` 是桌面端的门面，三件事：
+
+| 部分 | 作用 |
+|---|---|
+| `deriveEndpointIdentity(tunnelSecret)` | 端点密钥由 tunnel secret 派生（与手机同一构造），不需要新凭证，重装后端点 id 不变 |
+| `P2PService` | 常驻引擎 + `accept()` 循环 + 每路信令。桌面是被拨号的一方，所以引擎必须进程级 |
+| `StreamChannel` | 把 p2p 流包装成监听器认的 `MizarChannel`：一条消息一帧 |
+
+监听器的连接处理因此抽成了 `#serve(channel:remote:forgetSocket:)`：WebSocket 与 p2p
+共用**同一份**鉴权、方法分发与投递账本——直连换的是传输，不是协议。这对
+`host.info` 也成立：p2p 会话里的 `hello` 同样是设备令牌校验。
+
+### 8.1 信令怎么走
+
+```
+phone ──WS──▶ relay /r/<room>/mizar-net/signal ──隧道──▶ 插件 listener /mizar-net/signal
+                                                              │
+                                                     P2PService.attachSignal
+                                                              ▼
+                                                        engine.offerCandidates
+```
+
+两端各发一次 `hello`（`{"v":1,"type":"hello","endpointId":…,"candidates":[…]}`），
+之后是 `candidates`。收到即喂给引擎——被叫方的回打正是靠这个打开自己的过滤器。
+版本不匹配或 JSON 坏掉就地丢弃：这条通道凡是拿到房间的人都能连，坏数据只能拖累它自己。
+
+### 8.2 默认不查 STUN
+
+`P2PService.start` 的 `stunServers` 默认是空数组。绑一个 UDP socket 很便宜，
+但"让第三方知道我这条连接从哪来"不该是安装即发生的事。没有 STUN 时只广播 host
+候选——同一局域网可用；跨网仍然走中继，和今天完全一样。打开它的时候应当指向本项目
+自建的 STUN，那是 App 灰度的一步。

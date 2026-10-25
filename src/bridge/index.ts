@@ -109,6 +109,14 @@ export interface HostFacts {
    * `NOT_IMPLEMENTED` exactly as it would for any other method it does not know.
    */
   readonly relay?: HostRelayControl
+  /**
+   * The direct path's endpoint id, when its engine is running.
+   *
+   * Additive and optional: an app that does not know the field ignores it, and
+   * a host whose engine did not start answers without it, which is what tells
+   * the app to keep using the relay.
+   */
+  readonly netEndpointId?: () => string | undefined
 }
 
 /**
@@ -449,6 +457,7 @@ export function createMethodTable(
       plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1'] },
       ...(facts.authorities === undefined ? {} : { addresses: facts.authorities() }),
       ...(relay === undefined ? {} : { relay: relay.current() }),
+      ...(facts.netEndpointId?.() === undefined ? {} : { netEndpointId: facts.netEndpointId() }),
     }),
 
     /** Native official-account wallets; no account grant or identity leaves the host. */

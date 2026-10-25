@@ -29,6 +29,7 @@ import {
 import { issueCode, RateLimiter, redeemCode } from '../auth/pairing.js'
 import { MizarStore } from '../auth/store.js'
 import type { BindPlan } from '../net/interfaces.js'
+import { SIGNAL_PATH } from '../net/p2p.js'
 import { authorityOf } from '../net/interfaces.js'
 import {
   encodeFrame,
@@ -66,6 +67,20 @@ const RATE_LIMIT_SWEEP_MS = 60_000
  */
 const MAX_FRAME_BYTES = 512 * 1024
 
+/** The minimum a served connection has to offer. */
+export interface MizarChannel {
+  /** Whether the far end can still receive. */
+  readonly open: boolean
+  /** Write one frame. */
+  send(text: string): void
+  /** Close, with a WebSocket-ish code and reason. */
+  close(code?: number, reason?: string): void
+  /** Deliver inbound frames. Registered once, before anything is read. */
+  onMessage(listener: (data: Buffer, isBinary: boolean) => void): void
+  /** Announce the end — closed or failed, the caller does not care which. */
+  onClose(listener: () => void): void
+}
+
 export interface ClientSession {
   /** The device this session speaks for. */
   readonly deviceId: string
@@ -87,6 +102,16 @@ export interface ListenerOptions {
   readonly port: number
   /** Whether to probe upward for a free port. */
   readonly portFallback: boolean
+  /**
+   * The direct path, when it is running.
+   *
+   * The listener does not own a p2p engine — the plugin starts one because it
+   * also advertises the endpoint id — so it is handed a way to attach signaling
+   * sockets and serve whatever the engine accepts.
+   */
+  readonly p2p?: {
+    attachSignal(socket: WebSocket): void
+  }
   /** Persistent host state. */
   readonly store: MizarStore
   /** Pairing code lifetime, in seconds. */
@@ -146,6 +171,7 @@ export class MizarListener {
   #plan: BindPlan
   readonly #hostName: string
   #wss: WebSocketServer | undefined
+  #signalWss: WebSocketServer | undefined
   #heartbeat: NodeJS.Timeout | undefined
   #sweep: NodeJS.Timeout | undefined
   #boundPort = 0
@@ -331,6 +357,9 @@ export class MizarListener {
    */
   async #bindAll(addresses: readonly string[], port: number): Promise<void> {
     this.#wss = new WebSocketServer({ noServer: true })
+    // Its own server because the two paths speak different languages: Mizar
+    // frames on one, candidate exchange on the other.
+    this.#signalWss = new WebSocketServer({ noServer: true })
     for (const address of addresses) {
       const server = createServer((request, response) => {
         void this.#handleHttp(request, response)
@@ -558,6 +587,19 @@ export class MizarListener {
    */
   #handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
     const url = new URL(request.url ?? '/', 'http://localhost')
+    if (url.pathname === SIGNAL_PATH) {
+      // Signaling for the direct path. It travels the relay's room bridge like
+      // any other path and lands here, on the machine that owns the engine.
+      const signal = this.#options.p2p
+      if (signal === undefined || this.#signalWss === undefined) {
+        socket.destroy()
+        return
+      }
+      this.#signalWss.handleUpgrade(request, socket, head, (websocket) => {
+        signal.attachSignal(websocket)
+      })
+      return
+    }
     if (url.pathname !== WS_PATH) {
       socket.destroy()
       return
@@ -574,16 +616,59 @@ export class MizarListener {
    */
   #acceptSocket(socket: WebSocket, remote: string): void {
     this.#sockets.add(socket)
-    let session: ClientSession | undefined
-
+    // Liveness is a WebSocket affair: the heartbeat marks the socket and the
+    // idle sweep closes whatever has not answered. The channel below carries no
+    // such marks, which is why it stays here rather than moving with the frames.
     const tracked = socket as WebSocket & { __mizarAlive?: boolean }
     tracked.__mizarAlive = true
     socket.on('pong', () => {
       tracked.__mizarAlive = true
     })
 
+    const channel: MizarChannel = {
+      get open() {
+        return socket.readyState === socket.OPEN
+      },
+      send: (text) => socket.send(text),
+      close: (code, reason) => socket.close(code, reason),
+      onMessage: (listener) =>
+        socket.on('message', (data, isBinary) =>
+          listener(Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8'), isBinary),
+        ),
+      onClose: (listener) => {
+        socket.on('close', listener)
+        socket.on('error', listener)
+      },
+    }
+    this.#serve(channel, remote, () => this.#sockets.delete(socket))
+  }
+
+  /**
+   * Serve a channel that is already established.
+   *
+   * The direct path arrives through this door: a punched p2p stream carries the
+   * same frames a WebSocket does, so authentication, methods and delivery are
+   * one implementation rather than two that agree until they do not.
+   *
+   * @param channel - the established channel.
+   * @param remote - how to describe the far end in logs.
+   */
+  serveChannel(channel: MizarChannel, remote: string): void {
+    this.#serve(channel, remote, () => undefined)
+  }
+
+  /**
+   * Authenticate on `hello`, then serve requests.
+   * @param channel - the channel to serve.
+   * @param remote - the far end, for logs and audit.
+   * @param forgetSocket - called when the channel ends.
+   */
+  #serve(channel: MizarChannel, remote: string, forgetSocket: () => void): void {
+
+    let session: ClientSession | undefined
+
     const send = (frame: ServerFrame): boolean => {
-      if (socket.readyState !== socket.OPEN) return false
+      if (!channel.open) return false
       const encoded = encodeFrame(frame)
       const bytes = Buffer.byteLength(encoded, 'utf8')
       // A frame over this size is not delivered, it is a disconnect. iOS's
@@ -603,7 +688,7 @@ export class MizarListener {
             'the transport would drop the connection instead',
         )
         if (frame.type === 'ok' && frame.id !== undefined) {
-          socket.send(
+          channel.send(
             encodeFrame(
               errorFrame(
                 'RESPONSE_TOO_LARGE',
@@ -616,7 +701,7 @@ export class MizarListener {
         // Not delivered: the phone received a refusal, not the page.
         return false
       }
-      socket.send(encoded)
+      channel.send(encoded)
       return true
     }
 
@@ -625,12 +710,12 @@ export class MizarListener {
     const handshakeTimer = setTimeout(() => {
       if (session === undefined) {
         send(errorFrame('UNAUTHENTICATED', 'no hello frame within the handshake window'))
-        socket.close(4401, 'unauthenticated')
+        channel.close(4401, 'unauthenticated')
       }
     }, 10_000)
     handshakeTimer.unref?.()
 
-    socket.on('message', (data, isBinary) => {
+    channel.onMessage((data, isBinary) => {
       // Tracked outside the async body so the failure path can still correlate.
       let currentId: string | undefined
       void (async () => {
@@ -665,7 +750,7 @@ export class MizarListener {
               detail: 'no device token presented',
             })
             send(errorFrame('PAIRING_REQUIRED', 'this client has no device token', correlationId))
-            socket.close(4401, 'pairing required')
+            channel.close(4401, 'pairing required')
             return
           }
           const device = verifyToken(this.#options.store.state.devices, frame.token)
@@ -688,7 +773,7 @@ export class MizarListener {
                 correlationId,
               ),
             )
-            socket.close(4401, revoked ? 'device revoked' : 'unauthenticated')
+            channel.close(4401, revoked ? 'device revoked' : 'unauthenticated')
             return
           }
 
@@ -698,7 +783,7 @@ export class MizarListener {
             deviceName: device.name,
             remote,
             send,
-            close: (code = 1000, reason = 'closed') => socket.close(code, reason),
+            close: (code = 1000, reason = 'closed') => channel.close(code, reason),
           }
           session = current
           this.#sessions.add(current)
@@ -769,13 +854,12 @@ export class MizarListener {
 
     const forget = (): void => {
       clearTimeout(handshakeTimer)
-      this.#sockets.delete(socket)
+      forgetSocket()
       if (session !== undefined && this.#sessions.delete(session)) {
         this.#options.onClientCount?.(this.#sessions.size)
       }
     }
-    socket.on('close', forget)
-    socket.on('error', forget)
+    channel.onClose(forget)
   }
 
   /**

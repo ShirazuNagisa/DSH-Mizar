@@ -38,6 +38,7 @@ import type { BindMode } from './config.js'
 import { awaitRequestedPlan, bindKey, isRequested, needsRebind } from './net/watch.js'
 import { PROTOCOL_VERSION } from './protocol/frames.js'
 import { MizarListener } from './server/listener.js'
+import { adaptSignalSocket, P2PService } from './net/p2p.js'
 import { RelayClient, phoneBaseURL } from './relay/client.js'
 import { sharedMountRegistry, type Mounted } from './mount.js'
 import { loadOrCreateTunnelSecret } from './relay/identity.js'
@@ -386,6 +387,11 @@ async function startListener(
   // listener is bound to, and the listener is created after the table.
   const holder: { current: MizarListener | null } = { current: null }
 
+  // The direct path, when it started. Read through a holder for the same reason
+  // the listener is: `host.info` answers after it exists, and a phone that asked
+  // before the engine bound a socket must not be told there is no endpoint.
+  const netHolder: { current: P2PService | null } = { current: null }
+
   // Read by `relay.set` and `host.info`. Declared before the method table
   // because that table closes over them; the tunnel itself is created after the
   // listener, which is the only thing that can give it a local port.
@@ -448,11 +454,26 @@ async function startListener(
       // so a rebind is reported without rebuilding the table.
       authorities: () => holder.current?.authorities ?? [],
       relay: relayControl,
+      // Additive and optional: an old client ignores it, and a host whose
+      // engine did not start simply does not send it.
+      netEndpointId: () => netHolder.current?.endpointId,
     },
     broker,
     push,
     delivery,
   )
+
+  // Started before the listener because the listener advertises the signal
+  // path; started at all because the desktop is the side being dialled, so it
+  // has to be listening before any phone tries.
+  const p2p = await P2PService.start({ tunnelSecret: tunnelToken, log: report }).catch(
+    (error: unknown) => {
+      report(`p2p: the direct path did not start — ${describe(error)}`)
+      return null
+    },
+  )
+  netHolder.current = p2p
+  if (p2p !== null) report(`p2p: listening as ${p2p.endpointId}`)
 
   const listener = await MizarListener.start({
     plan,
@@ -467,6 +488,9 @@ async function startListener(
     onSession: (session) => {
       report(`client connected: ${session.deviceName} from ${session.remote}`)
     },
+    ...(p2p === null
+      ? {}
+      : { p2p: { attachSignal: (socket) => p2p.attachSignal(adaptSignalSocket(socket)) } }),
     // Dropping to zero clients is the broker's fail-closed trigger: an approval
     // with nobody left to answer it must settle rather than hang the agent.
     onClientCount: (count) => broker.setClientCount(count),
@@ -495,6 +519,13 @@ async function startListener(
 
   holder.current = listener
   broker.setSender((frame) => holder.current?.broadcast(frame))
+
+  // A punched connection becomes an ordinary Mizar session: the listener
+  // authenticates it with the same device token and serves the same methods, so
+  // the direct path adds a transport rather than a second protocol.
+  p2p?.onStream((channel, remote) => {
+    holder.current?.serveChannel(channel, remote)
+  })
 
   // The tunnel is started after the listener and stopped before it: the client
   // replays phone requests onto the listener's port, so it has nothing to talk
@@ -685,6 +716,11 @@ async function startListener(
         await listener.stop()
       } catch (error) {
         report(`listener shutdown failed — ${describe(error)}`)
+      }
+      try {
+        await netHolder.current?.close()
+      } catch (error) {
+        report(`p2p shutdown failed — ${describe(error)}`)
       }
     })()
     return shutdown
