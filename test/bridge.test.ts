@@ -600,6 +600,8 @@ describe('method table', () => {
       [
         'account.balance',
         'approval.answer',
+        'file.read',
+        'file.stat',
         'host.info',
         'interactions.pending',
         'model.catalog',

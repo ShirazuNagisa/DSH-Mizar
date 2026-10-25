@@ -1436,3 +1436,66 @@ describe('session.activity — bounds', () => {
     expect(result.entries[result.entries.length - 1]?.seq).toBe(301)
   })
 })
+
+describe('the deliverables a turn carries', () => {
+  /**
+   * One complete turn: prompt, a `present` call, the answer, the end.
+   *
+   * @param withPresent - whether the turn declared a file.
+   * @returns the records, in log order with contiguous positions.
+   */
+  function turn(withPresent: boolean): unknown[] {
+    const records = [
+      record('turn/start', 1, { turn: 1 }),
+      record('user/message', 2, {
+        role: 'user',
+        content: [{ type: 'text', text: '写一份报告' }],
+        source: { kind: 'user' },
+      }),
+    ]
+    if (withPresent) {
+      records.push(record('tool/call', 3, {
+        turn: 1,
+        step: 1,
+        callId: 'call_00_present',
+        name: 'present',
+        arguments: JSON.stringify({ files: [{ path: 'docs/report.md', description: '根因报告' }] }),
+      }))
+    }
+    records.push(record('assistant/message', records.length + 1, {
+      turn: 1,
+      step: 2,
+      message: { role: 'assistant', content: [{ type: 'text', text: '已完成。' }] },
+    }))
+    records.push(record('turn/end', records.length + 1, { turn: 1, reason: { kind: 'completed' } }))
+    return records
+  }
+
+  /** The `turn/end` record of the answer. */
+  function endOf(records: readonly unknown[]): Record<string, unknown> | undefined {
+    return records.map(eventOf).find((event) => event['type'] === 'turn/end')
+  }
+
+  it('attaches the files a present call declared, on the turn end', async () => {
+    // The computer draws these as cards under the turn. The phone can only draw
+    // them if the summary carries them, because `tool/call` never travels.
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 5, records: turn(true) }] })
+
+    const result = await sessionMessages(ctx, 's1')
+
+    const data = endOf(result.records)?.['data'] as Record<string, unknown> | undefined
+    expect(data?.['mizarDeliverables']).toEqual([{ path: 'docs/report.md', description: '根因报告' }])
+  })
+
+  it('leaves the key off a turn that presented nothing', async () => {
+    // Absent, not empty: the key would cost bytes on every turn of every
+    // conversation forever, and "no cards" is what a missing key already means.
+    const { ctx } = fakeGateway({ frames: [{ type: 'snapshot', cursor: 4, records: turn(false) }] })
+
+    const result = await sessionMessages(ctx, 's1')
+
+    const data = endOf(result.records)?.['data'] as Record<string, unknown> | undefined
+    expect(data).toBeDefined()
+    expect(Object.keys(data ?? {})).not.toContain('mizarDeliverables')
+  })
+})

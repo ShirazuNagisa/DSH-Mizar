@@ -132,6 +132,9 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `ATTACHMENT_UNSUPPORTED` | 媒体类型不能变成 prompt 内容 | 换格式 |
 | `ATTACHMENT_FAILED` | 宿主保存文件或交给 DSH 时失败 | 重试;持续失败看宿主日志 |
 | `ATTACHMENT_INVALID` | 同一 `requestId` 被用于内容不同或设备不同的附件 prompt | 换一个新的 `requestId`;先确认上一条是否已送达 |
+| `FILE_UNKNOWN` | 会话工作区内没有这个常规文件 | 文件可能已被删除,让电脑重新交付 |
+| `FILE_FORBIDDEN` | 路径在工作区外、经符号链接解析到工作区外、不是常规文件,或是凭据形状的文件名 | 这个文件不能预览,不要重试 |
+| `FILE_TOO_LARGE` | 文件超过 32 MiB 的预览上限 | 不预览,或让模型切分/压缩后再交付 |
 
 > **`PAIRING_CODE_INVALID` / `EXPIRED` / `UNKNOWN` 对客户端回答是不同的，但审计日志里
 > 区分得更细**（含"已兑换"）。已经兑换过的码重放会被当成 `UNKNOWN`——**故意不告诉客户端
@@ -141,7 +144,7 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 
 ## 方法表
 
-25 个方法。`payload` 里的键：
+27 个方法。`payload` 里的键：
 
 ### 主机与会话
 
@@ -397,6 +400,57 @@ Read completed with an error Message too long
 老客户端不会调用它们;老宿主对未知方法回 `NOT_IMPLEMENTED`(这正是客户端判断「这台
 电脑的插件不支持附件」的信号),新客户端对老宿主仍可走原来的纯文本路径。所以
 **没有 `PROTOCOL_VERSION` 升级** —— 只有把已有字段变成必填、改名或改变含义才需要。
+
+### 交付文件与预览
+
+电脑上那张「附带文件」卡片来自模型的 `present` 工具,不是消息结构的一部分。手机要能
+预览交付的文件,需要两件东西:一份「这一轮交付了什么」的清单,和一个**下载方向**的读接口
+(`upload.*` 是反方向)。
+
+#### 清单:`turn/end` 上的 `mizarDeliverables`
+
+`session.messages` 的摘要会丢弃所有 `tool/call`,所以插件在**整轮完整**的前提下
+(与 `mizarTokenUsage` 同一个窗口)把 `present` 的调用提取出来,挂在那一轮的 `turn/end`
+的 `data` 上:
+
+```json
+{ "type": "turn/end", "seq": 812, "data": {
+    "turn": 1,
+    "mizarDeliverables": [
+      { "path": "docs/report.md", "description": "已更新的根因报告" }
+    ]
+} }
+```
+
+- `path` 是模型写的原文:**相对路径相对会话工作目录**,绝对路径照原样。插件不解析它 ——
+  那会把宿主的目录结构带上线,读取时(`file.stat`)才解析并做围栏。
+- `description` 可缺,是模型写给操作者的一行说明;桌面端拿它当卡片副标题。
+- 同一路径在一轮里被 `present` 两次时,**后一次的描述胜出**;最多 8 条,取最近的 8 条。
+- **一轮没有交付任何文件时不写这个键**(不是空数组):它会在每一轮里永远占字节。
+- 页面切在一轮中间时没有完整窗口,这一轮就没有清单 —— 与 `mizarTokenUsage`、
+  `mizarBranchUnavailable` 完全一致,结束后的下一次刷新会补上。
+
+#### 读取:`file.stat` / `file.read`
+
+| 方法 | payload | 返回 |
+|---|---|---|
+| `file.stat` | `sessionId`, `path` | `{path, name, byteSize, modifiedAt, mediaType, previewable}` |
+| `file.read` | `sessionId`, `path`, `offset`, `length` | `{offset, length, byteSize, data, eof}` |
+
+- **围栏是会话工作目录。** 相对路径相对 `cwd` 解析,绝对路径照用;`realpath` 规范化后
+  必须仍在工作目录内。`..` 与指向外部的符号链接因此都被挡住。
+- **「外面」只有一个答案。** 不在工作区内的路径一律 `FILE_FORBIDDEN`,无论它是否存在 ——
+  「没有这个文件」和「有这个文件但你不能读」对探测者必须是同一句话。
+- **凭据形状的名字即使在工作区内也拒**:`.env*`、`*.pem`、`*.key`、`*.p12`、`*.pfx`、
+  `*.mobileprovision`、`id_rsa*`/`id_ed25519*`、`.netrc`、`.npmrc`、`.pypirc`、
+  `.git-credentials`。模型的输出是不可信输入,一句总结不该成为搬运 `.env` 的通道。
+- **`length` 上限 262144(256 KiB)**,base64 后约 341 KiB,在 512 KiB 帧预算内;
+  **单文件上限 32 MiB**,与 `upload` 方向一致。`offset + length` 超过文件时按剩余返回,
+  `eof` 标出结尾。
+- **无状态、幂等**:没有句柄、没有临时文件。断线重连后手机从上次 `offset` 续传。
+- `previewable` 是宿主按扩展名(`md`/`markdown`/`pdf`/`docx`)给的提示,手机自己会再判一次。
+- 老宿主对这两个方法回 `NOT_IMPLEMENTED`,新客户端据此说「电脑端插件版本过旧」,
+  而不是「文件不存在」。纯加法,**不需要升 `PROTOCOL_VERSION`**。
 
 ### `requestId` 的语义
 

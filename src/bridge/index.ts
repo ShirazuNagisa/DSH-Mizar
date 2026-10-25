@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import type { Context } from '../dsh.js'
 import { isLiveActivityToken } from '../auth/devices.js'
 import { deliverQuestionAnswers } from './answerers.js'
+import { fileRead, fileStat } from './files.js'
 import { accountBalance } from './balance.js'
 import type { DeliveryLedger } from './delivery.js'
 import { toMethodError } from './errors.js'
@@ -698,6 +699,28 @@ export function createMethodTable(
      * them. Ported from XEPX2's PR #2.
      */
     'upload.capabilities': async () => uploadStore.capabilities(),
+
+    /**
+     * The facts of one delivered file: name, size, modification time, type.
+     *
+     * The other direction of `upload.*`. A model's summary names files the
+     * operator can open on the computer; this is how the phone learns whether
+     * one can be drawn before paying for its bytes. Confined to the session's
+     * working directory — see `bridge/files.ts` for why that fence is the whole
+     * safety argument.
+     *
+     * Additive: an old host answers `NOT_IMPLEMENTED`, which is how the app
+     * knows to say the plugin is too old rather than that the file is gone.
+     */
+    'file.stat': async (payload) => fileStat(ctx, payload),
+
+    /**
+     * One slice of a delivered file, base64.
+     *
+     * Stateless and resumable: the client asks for the next offset after a
+     * reconnect instead of starting over. 256 KiB per call, 32 MiB per file.
+     */
+    'file.read': async (payload) => fileRead(ctx, payload),
 
     /** Interrupt the running turn. */
     'session.cancel': async (payload) =>
