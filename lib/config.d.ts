@@ -28,6 +28,27 @@ export declare const PUBLIC_RELAY_URL = "https://dshmizar.shirazu-nagisa.com";
 export declare const ACCOUNT_RELAY_URL = "https://dshmizar-1.shirazu-nagisa.com";
 /** The two public relays a phone may move this computer between. */
 export declare const SELECTABLE_RELAY_URLS: readonly string[];
+/** The port this project's relays answer STUN on, beside the tunnel. */
+export declare const STUN_PORT = 3478;
+/**
+ * Which STUN servers the direct path should ask, given the configuration.
+ *
+ * The default follows the relay rather than being a constant, because the two
+ * constants are wrong in opposite directions. A fixed host would point every
+ * self-hosted install at this project's server -- a computer announcing its
+ * address to somebody else's infrastructure -- while an empty default would
+ * leave the public build unable to learn its own address at all, which is no
+ * direct path across networks.
+ *
+ * So: an explicit list wins; otherwise a relay this project runs implies a STUN
+ * server on the same host; anything else implies none. The middle case is a
+ * guess, but a small and honest one -- whoever runs the relay is the natural
+ * party to run the address service beside it, and one setting says otherwise.
+ *
+ * @param config - the plugin configuration.
+ * @returns `host:port` entries, possibly empty.
+ */
+export declare function resolveStunServers(config: Config): string[];
 export type BindMode = (typeof BIND_MODES)[number];
 export interface Config {
     enabled: boolean;
@@ -61,6 +82,36 @@ export interface Config {
      * Self-hosters set `url` to their own relay and nothing else; the rest works
      * the same way, because a relay issues no credentials.
      */
+    /**
+     * The direct path: how this computer finds out where it appears from, and
+     * whether it may ask the router to forward a port.
+     *
+     * Everything here is optional in the sense that the product works without it:
+     * with no STUN the endpoint advertises private addresses only, which is still
+     * enough on one LAN, and the relay carries every remote session exactly as it
+     * did before the direct path existed.
+     */
+    net: {
+        /**
+         * STUN servers, `host:port`, tried in order.
+         *
+         * Empty means "derive from the relay": one of this project's relays gets
+         * that host on the standard STUN port, and a self-hosted relay gets nothing.
+         * See {@link resolveStunServers} for why the default follows the relay.
+         */
+        stunServers: string[];
+        /**
+         * Ask the router for a forwarded port (UPnP-IGD, then NAT-PMP).
+         *
+         * Off by default: it makes this computer dialable, which is the single most
+         * effective thing the direct path can do, but it also announces the plugin
+         * on the local network with a multicast search. Turning it on belongs to the
+         * rollout that teaches the app to try a direct connection.
+         */
+        portMapping: boolean;
+        /** Lease to request for a mapping, in seconds. `0` asks for no expiry. */
+        portMappingLeaseSeconds: number;
+    };
     relay: {
         enabled: boolean;
         /** The relay's base URL. */

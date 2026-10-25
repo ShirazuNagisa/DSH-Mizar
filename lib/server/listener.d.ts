@@ -1,6 +1,20 @@
+import { type WebSocket } from 'ws';
 import { MizarStore } from '../auth/store.js';
 import type { BindPlan } from '../net/interfaces.js';
 import { type ServerFrame } from '../protocol/frames.js';
+/** The minimum a served connection has to offer. */
+export interface MizarChannel {
+    /** Whether the far end can still receive. */
+    readonly open: boolean;
+    /** Write one frame. */
+    send(text: string): void;
+    /** Close, with a WebSocket-ish code and reason. */
+    close(code?: number, reason?: string): void;
+    /** Deliver inbound frames. Registered once, before anything is read. */
+    onMessage(listener: (data: Buffer, isBinary: boolean) => void): void;
+    /** Announce the end — closed or failed, the caller does not care which. */
+    onClose(listener: () => void): void;
+}
 export interface ClientSession {
     /** The device this session speaks for. */
     readonly deviceId: string;
@@ -21,6 +35,16 @@ export interface ListenerOptions {
     readonly port: number;
     /** Whether to probe upward for a free port. */
     readonly portFallback: boolean;
+    /**
+     * The direct path, when it is running.
+     *
+     * The listener does not own a p2p engine — the plugin starts one because it
+     * also advertises the endpoint id — so it is handed a way to attach signaling
+     * sockets and serve whatever the engine accepts.
+     */
+    readonly p2p?: {
+        attachSignal(socket: WebSocket): void;
+    };
     /** Persistent host state. */
     readonly store: MizarStore;
     /** Pairing code lifetime, in seconds. */
@@ -132,4 +156,15 @@ export declare class MizarListener {
      * @param plan - the new plan to bind.
      */
     rebind(plan: BindPlan): Promise<void>;
+    /**
+     * Serve a channel that is already established.
+     *
+     * The direct path arrives through this door: a punched p2p stream carries the
+     * same frames a WebSocket does, so authentication, methods and delivery are
+     * one implementation rather than two that agree until they do not.
+     *
+     * @param channel - the established channel.
+     * @param remote - how to describe the far end in logs.
+     */
+    serveChannel(channel: MizarChannel, remote: string): void;
 }
