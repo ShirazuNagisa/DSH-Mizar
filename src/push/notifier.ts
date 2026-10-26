@@ -57,6 +57,18 @@ export const DEFAULT_SETTLE_MS = 15_000
 const MAX_TEXT = 140
 
 /**
+ * How recently a device must have reported its app on screen for a start to be
+ * withheld from it.
+ *
+ * Seconds, not minutes: the case this covers is the app making its own card and
+ * not having been handed the token yet (measured at 3.2 s from `Activity.request`
+ * to `push.register`). A phone that has had its app in the background for
+ * longer than this gets a start whenever one is needed -- that is the pocket
+ * case, and it must not be slowed down by a guess.
+ */
+const START_AFTER_FOREGROUND_MS = 10_000
+
+/**
  * Record types that mean the session is working again.
  *
  * The list is an allowlist and not a denylist, because the log carries far more
@@ -229,6 +241,16 @@ export class PushNotifier {
   #publishing = false
   /** Whether the one "could not publish a card" line was logged. */
   #warnedActivity = false
+  /**
+   * When each device last reported its app on screen.
+   *
+   * A card that has just been started by the app cannot be seen from here, and
+   * its push token takes a few seconds to arrive: a start sent into that gap
+   * puts a second island beside the first. So a device whose app was on screen a
+   * moment ago is left out of a start, and the update the next publish sends --
+   * to the token by then reported -- carries the same rows to the same card.
+   */
+  readonly #lastForegroundAt = new Map<string, number>()
 
   constructor(options: PushNotifierOptions) {
     this.#options = options
@@ -252,8 +274,12 @@ export class PushNotifier {
    * @param foreground - whether its app is on screen.
    */
   setForeground(deviceId: string, foreground: boolean): void {
-    if (foreground) this.#foreground.add(deviceId)
-    else this.#foreground.delete(deviceId)
+    if (foreground) {
+      this.#foreground.add(deviceId)
+      this.#lastForegroundAt.set(deviceId, Date.now())
+    } else {
+      this.#foreground.delete(deviceId)
+    }
   }
 
   /**
@@ -270,6 +296,7 @@ export class PushNotifier {
    */
   forget(deviceId: string): void {
     this.#foreground.delete(deviceId)
+    this.#lastForegroundAt.delete(deviceId)
   }
 
   /**
@@ -562,10 +589,20 @@ export class PushNotifier {
         if (!keep.has(id)) this.#runningSince.delete(id)
       }
       if (rows.length === 0) return
+      const phase = this.#cardUp ? 'update' : 'start'
+      // A start for a phone that was on screen a moment ago is a second card:
+      // the app starts its own on the refresh after a prompt, and its token
+      // arrives a few seconds later than the card does.
+      const except = new Set(this.#foreground)
+      if (phase === 'start') {
+        for (const [deviceId, at] of this.#lastForegroundAt) {
+          if (now - at < START_AFTER_FOREGROUND_MS) except.add(deviceId)
+        }
+      }
       const message: ActivityMessage = {
-        phase: this.#cardUp ? 'update' : 'start',
+        phase,
         rows,
-        exceptDeviceIds: [...this.#foreground],
+        exceptDeviceIds: [...except],
       }
       const sent = await this.#options.transport.activity(message)
       this.#warnedActivity = false

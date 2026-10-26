@@ -1292,6 +1292,34 @@ describe('starting the island from the computer', () => {
     expect(transport.activities[0]?.exceptDeviceIds).toEqual(['d1'])
   })
 
+  it('withholds a start from a phone whose app was on screen a moment ago', async () => {
+    vi.useFakeTimers()
+    const transport = new RecordingTransport()
+    const push = notifier({
+      transport,
+      runningSessions: async () => [{ sessionId: 's1', title: null }],
+    })
+    // The operator sent the prompt on the phone and pocketed it: the app has a
+    // card up, and its token arrives a few seconds later than the card does. A
+    // start into that gap is a second island, so the phone that was just on
+    // screen is left out of it.
+    push.setForeground('d1', true)
+    await vi.advanceTimersByTimeAsync(1000)
+    push.setForeground('d1', false)
+    push.turnStarted('s1')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(transport.activities[0]?.phase).toBe('start')
+    expect(transport.activities[0]?.exceptDeviceIds).toContain('d1')
+
+    // Ten seconds later the window has passed: a phone in a pocket is exactly
+    // the phone a start exists for, and it must not be slowed down by a guess.
+    await vi.advanceTimersByTimeAsync(11_000)
+    transport.activities.length = 0
+    push.turnStarted('s1')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(transport.activities[0]?.exceptDeviceIds ?? []).not.toContain('d1')
+  })
+
   it('forgets the card it believed in when the work ends', async () => {
     vi.useFakeTimers()
     const transport = new RecordingTransport()
