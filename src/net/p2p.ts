@@ -38,6 +38,20 @@ import type { Stream } from '../transport/p2p/session.js'
 /** The path a phone dials for signaling, behind the relay's room prefix. */
 export const SIGNAL_PATH = '/mizar-net/signal'
 
+/**
+ * How long a signal channel may stay open without a device token.
+ *
+ * The business channel allows ten seconds for the same step; a signalling
+ * channel has nothing to do before it, so the same window is generous.
+ */
+const SIGNAL_HANDSHAKE_MS = 10_000
+
+/** Signalling messages one channel may send per window. */
+const SIGNAL_BURST = 8
+
+/** The window those messages are counted in. */
+const SIGNAL_WINDOW_MS = 10_000
+
 /** The patch of a p2p connection, as far as this module cares. */
 export interface StreamLike {
   receive(): Promise<Buffer | null>
@@ -59,7 +73,14 @@ export interface SignalChannelLike {
   send(text: string): void
   onMessage(listener: (text: string) => void): void
   onClose(listener: () => void): void
-  close(): void
+  /**
+   * Close the channel, optionally with a code and a reason.
+   *
+   * The codes are the ones the business channel uses for the same refusals --
+   * 4401 for "who are you", 4408 for "slow down" -- so a phone can tell a
+   * rejected signal channel from a dropped one.
+   */
+  close(code?: number, reason?: string): void
 }
 
 /** One Mizar frame's worth of bytes, adapted to the listener's channel shape. */
@@ -120,6 +141,61 @@ export function readCandidates(value: unknown): Candidate[] {
   return out
 }
 
+/**
+ * Read the token out of a signalling `hello`.
+ *
+ * The first frame on a signal channel is the phone's, and it carries the same
+ * device token the business channel authenticates with. Nothing else is accepted
+ * first: a channel that opens with candidates is a channel that has not said who
+ * it is.
+ *
+ * @param text - the raw frame.
+ * @returns the token, or `null` when this is not a usable hello.
+ */
+export function readSignalHello(text: string): string | null {
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof value !== 'object' || value === null) return null
+  const message = value as { v?: unknown; type?: unknown; token?: unknown }
+  if (message.v !== 1 || message.type !== 'hello') return null
+  if (typeof message.token !== 'string' || message.token === '') return null
+  return message.token
+}
+
+/**
+ * Whether an address is one the host should not punch at.
+ *
+ * Loopback, "this network", broadcast, multicast and link-local are never a
+ * phone on the other side of a NAT: punching at them only turns the host into a
+ * probe and a reflector for whoever asked. Private ranges stay, because a phone
+ * on the same LAN is exactly what the direct path is for.
+ *
+ * @param address - a candidate address, IPv4 or IPv6.
+ * @returns true when the address is not worth a packet.
+ */
+export function unroutable(address: string): boolean {
+  const value = address.trim().toLowerCase().replace(/^\[|\]$/g, '')
+  if (value === '') return true
+  if (value === '::' || value === '::1') return true
+  // IPv6 link-local and multicast.
+  if (value.startsWith('fe80:') || value.startsWith('ff')) return true
+  const parts = value.split('.')
+  if (parts.length !== 4) return false
+  const octets = parts.map((part) => Number(part))
+  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false
+  const first = octets[0]
+  const second = octets[1]
+  if (first === undefined || second === undefined) return false
+  if (first === 0 || first === 127) return true
+  if (first === 255 || first >= 224) return true
+  if (first === 169 && second === 254) return true
+  return false
+}
+
 /** Everything the service needs to start. */
 export interface P2PServiceOptions {
   /** The install's tunnel secret, base64url. */
@@ -148,6 +224,8 @@ export class P2PService {
   private running = true
   private streamListeners: Array<(channel: MizarChannelLike, remote: string) => void> = []
   private readonly signals = new Set<SignalChannelLike>()
+  /** Signalling budget per channel, dropped with the channel. */
+  private readonly signalSpend = new WeakMap<SignalChannelLike, { at: number; count: number }>()
 
   /**
    * A service around an engine.
@@ -215,17 +293,44 @@ export class P2PService {
    *
    * @param channel - the phone's signal channel.
    */
-  attachSignal(channel: SignalChannelLike): void {
-    this.signals.add(channel)
-    channel.onMessage((text) => this.handleSignal(channel, text))
+  attachSignal(channel: SignalChannelLike, authorize: (token: string) => boolean): void {
+    // The channel is anonymous until the first frame says otherwise, and nothing
+    // about this machine leaves it before then. Announcing first -- as this used
+    // to -- handed the endpoint id, every local address and the STUN-reflexive
+    // one to anyone who could reach the port.
+    let admitted = false
+    const deadline = setTimeout(() => {
+      if (!admitted) channel.close(4401, 'unauthenticated')
+    }, SIGNAL_HANDSHAKE_MS)
+    deadline.unref?.()
+
+    channel.onMessage((text) => {
+      if (!admitted) {
+        const token = readSignalHello(text)
+        if (token === null) {
+          channel.close(4401, 'hello required')
+          return
+        }
+        if (!authorize(token)) {
+          channel.close(4401, 'unauthenticated')
+          return
+        }
+        admitted = true
+        clearTimeout(deadline)
+        this.signals.add(channel)
+        // Now the announcement is owed: the phone has shown it is ours, and it
+        // may already be dialling.
+        channel.send(
+          JSON.stringify({ v: 1, type: 'hello', endpointId: this.endpointId, candidates: this.candidates() }),
+        )
+        return
+      }
+      this.handleSignal(channel, text)
+    })
     channel.onClose(() => {
+      clearTimeout(deadline)
       this.signals.delete(channel)
     })
-    // The desktop's own announcement. Sent first, because the phone may already
-    // be dialling and a hello costs one frame.
-    channel.send(
-      JSON.stringify({ v: 1, type: 'hello', endpointId: this.endpointId, candidates: this.candidates() }),
-    )
   }
 
   /** Stop accepting, drop every stream, and close the engine. */
@@ -234,6 +339,43 @@ export class P2PService {
     for (const channel of this.signals) channel.close()
     this.signals.clear()
     await this.engine.close()
+  }
+
+  /**
+   * Charge one signalling message to the channel's budget.
+   *
+   * A burst, not a rate: a real handshake is two or three messages, and the
+   * point is to stop a loop rather than to police a slow link.
+   *
+   * @param channel - the channel the message arrived on.
+   * @returns false when the channel has spent its window.
+   */
+  private spendSignal(channel: SignalChannelLike): boolean {
+    const now = Date.now()
+    const spent = this.signalSpend.get(channel)
+    if (spent === undefined || now - spent.at >= SIGNAL_WINDOW_MS) {
+      this.signalSpend.set(channel, { at: now, count: 1 })
+      return true
+    }
+    if (spent.count >= SIGNAL_BURST) return false
+    spent.count += 1
+    return true
+  }
+
+  /**
+   * Whether a candidate is worth a punch.
+   *
+   * The engine will happily aim anywhere it is told; this is the only place that
+   * decides where "anywhere" stops. Our own addresses are excluded because
+   * punching at yourself is the cheapest way to make the host emit packets.
+   *
+   * @param entry - a candidate from the phone.
+   * @returns true when the host may aim at it.
+   */
+  private punchable(entry: Candidate): boolean {
+    if (unroutable(entry.address)) return false
+    const own = this.engine.localCandidates()
+    return !own.some((mine) => mine.address === entry.address)
   }
 
   private handleSignal(channel: SignalChannelLike, text: string): void {
@@ -249,7 +391,13 @@ export class P2PService {
     // tolerance the Mizar protocol has for frames it does not know.
     if (message.v !== 1) return
     if (message.type !== 'hello' && message.type !== 'candidates') return
-    const candidates = readCandidates(message.candidates)
+    if (!this.spendSignal(channel)) {
+      // A channel that keeps talking after its budget is gone is not a phone
+      // finishing a handshake; closing it costs an honest client one reconnect.
+      channel.close(4408, 'signalling too fast')
+      return
+    }
+    const candidates = readCandidates(message.candidates).filter((entry) => this.punchable(entry))
     if (candidates.length === 0) return
     this.engine.offerCandidates(candidates)
     // Answer with ours, so a phone that dialled first learns where to punch
@@ -365,7 +513,7 @@ export function adaptSignalSocket(socket: WebSocket): SignalChannelLike {
       socket.on('close', listener)
       socket.on('error', listener)
     },
-    close: () => socket.close(),
+    close: (code, reason) => socket.close(code, reason),
   }
 }
 

@@ -110,7 +110,14 @@ export interface ListenerOptions {
    * sockets and serve whatever the engine accepts.
    */
   readonly p2p?: {
-    attachSignal(socket: WebSocket): void
+    /**
+     * Attach a signalling socket.
+     *
+     * `authorize` answers whether a device token is one of ours. The engine does
+     * not know about devices and should not: the same store that authenticates
+     * the business channel decides here too.
+     */
+    attachSignal(socket: WebSocket, authorize: (token: string) => boolean): void
   }
   /** Persistent host state. */
   readonly store: MizarStore
@@ -702,8 +709,21 @@ export class MizarListener {
         socket.destroy()
         return
       }
+      const remote = remoteOf(request)
       this.#signalWss.handleUpgrade(request, socket, head, (websocket) => {
-        signal.attachSignal(websocket)
+        // The same device token the business channel wants. A signal channel is
+        // an offer to open a direct connection, and an unauthenticated one is a
+        // stranger asking this machine to punch holes for it.
+        signal.attachSignal(websocket, (token) => {
+          if (verifyToken(this.#options.store.state.devices, token) !== null) return true
+          void this.#options.store.audit({
+            time: Date.now(),
+            event: 'client-rejected',
+            remote,
+            detail: 'signal channel with an unknown device token',
+          })
+          return false
+        })
       })
       return
     }

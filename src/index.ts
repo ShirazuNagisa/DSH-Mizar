@@ -550,7 +550,12 @@ async function startListener(
     },
     ...(p2p === null
       ? {}
-      : { p2p: { attachSignal: (socket) => p2p.attachSignal(adaptSignalSocket(socket)) } }),
+      : {
+          p2p: {
+            attachSignal: (socket, authorize) =>
+              p2p.attachSignal(adaptSignalSocket(socket), authorize),
+          },
+        }),
     // Dropping to zero clients is the broker's fail-closed trigger: an approval
     // with nobody left to answer it must settle rather than hang the agent.
     onClientCount: (count) => broker.setClientCount(count),

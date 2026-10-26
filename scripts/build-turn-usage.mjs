@@ -15,5 +15,7 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node22',
-  outfile: new URL('../lib/bridge/turn-usage-fold.js', import.meta.url).pathname,
+  // `fileURLToPath`, not `.pathname`: on Windows the latter is `/E:/...`, and
+  // esbuild reads the drive letter as an output directory named `E:`.
+  outfile: fileURLToPath(new URL('../lib/bridge/turn-usage-fold.js', import.meta.url)),
 })
