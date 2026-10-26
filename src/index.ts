@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import type { Context } from './dsh.js'
 import { Config, listenerBindMode, resolveStunServers } from './config.js'
 import type { Config as MizarConfig } from './config.js'
+import { desktopIdentity } from './desktop.js'
 import { registerAnswerers } from './bridge/answerers.js'
 import { DeliveryLedger } from './bridge/delivery.js'
 import { createMethodTable, type HostRelayControl, type HostRelayState } from './bridge/index.js'
@@ -520,6 +521,10 @@ async function startListener(
       hostName: hostname(),
       home: stateDir,
       protocolVersion: PROTOCOL_VERSION,
+      // The phone's computer list draws this under the machine's name. Fixed
+      // for the life of the process: this plugin is DSH, on whichever system
+      // Node reports.
+      desktop: desktopIdentity(),
       // Read through the holder when `host.info` is answered rather than here,
       // so a rebind is reported without rebuilding the table.
       authorities: () => holder.current?.authorities ?? [],

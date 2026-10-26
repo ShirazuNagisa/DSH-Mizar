@@ -646,8 +646,27 @@ describe('method table', () => {
       hostName: 'mac',
       home: '/home',
       protocolVersion: 1,
-      plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1'] },
+      plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1', 'file.read.v1', 'file.deliverables.v1', 'session.activity.v1', 'session.archive.v1', 'session.fork.v1', 'live-activity.start.v1', 'relay.tier.v1'] },
       addresses: ['192.168.1.10:19390', '127.0.0.1:19390'],
+    })
+  })
+
+  it('reports the desktop OS and product for the phone’s computer list', async () => {
+    // The phone cannot tell a macOS host from a Linux one once the pairing is
+    // offline, so the host states both facts while it can.
+    const { ctx } = fakeContext({})
+    const table = createMethodTable(
+      ctx,
+      { ...facts, desktop: { os: 'macOS', client: 'DSH' } },
+      new InteractionBroker(),
+    )
+    await expect(table['host.info']?.(undefined, context)).resolves.toEqual({
+      hostId: 'h1',
+      hostName: 'mac',
+      home: '/home',
+      protocolVersion: 1,
+      plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1', 'file.read.v1', 'file.deliverables.v1', 'session.activity.v1', 'session.archive.v1', 'session.fork.v1', 'live-activity.start.v1', 'relay.tier.v1'] },
+      desktop: { os: 'macOS', client: 'DSH' },
     })
   })
 
@@ -660,8 +679,11 @@ describe('method table', () => {
       undefined,
       context,
     )) as Record<string, unknown>
-    expect(info).toEqual({ hostId: 'h1', hostName: 'mac', home: '/home', protocolVersion: 1, plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1'] } })
+    expect(info).toEqual({ hostId: 'h1', hostName: 'mac', home: '/home', protocolVersion: 1, plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1', 'file.read.v1', 'file.deliverables.v1', 'session.activity.v1', 'session.archive.v1', 'session.fork.v1', 'live-activity.start.v1', 'relay.tier.v1'] } })
     expect('addresses' in info).toBe(false)
+    // Older compositions cannot name their desktop either; absent is how the
+    // phone knows to fall back instead of drawing an empty capsule.
+    expect('desktop' in info).toBe(false)
   })
 
   it('reads the addresses when host.info is answered, not when the table is built', async () => {
@@ -2026,7 +2048,7 @@ describe('relay selection over the wire', () => {
       hostName: 'mac',
       home: '/home',
       protocolVersion: 1,
-      plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1'] },
+      plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1', 'file.read.v1', 'file.deliverables.v1', 'session.activity.v1', 'session.archive.v1', 'session.fork.v1', 'live-activity.start.v1', 'relay.tier.v1'] },
       relay: { url: free, room: 'ROOM1', baseURL: `${free}/r/ROOM1` },
     })
   })

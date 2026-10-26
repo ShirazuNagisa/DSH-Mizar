@@ -43,6 +43,7 @@ import {
 } from './sessions.js'
 import { parseUploadBegin, parseUploadChunk, PromptReplayGuard, UploadStore } from './uploads.js'
 import { canonicalRelayURL, isSelectableRelayURL } from '../relay/selection.js'
+import type { DesktopIdentity } from '../desktop.js'
 
 /** Per-connection facts handed to a method. */
 export interface MethodContext {
@@ -86,6 +87,15 @@ export interface HostFacts {
   readonly hostName: string
   readonly home: string
   readonly protocolVersion: number
+  /**
+   * What this computer is, for the phone's computer list.
+   *
+   * The OS and desktop product cannot be derived from a pairing once the host
+   * is offline, so the host states them while it can. Optional so older
+   * compositions and tests keep answering `host.info` without the field: the
+   * app falls back to the name it already holds rather than inventing one.
+   */
+  readonly desktop?: DesktopIdentity
   /**
    * The `host:port` authorities the listener is bound to.
    *
@@ -468,6 +478,17 @@ export function createMethodTable(
   const replayGuard = new PromptReplayGuard()
   const relay = facts.relay
 
+  const capabilities = [
+    'deepseek.balance.v1',
+    'file.read.v1',
+    'file.deliverables.v1',
+    'session.activity.v1',
+    'session.archive.v1',
+    'session.fork.v1',
+    'live-activity.start.v1',
+    'relay.tier.v1',
+  ]
+
   const table: Record<string, MethodHandler> = {
     /**
      * Host identity and protocol facts.
@@ -485,7 +506,8 @@ export function createMethodTable(
       hostName: facts.hostName,
       home: facts.home,
       protocolVersion: facts.protocolVersion,
-      plugin: { id: 'dsh-mizar', capabilities: ['deepseek.balance.v1'] },
+      plugin: { id: 'dsh-mizar', capabilities },
+      ...(facts.desktop === undefined ? {} : { desktop: facts.desktop }),
       ...(facts.authorities === undefined ? {} : { addresses: facts.authorities() }),
       ...(relay === undefined ? {} : { relay: relay.current() }),
       ...(facts.netEndpointId?.() === undefined ? {} : { netEndpointId: facts.netEndpointId() }),

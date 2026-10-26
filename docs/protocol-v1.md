@@ -144,13 +144,13 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 
 ## 方法表
 
-27 个方法。`payload` 里的键：
+31 个方法（自建中继时没有 `relay.set`，为 30 个）。`payload` 里的键：
 
 ### 主机与会话
 
 | 方法 | payload | 返回 |
 |---|---|---|
-| `host.info` | — | 主机身份与绑定情况，含可选的 `addresses` 与 `relay`（见下） |
+| `host.info` | — | 主机身份与绑定情况，含可选的 `addresses`、`relay` 与 `desktop`（见下） |
 | `relay.set` | `url` | `{url, room, baseURL}` —— 把电脑的隧道移到免费或付费中继。`url` 只接受两个公共中继（见下），否则 `MALFORMED_FRAME`；**token 不变，room 不变**，已配对关系不受影响。老宿主回 `NOT_IMPLEMENTED`。 |
 | `session.list` | `{}` | `{items: [SessionRow]}` —— DSH 会列出的会话，**不含已归档的**：归档集在工作区注册表里，DSH 自己的 `session/list` 不知道它，所以插件在出口处过滤。 |
 | `workspace.list` | `{}` | `{items: [WorkspaceRow], complete}` —— DSH **当前**拥有的工作区，按 DSH 自己的显示顺序（插件直接读 `ctx.workspaceRegistry.list()`，和电脑侧边栏同源），每个工作区带 `sessionIds`：DSH 认可的归属关系，只有主机知道，手机不该自己拿目录去猜；**已归档的会话不在其中**（DSH 的归档保留归属槽位，以便取消归档回到原位，所以过滤在插件出口做）。会话比工作区长命：删掉工作区只移除注册表条目，会话日志还在磁盘上，所以 `session.list` 仍会返回那些目录的会话，手机再按目录分组就会一直留着它们。<br>`sessionIds` **缺省**和 `[]` 是两回事：`[]` 是「DSH 说这里没有会话」，缺省是「主机没说」，只有后者才允许退回按目录匹配。<br>`complete` 说这份清单**是不是完整读到了**：只有 `true` 才允许丢弃已经不在清单里的工作区，因为「主机答不上来」和「主机一个都没有」都是空数组。任何一条读不出来的记录都按「没答」处理（返回 `{items: [], complete: false}`）——主机还可以用 `workspace/follow` 的 baseline 兜底；两条路都不行时手机退回按目录分组。 |
@@ -164,6 +164,8 @@ mizar://pair?h=100.64.0.1:19390&c=K7QP-3M2X&n=Mac-mini&v=1
 | `session.archive` | `sessionId`, `stopActivity?` | `{archived: true}` |
 
 **`host.info` 的 `addresses` 是可选字段，老宿主不答。** 它是插件监听器**实际绑定**的每个 `host:port`（如 `192.168.1.10:19390`、`127.0.0.1:19390`），回答的是「这台电脑现在能从哪些地址拨到」。手机在中继连接上拿不到局域网地址，正是靠它才知道该往哪直连。**缺省不等于空数组**：缺省是「这台电脑的插件太旧，答不上来」，手机必须退回配对时已知的那个地址；`[]` 才是「现在没有任何可拨地址」。这是新增的可选字段，老客户端解码时忽略不认识的键，**不需要升 `PROTOCOL_VERSION`**。
+
+**`host.info` 的 `desktop` 回答「这台电脑是什么」。** 形状是 `{os, client}`，例如 `{"os": "macOS", "client": "DSH"}`：`os` 是操作系统显示名（`macOS` / `Windows` / `Linux`），`client` 是桌面端产品名（本插件为 `DSH`；Codex、Claude Code 插件分别是 `Codex`、`Claude Code`）。这两个值不能从手机侧的配对信息推导，尤其是电脑离线时；所以由宿主在能回答时一并给出，手机存进配对记录，下次离线也能画。它们是**显示名而不是协议枚举**，客户端不认识的短字符串直接显示即可。缺省（老宿主或无法判断）时手机退回原有的名称/时间副标题，**不得**猜一个系统或产品名。可选字段，老客户端忽略，**不需要升 `PROTOCOL_VERSION`**。
 
 **`host.info` 的 `relay` 与 `relay.set`：按账户把隧道移到付费中继。**
 付费账户的隧道应当走主力1（`https://dshmizar-1.shirazu-nagisa.com`），免费账户走主力0（`https://dshmizar.shirazu-nagisa.com`）。host 自己不知道账户是否付费，App 知道，所以由 App 调 `relay.set`：
@@ -587,9 +589,11 @@ MIZAR_WRITE_FIXTURES=1 scripts/dev.sh smoke   # 重新捕获
 
 ## DeepSeek 官方账户余额（可选增量能力）
 
-`host.info` 可附带 `plugin: {id: "dsh-mizar", capabilities: ["deepseek.balance.v1"]}`。
+`host.info` 可附带 `plugin: {id: "dsh-mizar", capabilities: [...]}`。当前列表包括
+`deepseek.balance.v1`、`file.read.v1`、`file.deliverables.v1`、`session.activity.v1`、
+`session.archive.v1`、`session.fork.v1`、`live-activity.start.v1`、`relay.tier.v1`。
 缺少标记、其他插件或旧插件不代表余额为零，客户端不得发起 `account.balance`。
-标记只证明插件实现了此方法，不证明宿主已登录或当前账户有余额。
+标记只证明插件实现了对应能力，不证明宿主已登录、当前账户有余额或每个会话都可分叉。
 
 `account.balance` 请求：
 

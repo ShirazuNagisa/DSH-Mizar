@@ -3,6 +3,7 @@ import type { DeliveryLedger } from './delivery.js';
 import { InteractionBroker } from './interactions.js';
 import type { PushBinding } from '../push/binding.js';
 import { UploadStore } from './uploads.js';
+import type { DesktopIdentity } from '../desktop.js';
 /** Per-connection facts handed to a method. */
 export interface MethodContext {
     /** The authenticated device's id. */
@@ -41,6 +42,15 @@ export interface HostFacts {
     readonly hostName: string;
     readonly home: string;
     readonly protocolVersion: number;
+    /**
+     * What this computer is, for the phone's computer list.
+     *
+     * The OS and desktop product cannot be derived from a pairing once the host
+     * is offline, so the host states them while it can. Optional so older
+     * compositions and tests keep answering `host.info` without the field: the
+     * app falls back to the name it already holds rather than inventing one.
+     */
+    readonly desktop?: DesktopIdentity;
     /**
      * The `host:port` authorities the listener is bound to.
      *
