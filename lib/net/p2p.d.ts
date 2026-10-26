@@ -25,7 +25,14 @@ export interface SignalChannelLike {
     send(text: string): void;
     onMessage(listener: (text: string) => void): void;
     onClose(listener: () => void): void;
-    close(): void;
+    /**
+     * Close the channel, optionally with a code and a reason.
+     *
+     * The codes are the ones the business channel uses for the same refusals --
+     * 4401 for "who are you", 4408 for "slow down" -- so a phone can tell a
+     * rejected signal channel from a dropped one.
+     */
+    close(code?: number, reason?: string): void;
 }
 /** One Mizar frame's worth of bytes, adapted to the listener's channel shape. */
 export interface MizarChannelLike {
@@ -59,6 +66,30 @@ export declare function deriveEndpointIdentity(tunnelSecret: string): EndpointId
  * @returns the usable candidates.
  */
 export declare function readCandidates(value: unknown): Candidate[];
+/**
+ * Read the token out of a signalling `hello`.
+ *
+ * The first frame on a signal channel is the phone's, and it carries the same
+ * device token the business channel authenticates with. Nothing else is accepted
+ * first: a channel that opens with candidates is a channel that has not said who
+ * it is.
+ *
+ * @param text - the raw frame.
+ * @returns the token, or `null` when this is not a usable hello.
+ */
+export declare function readSignalHello(text: string): string | null;
+/**
+ * Whether an address is one the host should not punch at.
+ *
+ * Loopback, "this network", broadcast, multicast and link-local are never a
+ * phone on the other side of a NAT: punching at them only turns the host into a
+ * probe and a reflector for whoever asked. Private ranges stay, because a phone
+ * on the same LAN is exactly what the direct path is for.
+ *
+ * @param address - a candidate address, IPv4 or IPv6.
+ * @returns true when the address is not worth a packet.
+ */
+export declare function unroutable(address: string): boolean;
 /** Everything the service needs to start. */
 export interface P2PServiceOptions {
     /** The install's tunnel secret, base64url. */
@@ -85,6 +116,8 @@ export declare class P2PService {
     private running;
     private streamListeners;
     private readonly signals;
+    /** Signalling budget per channel, dropped with the channel. */
+    private readonly signalSpend;
     /**
      * A service around an engine.
      *
@@ -123,9 +156,30 @@ export declare class P2PService {
      *
      * @param channel - the phone's signal channel.
      */
-    attachSignal(channel: SignalChannelLike): void;
+    attachSignal(channel: SignalChannelLike, authorize: (token: string) => boolean): void;
     /** Stop accepting, drop every stream, and close the engine. */
     close(): Promise<void>;
+    /**
+     * Charge one signalling message to the channel's budget.
+     *
+     * A burst, not a rate: a real handshake is two or three messages, and the
+     * point is to stop a loop rather than to police a slow link.
+     *
+     * @param channel - the channel the message arrived on.
+     * @returns false when the channel has spent its window.
+     */
+    private spendSignal;
+    /**
+     * Whether a candidate is worth a punch.
+     *
+     * The engine will happily aim anywhere it is told; this is the only place that
+     * decides where "anywhere" stops. Our own addresses are excluded because
+     * punching at yourself is the cheapest way to make the host emit packets.
+     *
+     * @param entry - a candidate from the phone.
+     * @returns true when the host may aim at it.
+     */
+    private punchable;
     private handleSignal;
     private acceptLoop;
 }

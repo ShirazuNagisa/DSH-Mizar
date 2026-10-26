@@ -16,7 +16,9 @@ import {
   deriveEndpointIdentity,
   P2PService,
   readCandidates,
+  readSignalHello,
   StreamChannel,
+  unroutable,
   type P2PEngineLike,
   type SignalChannelLike,
   type StreamLike,
@@ -30,6 +32,7 @@ import { STANDARD_POLICY } from '../src/transport/p2p/policy.js'
 class FakeStream implements StreamLike {
   readonly sent: Buffer[] = []
   closed = false
+  closeCode: number | undefined
   private readonly inbound: Buffer[] = []
   private waiter: ((value: Buffer | null) => void) | null = null
 
@@ -84,8 +87,9 @@ class FakeSignal implements SignalChannelLike {
     this.closeListener = listener
   }
 
-  close(): void {
+  close(code?: number): void {
     this.closed = true
+    this.closeCode = code
     this.closeListener?.()
   }
 
@@ -168,11 +172,59 @@ describe('candidates from the wire', () => {
 })
 
 describe('signaling', () => {
-  it('says hello with its own candidates', () => {
+  /** The token the stub store knows. */
+  const admit = (token: string): boolean => token === 'device-token'
+
+  /** Attach a channel and let the phone through the door. */
+  const open = (service: P2PService, signal: FakeSignal): void => {
+    service.attachSignal(signal, admit)
+    signal.deliver(JSON.stringify({ v: 1, type: 'hello', token: 'device-token' }))
+  }
+
+  it('says nothing about this machine before the phone presents a token', () => {
     const engine = new StubEngine()
     const service = new P2PService(engine, () => undefined)
     const signal = new FakeSignal()
-    service.attachSignal(signal)
+
+    service.attachSignal(signal, admit)
+
+    // No endpoint id, no addresses, no STUN-reflexive candidate: the port is
+    // reachable by anyone who can route to it, and none of that is theirs yet.
+    expect(signal.sent).toEqual([])
+  })
+
+  it('closes a channel whose first frame is not a hello', () => {
+    const engine = new StubEngine()
+    const service = new P2PService(engine, () => undefined)
+    const signal = new FakeSignal()
+    service.attachSignal(signal, admit)
+
+    signal.deliver(
+      JSON.stringify({ v: 1, type: 'candidates', candidates: [{ address: '198.51.100.9', port: 1234 }] }),
+    )
+
+    expect(signal.closed).toBe(true)
+    expect(signal.closeCode).toBe(4401)
+    expect(engine.offered).toEqual([])
+  })
+
+  it('closes a channel whose token is not one of ours', () => {
+    const engine = new StubEngine()
+    const service = new P2PService(engine, () => undefined)
+    const signal = new FakeSignal()
+    service.attachSignal(signal, admit)
+
+    signal.deliver(JSON.stringify({ v: 1, type: 'hello', token: 'someone-else' }))
+
+    expect(signal.closed).toBe(true)
+    expect(signal.sent).toEqual([])
+  })
+
+  it('says hello with its own candidates once admitted', () => {
+    const engine = new StubEngine()
+    const service = new P2PService(engine, () => undefined)
+    const signal = new FakeSignal()
+    open(service, signal)
 
     const hello = signal.messages()[0]
     expect(hello?.['v']).toBe(1)
@@ -180,35 +232,81 @@ describe('signaling', () => {
     expect(hello?.['endpointId']).toBe(engine.identity.endpointId)
     // Priority is (type preference << 24) + 1 here: host is 126, and nothing
     // else in the formula is set for a plain host candidate.
-    expect(hello?.['candidates']).toEqual([{ kind: 'host', address: '10.0.0.5', port: 51000, priority: 2113929217 }])
+    expect(hello?.['candidates']).toEqual([
+      { kind: 'host', address: '10.0.0.5', port: 51000, priority: 2113929217 },
+    ])
   })
 
   it('feeds the peer candidates to the engine and answers with its own', () => {
     const engine = new StubEngine()
     const service = new P2PService(engine, () => undefined)
     const signal = new FakeSignal()
-    service.attachSignal(signal)
+    open(service, signal)
 
     signal.deliver(
       JSON.stringify({
         v: 1,
-        type: 'hello',
-        endpointId: 'phone',
+        type: 'candidates',
         candidates: [{ kind: 'serverReflexive', address: '198.51.100.7', port: 40000 }],
       }),
     )
 
     expect(engine.offered).toEqual(['198.51.100.7:40000'])
-    const answer = signal.messages()[1]
+    const answer = signal.messages().at(-1)
     expect(answer?.['type']).toBe('candidates')
-    expect(answer?.['candidates']).toEqual([{ kind: 'host', address: '10.0.0.5', port: 51000, priority: 2113929217 }])
+    expect(answer?.['candidates']).toEqual([
+      { kind: 'host', address: '10.0.0.5', port: 51000, priority: 2113929217 },
+    ])
+  })
+
+  it('refuses to aim at loopback, at our own address, or at multicast', () => {
+    const engine = new StubEngine()
+    const service = new P2PService(engine, () => undefined)
+    const signal = new FakeSignal()
+    open(service, signal)
+
+    signal.deliver(
+      JSON.stringify({
+        v: 1,
+        type: 'candidates',
+        candidates: [
+          { kind: 'host', address: '127.0.0.1', port: 53315 },
+          { kind: 'host', address: '10.0.0.5', port: 51000 },
+          { kind: 'host', address: '224.0.0.1', port: 1900 },
+          { kind: 'host', address: '10.0.0.9', port: 42000 },
+        ],
+      }),
+    )
+
+    // The LAN candidate survives: a phone on the same network is the point.
+    expect(engine.offered).toEqual(['10.0.0.9:42000'])
+  })
+
+  it('closes a channel that keeps signalling past its budget', () => {
+    const engine = new StubEngine()
+    const service = new P2PService(engine, () => undefined)
+    const signal = new FakeSignal()
+    open(service, signal)
+
+    const burst = JSON.stringify({
+      v: 1,
+      type: 'candidates',
+      candidates: [{ kind: 'host', address: '198.51.100.7', port: 40000 }],
+    })
+    for (let index = 0; index < 20; index += 1) signal.deliver(burst)
+
+    expect(signal.closed).toBe(true)
+    expect(signal.closeCode).toBe(4408)
+    // Bounded: the channel spent its window and stopped, rather than the engine
+    // punching on every message.
+    expect(engine.offered.length).toBeLessThan(20)
   })
 
   it('ignores junk, the wrong version and unknown types', () => {
     const engine = new StubEngine()
     const service = new P2PService(engine, () => undefined)
     const signal = new FakeSignal()
-    service.attachSignal(signal)
+    open(service, signal)
 
     signal.deliver('not json')
     signal.deliver(JSON.stringify({ v: 2, type: 'hello', candidates: [{ address: 'a', port: 1 }] }))
@@ -216,8 +314,40 @@ describe('signaling', () => {
     signal.deliver(JSON.stringify({ v: 1, type: 'candidates', candidates: [] }))
 
     expect(engine.offered).toEqual([])
-    // Only the initial hello was sent: nothing above deserved an answer.
+    // Only the admission hello was sent: nothing above deserved an answer.
     expect(signal.sent).toHaveLength(1)
+  })
+})
+
+describe('what a signal hello may say', () => {
+  it('takes a token and nothing else as an introduction', () => {
+    expect(readSignalHello(JSON.stringify({ v: 1, type: 'hello', token: 'abc' }))).toBe('abc')
+    expect(readSignalHello(JSON.stringify({ v: 1, type: 'hello', token: '' }))).toBeNull()
+    expect(readSignalHello(JSON.stringify({ v: 1, type: 'hello' }))).toBeNull()
+    expect(readSignalHello(JSON.stringify({ v: 2, type: 'hello', token: 'abc' }))).toBeNull()
+    expect(readSignalHello(JSON.stringify({ v: 1, type: 'candidates', token: 'abc' }))).toBeNull()
+    expect(readSignalHello('nope')).toBeNull()
+  })
+})
+
+describe('addresses not worth a packet', () => {
+  it('refuses the ones that are never a phone behind a NAT', () => {
+    expect(unroutable('127.0.0.1')).toBe(true)
+    expect(unroutable('0.0.0.0')).toBe(true)
+    expect(unroutable('255.255.255.255')).toBe(true)
+    expect(unroutable('224.0.0.1')).toBe(true)
+    expect(unroutable('169.254.10.1')).toBe(true)
+    expect(unroutable('::1')).toBe(true)
+    expect(unroutable('fe80::1')).toBe(true)
+    expect(unroutable('ff02::1')).toBe(true)
+    expect(unroutable('')).toBe(true)
+  })
+
+  it('keeps the LAN and the public internet', () => {
+    expect(unroutable('10.0.0.9')).toBe(false)
+    expect(unroutable('192.168.1.20')).toBe(false)
+    expect(unroutable('172.16.4.4')).toBe(false)
+    expect(unroutable('198.51.100.7')).toBe(false)
   })
 })
 
