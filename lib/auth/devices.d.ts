@@ -85,6 +85,17 @@ export interface DevicePush {
      * activity is a credential for ending a countdown that no longer exists.
      */
     readonly liveActivityToken?: string;
+    /**
+     * The APNs token that can *start* a Live Activity on this device.
+     *
+     * A third token, and unlike the one above it belongs to the install rather
+     * than to a card: iOS issues it so a host can bring a card into existence
+     * while the app is not running, and it survives every activity that comes and
+     * goes. Absent means iOS has not handed one over yet, so absence must not be
+     * read as "no card is up" -- unlike {@link liveActivityToken}, registering
+     * without it does not clear the stored one.
+     */
+    readonly liveActivityStartToken?: string;
     /** When the app last told this host where it is. */
     readonly updatedAt: number;
 }

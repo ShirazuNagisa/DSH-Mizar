@@ -75,6 +75,22 @@ export interface PushNotifierOptions {
      * session is wrong and loses the screen the operator was using.
      */
     readonly anySessionRunning?: () => Promise<boolean>;
+    /**
+     * The sessions the phone would draw a row for, as the host sees them now.
+     *
+     * The rows of a Live Activity started from here, and the same list the idle
+     * check reads -- so a card started by a push and a card started by the app
+     * name the same sessions. Absent when the host cannot answer, and then no
+     * card is ever started remotely: an island nobody can name is worse than one
+     * that waits for the app.
+     */
+    readonly runningSessions?: () => Promise<readonly ActivitySession[]>;
+}
+/** One session that is working, as the notifier needs it to draw a row. */
+export interface ActivitySession {
+    readonly sessionId: string;
+    /** The host's title, or `null` when it has not named the session. */
+    readonly title: string | null;
 }
 /**
  * Which language to write a notification in.
@@ -190,9 +206,37 @@ export declare class PushNotifier {
      * @param recordType - the session-log record that moved it.
      */
     noteActivity(sessionId: string, recordType: string): void;
+    /**
+     * Note that a session began working.
+     *
+     * The trigger for a card the app did not start. It is deliberately not a
+     * notification: nothing is shown as a banner, and the only thing that happens
+     * is that the phones without a card are asked to make one. Debounced, because
+     * DSH emits several `turn/start` records for one instruction and one card
+     * should be one push.
+     *
+     * @param sessionId - the session that started working.
+     */
+    turnStarted(sessionId: string): void;
     /** How many announcements are waiting out their quiet period. */
     get settlingCount(): number;
     /** Drop every pending announcement, for plugin unload. */
     dispose(): void;
+    /**
+     * Hand one message to the transport, with the devices that are looking
+     * excluded.
+     *
+     * The parameter is the message *without* the exclusion list: only this class
+     * holds the presence bookkeeping, so a caller that had to fill it in would be
+     * a caller that could get it wrong. There is no early return for "somebody is
+     * looking" -- an iPhone in a pocket is not covered by an iPad on a desk, and
+     * the exclusion list is what keeps the two apart.
+     */
+    /**
+     * Whether a remotely started card is believed to be up.
+     *
+     * For the log and for tests; the decision itself reads the field directly.
+     */
+    get cardIsUp(): boolean;
 }
 export {};

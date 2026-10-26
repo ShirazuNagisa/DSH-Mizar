@@ -109,6 +109,15 @@ export declare class MizarListener {
     static start(options: ListenerOptions): Promise<MizarListener>;
     /** The port actually bound. */
     get port(): number;
+    /**
+     * Whether anything at all is listening.
+     *
+     * A listener with nothing bound is the one state a phone cannot recover
+     * from: the relay replays into this listener, so every request dies with
+     * `ECONNREFUSED` long after the network has settled. The bind watcher reads
+     * this to bind again even when the plan has not changed.
+     */
+    get bound(): boolean;
     /** The addresses actually bound. */
     get addresses(): readonly string[];
     /** The `host:port` authorities a phone can dial, one per bound address. */
@@ -153,9 +162,21 @@ export declare class MizarListener {
      * may no longer exist, and a phone reconnecting is cheaper than a socket that
      * silently stops delivering.
      *
+     * The old servers have to close before the new ones can take the port, which
+     * means a bind that fails here has already left the listener with nothing --
+     * and "nothing bound" is not a transient state the network recovers from: the
+     * relay replays every phone request into this listener, so each one would die
+     * with `ECONNREFUSED` forever after the network settled. This therefore never
+     * returns with nothing bound: the previous plan is restored, and loopback
+     * after that, so there is always somewhere for the replay to land. Only when
+     * even loopback refuses does it throw.
+     *
      * @param plan - the new plan to bind.
+     * @returns the plan now in effect -- the requested one on success, and the
+     * one that saved service otherwise. Callers compare the two to know whether
+     * the move actually happened.
      */
-    rebind(plan: BindPlan): Promise<void>;
+    rebind(plan: BindPlan): Promise<BindPlan>;
     /**
      * Serve a channel that is already established.
      *

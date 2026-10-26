@@ -42,7 +42,13 @@
  * @module dsh-mizar/push/notifier
  */
 import type { QuestionItem } from '../bridge/interactions.js'
-import type { PushMessage, PushRegistration, PushTransport } from './transport.js'
+import type {
+  ActivityMessage,
+  ActivityRow,
+  PushMessage,
+  PushRegistration,
+  PushTransport,
+} from './transport.js'
 
 /** How long a session must be quiet before its turn counts as finished. */
 export const DEFAULT_SETTLE_MS = 15_000
@@ -101,6 +107,23 @@ export interface PushNotifierOptions {
    * session is wrong and loses the screen the operator was using.
    */
   readonly anySessionRunning?: () => Promise<boolean>
+  /**
+   * The sessions the phone would draw a row for, as the host sees them now.
+   *
+   * The rows of a Live Activity started from here, and the same list the idle
+   * check reads -- so a card started by a push and a card started by the app
+   * name the same sessions. Absent when the host cannot answer, and then no
+   * card is ever started remotely: an island nobody can name is worse than one
+   * that waits for the app.
+   */
+  readonly runningSessions?: () => Promise<readonly ActivitySession[]>
+}
+
+/** One session that is working, as the notifier needs it to draw a row. */
+export interface ActivitySession {
+  readonly sessionId: string
+  /** The host's title, or `null` when it has not named the session. */
+  readonly title: string | null
 }
 
 /** One pending announcement about a session that has stopped. */
@@ -182,6 +205,30 @@ export class PushNotifier {
   readonly #settling = new Map<string, Settling>()
   /** Whether the one "could not tell whether anything is running" line was logged. */
   #warnedLiveActivity = false
+  /**
+   * When each running session's current work began, by session id.
+   *
+   * The clock a remotely started card counts from. Kept across turns rather than
+   * reset per turn: DSH emits runs of consecutive `turn/start` for one
+   * instruction, and a card whose clock restarted on each would show a number
+   * that goes back to zero while the work continues.
+   */
+  readonly #runningSince = new Map<string, number>()
+  /**
+   * Whether this host believes a card is up on some phone.
+   *
+   * The only state that decides `start` from `update`, and it is a belief rather
+   * than a fact: a relay with nothing registered answers `sent: 0`, and then the
+   * next attempt asks for a start again rather than pushing an update into a
+   * token nobody holds.
+   */
+  #cardUp = false
+  /** The scheduled activity publish, so a burst of turns is one request. */
+  #activityTimer: NodeJS.Timeout | null = null
+  /** Whether a publish is in flight; a second one waits rather than races. */
+  #publishing = false
+  /** Whether the one "could not publish a card" line was logged. */
+  #warnedActivity = false
 
   constructor(options: PushNotifierOptions) {
     this.#options = options
@@ -319,6 +366,22 @@ export class PushNotifier {
     this.#cancel(sessionId)
   }
 
+  /**
+   * Note that a session began working.
+   *
+   * The trigger for a card the app did not start. It is deliberately not a
+   * notification: nothing is shown as a banner, and the only thing that happens
+   * is that the phones without a card are asked to make one. Debounced, because
+   * DSH emits several `turn/start` records for one instruction and one card
+   * should be one push.
+   *
+   * @param sessionId - the session that started working.
+   */
+  turnStarted(sessionId: string): void {
+    if (!this.#runningSince.has(sessionId)) this.#runningSince.set(sessionId, Date.now())
+    this.#scheduleActivity()
+  }
+
   /** How many announcements are waiting out their quiet period. */
   get settlingCount(): number {
     return this.#settling.size
@@ -328,6 +391,8 @@ export class PushNotifier {
   dispose(): void {
     for (const entry of this.#settling.values()) clearTimeout(entry.timer)
     this.#settling.clear()
+    if (this.#activityTimer !== null) clearTimeout(this.#activityTimer)
+    this.#activityTimer = null
     this.#foreground.clear()
   }
 
@@ -360,6 +425,16 @@ export class PushNotifier {
       timeSensitive: false,
       ...(endLiveActivity ? { endLiveActivity: true } : {}),
     })
+    if (endLiveActivity) {
+      // The card is being taken down by this same request; a start after it has
+      // to be a start, and the clocks belong to a card that no longer exists.
+      this.#cardUp = false
+      this.#runningSince.clear()
+      return
+    }
+    // Still working elsewhere: the rows have shrunk, and a card that kept the
+    // finished session would be counting for nothing.
+    this.#scheduleActivity(0)
   }
 
   /**
@@ -414,6 +489,108 @@ export class PushNotifier {
    * looking" -- an iPhone in a pocket is not covered by an iPad on a desk, and
    * the exclusion list is what keeps the two apart.
    */
+  /**
+   * Whether a remotely started card is believed to be up.
+   *
+   * For the log and for tests; the decision itself reads the field directly.
+   */
+  get cardIsUp(): boolean {
+    return this.#cardUp
+  }
+
+  /** Coalesce a burst of starts into one publish. */
+  #scheduleActivity(delayMs = 150): void {
+    if (this.#activityTimer !== null) return
+    const timer = setTimeout(() => {
+      this.#activityTimer = null
+      void this.#publishActivity()
+    }, delayMs)
+    // A pending publish must not be the reason the process stays alive.
+    timer.unref?.()
+    this.#activityTimer = timer
+  }
+
+  /**
+   * Ask the phones to start a card, or to bring the one they have up to date.
+   *
+   * The rows come from the host's own list rather than from `#runningSince`, so
+   * a session that stopped between two turns is not on the card and the clock
+   * map is pruned to what is actually running. A publish that finds nothing
+   * running does nothing: the end of the work is the completion announcement's
+   * business, and ending a card from here would end one while a notification
+   * about it is still settling.
+   */
+  async #publishActivity(): Promise<void> {
+    if (this.#options.runningSessions === undefined) return
+    if (this.#publishing) {
+      // A second request while one is in flight describes a state that will have
+      // moved on by the time it lands; one more pass afterwards is enough.
+      this.#scheduleActivity(50)
+      return
+    }
+    this.#publishing = true
+    try {
+      const running = await this.#options.runningSessions()
+      const now = Date.now()
+      // Oldest first *before* the cap, so the two rows kept are the two the
+      // island would draw: the app orders by how long the work has been going,
+      // and the session list arrives in a different order entirely.
+      const candidates = running
+        .map((session) => ({
+          sessionId: session.sessionId,
+          runningSince: this.#runningSince.get(session.sessionId) ?? now,
+          knownTitle: session.title,
+        }))
+        .sort((left, right) => left.runningSince - right.runningSince)
+        .slice(0, 2)
+
+      const rows: ActivityRow[] = []
+      for (const candidate of candidates) {
+        const title =
+          candidate.knownTitle ?? (await this.#describe(candidate.sessionId).catch(() => null))
+        rows.push({
+          sessionId: candidate.sessionId,
+          title: (title ?? '').trim(),
+          runningSince: candidate.runningSince,
+        })
+      }
+      // Pruned to what the card can show: an id that is not running has no clock
+      // to keep, and one that fell off the two-row cap is re-seeded when it
+      // returns.
+      const keep = new Set(rows.map((row) => row.sessionId))
+      for (const id of [...this.#runningSince.keys()]) {
+        if (!keep.has(id)) this.#runningSince.delete(id)
+      }
+      if (rows.length === 0) return
+      const message: ActivityMessage = {
+        phase: this.#cardUp ? 'update' : 'start',
+        rows,
+        exceptDeviceIds: [...this.#foreground],
+      }
+      const sent = await this.#options.transport.activity(message)
+      this.#warnedActivity = false
+      if (sent > 0) {
+        this.#cardUp = true
+        this.#options.log(`push: live activity ${message.phase} → ${sent} device(s)`)
+      } else if (this.#cardUp) {
+        // Nothing took an update, so the card this host believed in is gone --
+        // ended by the operator, by the system, or by a relay that lost the
+        // token. The next publish asks for a start instead of updating nothing.
+        this.#cardUp = false
+      }
+    } catch (error) {
+      // Once, not once per turn: a gateway that is down would otherwise write a
+      // line for every session that starts or finishes while it is.
+      if (!this.#warnedActivity) {
+        this.#warnedActivity = true
+        const detail = error instanceof Error ? error.message : String(error)
+        this.#options.log(`push: the live activity could not be published — ${detail}`)
+      }
+    } finally {
+      this.#publishing = false
+    }
+  }
+
   async #send(message: Omit<PushMessage, 'exceptDeviceIds'>): Promise<void> {
     try {
       const sent = await this.#options.transport.send({

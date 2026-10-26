@@ -37,6 +37,19 @@ export interface RelayClientOptions {
      * watchdog.
      */
     readonly watchdogMs?: number;
+    /**
+     * How often the tunnel is pinged at the protocol level, in ms. `0` disables.
+     *
+     * The silence watchdog above asks "has the relay sent anything", and the
+     * relay's own pings keep that question answered even when nothing else
+     * moves. A connection broken in one direction only -- a proxy that kept the
+     * local socket while its upstream died -- therefore looks alive here: the
+     * relay's pings arrive, and every frame this side writes vanishes. The phone
+     * then sits on a session where each request times out with "did not answer
+     * in time", which is exactly the screen this exists to end. A ping that
+     * cannot come back as a pong is that break, and it is worth redialling for.
+     */
+    readonly pingIntervalMs?: number;
 }
 /** What the outside world can see about the tunnel. */
 export interface RelayClientState {
@@ -64,10 +77,18 @@ export interface RelaySocket {
      * needs this; a test stand-in may omit it and be closed with `close`.
      */
     terminate?(): void;
+    /**
+     * Send a protocol-level ping, when the implementation has one. `ws` answers
+     * these at the library level, so a pong is proof the round trip works rather
+     * than proof the far end's application is busy; a test stand-in may omit it
+     * and is then left to the silence watchdog alone.
+     */
+    ping?(): void;
     on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): unknown;
     on(event: 'close', listener: (code: number, reason: Buffer) => void): unknown;
     on(event: 'error', listener: (error: Error) => void): unknown;
     on(event: 'open', listener: () => void): unknown;
+    on(event: 'pong', listener: () => void): unknown;
 }
 /**
  * Make a close code safe to send.

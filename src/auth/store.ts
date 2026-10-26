@@ -150,6 +150,14 @@ function parsePush(value: unknown): DevicePush | null {
   const liveActivityToken = isLiveActivityToken(record['liveActivityToken'])
     ? record['liveActivityToken']
     : undefined
+  // A separate check from the one above even though the shape is the same: the
+  // two tokens fail differently. A live-activity token that rotted must be
+  // dropped, because re-announcing it ends a card that is not there. A start
+  // token that rotted is dropped too, but its absence means the opposite --
+  // nothing to start with, not nothing to end.
+  const liveActivityStartToken = isLiveActivityToken(record['liveActivityStartToken'])
+    ? record['liveActivityStartToken']
+    : undefined
   return {
     token: record['token'],
     platform,
@@ -157,6 +165,7 @@ function parsePush(value: unknown): DevicePush | null {
     locale: record['locale'],
     updatedAt: record['updatedAt'],
     ...(liveActivityToken === undefined ? {} : { liveActivityToken }),
+    ...(liveActivityStartToken === undefined ? {} : { liveActivityStartToken }),
   }
 }
 

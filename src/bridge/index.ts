@@ -345,6 +345,30 @@ function readLiveActivityToken(record: Record<string, unknown>): string | null {
 }
 
 /**
+ * Read the optional token that can start a Live Activity on this device.
+ *
+ * Absent is the normal case for every build that predates the field, and also
+ * for an install iOS has not handed one to yet. Unlike the activity token below,
+ * absence is **not** a clear: the two answer different questions, and a phone
+ * that has not received a start token has simply not received one.
+ *
+ * @param record - the registration payload.
+ * @returns the token, or `null` when the app has none to report.
+ * @throws MethodError when a value is present but is not a usable token.
+ */
+function readLiveActivityStartToken(record: Record<string, unknown>): string | null {
+  const value = record['liveActivityStartToken']
+  if (value === undefined) return null
+  if (!isLiveActivityToken(value)) {
+    throw new MethodError(
+      'MALFORMED_FRAME',
+      'push.register: payload."liveActivityStartToken" must be 1-200 lowercase hex characters',
+    )
+  }
+  return value
+}
+
+/**
  * Read a `push.register`'s platform, environment and Live Activity token.
  *
  * `platform` is optional and means iOS when absent, which is the one thing that
@@ -373,6 +397,7 @@ function readRegistration(payload: unknown): {
   platform: 'ios' | 'android'
   environment: 'sandbox' | 'production' | null
   liveActivityToken: string | null
+  liveActivityStartToken: string | null
 } {
   const record = optionalObject(payload, 'push.register')
   const platform = record['platform'] ?? 'ios'
@@ -388,7 +413,7 @@ function readRegistration(payload: unknown): {
     // nothing for an Android client to answer here -- and a client that sends
     // one anyway must still register, because refusing would make a version of
     // the app unable to pair for a reason that cannot be true.
-    return { platform, environment: null, liveActivityToken: null }
+    return { platform, environment: null, liveActivityToken: null, liveActivityStartToken: null }
   }
   if (value !== 'sandbox' && value !== 'production') {
     throw new MethodError(
@@ -396,7 +421,12 @@ function readRegistration(payload: unknown): {
       'push.register: payload."environment" must be "sandbox" or "production" for platform "ios"',
     )
   }
-  return { platform, environment: value, liveActivityToken: readLiveActivityToken(record) }
+  return {
+    platform,
+    environment: value,
+    liveActivityToken: readLiveActivityToken(record),
+    liveActivityStartToken: readLiveActivityStartToken(record),
+  }
 }
 
 /**
@@ -849,6 +879,7 @@ export function createMethodTable(
           environment: registration.environment,
           locale: optionalString(payload, 'locale') ?? 'en',
           liveActivityToken: registration.liveActivityToken,
+          liveActivityStartToken: registration.liveActivityStartToken,
         }),
       }
     },

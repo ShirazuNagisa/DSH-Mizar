@@ -724,6 +724,7 @@ describe('method table', () => {
         environment: 'sandbox',
         locale: 'zh-Hans',
         liveActivityToken: null,
+        liveActivityStartToken: null,
       },
     ])
 
@@ -731,6 +732,52 @@ describe('method table', () => {
     expect(calls[1]).toEqual(['presence', context.deviceId, true])
     expect(await table['push.unregister']?.({}, context)).toEqual({ unregistered: true })
     expect(calls[2]).toEqual(['unregister', context.deviceId])
+  })
+
+  it('carries the token that can start a live activity, and refuses a malformed one', async () => {
+    const { ctx } = fakeContext({})
+    const calls: unknown[] = []
+    const table = createMethodTable(ctx, facts, new InteractionBroker(), {
+      register: async (...args: unknown[]) => {
+        calls.push(args)
+        return true
+      },
+      presence: async () => {},
+      unregister: async () => true,
+      republish: async () => 0,
+    })
+
+    // A third token, travelling beside the two that end a card: this one starts
+    // one, and the app sends it whenever iOS has issued one -- which is not the
+    // same condition as "a card is up".
+    expect(
+      await table['push.register']?.(
+        {
+          token: 'deadbeef',
+          environment: 'production',
+          liveActivityStartToken: 'aabbccdd',
+        },
+        context,
+      ),
+    ).toEqual({ registered: true })
+    expect((calls[0] as unknown[])[1]).toMatchObject({
+      liveActivityStartToken: 'aabbccdd',
+      // Absent `liveActivityToken` still means "no card is up", which is why the
+      // two fields are read separately.
+      liveActivityToken: null,
+    })
+
+    // Upper case, not hex at all, or longer than any token Apple issues is a bug
+    // in the app rather than a token to hold: the same rule the host applies to
+    // the activity token it has been accepting since before this one existed.
+    for (const bad of ['AABB', 'zz', 'g', 'a'.repeat(201), 7]) {
+      await expect(
+        table['push.register']?.(
+          { token: 'deadbeef', environment: 'production', liveActivityStartToken: bad },
+          context,
+        ),
+      ).rejects.toMatchObject({ code: 'MALFORMED_FRAME' })
+    }
   })
 
   it('requires an environment on a push registration', async () => {
@@ -789,6 +836,7 @@ describe('method table', () => {
         environment: null,
         locale: 'en',
         liveActivityToken: null,
+        liveActivityStartToken: null,
       },
     ])
 
@@ -810,6 +858,7 @@ describe('method table', () => {
         environment: null,
         locale: 'en',
         liveActivityToken: null,
+        liveActivityStartToken: null,
       },
     ])
   })
@@ -844,6 +893,7 @@ describe('method table', () => {
         environment: 'sandbox',
         locale: 'zh-Hans',
         liveActivityToken: null,
+        liveActivityStartToken: null,
       },
     ])
   })

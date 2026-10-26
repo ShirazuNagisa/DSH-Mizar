@@ -66,3 +66,15 @@ export interface RunningSessionRow {
  * @returns whether the computer is still working on something the phone shows.
  */
 export declare function anyNotifiableSessionRunning(rows: readonly RunningSessionRow[]): boolean;
+/**
+ * Whether one session-list row is a session the phone draws a row for *and* is
+ * working.
+ *
+ * The same predicate the idle check uses, named so the Live Activity's rows can
+ * be selected with it: a card that named a subagent would be a card about work
+ * with no row to open.
+ *
+ * @param row - one row of the session list.
+ * @returns whether it is both running and a session the phone shows.
+ */
+export declare function isRowNotifiable(row: RunningSessionRow): boolean;

@@ -24,6 +24,7 @@ import { PushNotifier } from './push/notifier.js'
 import {
   anyNotifiableSessionRunning,
   isNotifiable,
+  isRowNotifiable,
   type ScopedSessionHeader,
 } from './push/scope.js'
 import { NoopTransport, RelayTransport, type PushTransport } from './push/transport.js'
@@ -85,6 +86,10 @@ class SwitchableTransport implements PushTransport {
 
   send(...args: Parameters<PushTransport['send']>): ReturnType<PushTransport['send']> {
     return this.#current.send(...args)
+  }
+
+  activity(...args: Parameters<PushTransport['activity']>): ReturnType<PushTransport['activity']> {
+    return this.#current.activity(...args)
   }
 }
 
@@ -397,9 +402,21 @@ async function startListener(
     }
   }
 
+  // The rows a card started from here draws, in the session list's own words.
+  // The title is left to the notifier, which already has the one lookup a title
+  // goes through -- a second reader of the same frame is a second answer to "what
+  // is this session called".
+  const runningSessionsForActivity = async () => {
+    const rows = (await listSessions(ctx)).items
+    return rows
+      .filter((row) => isRowNotifiable(row))
+      .map((row) => ({ sessionId: row.sessionId, title: null as string | null }))
+  }
+
   const notifier = new PushNotifier({
     transport: pushTransport,
     anySessionRunning,
+    runningSessions: runningSessionsForActivity,
     describeSession: async (sessionId) => {
       try {
         const frame = await sessionStats(ctx, sessionId)
@@ -738,6 +755,12 @@ async function startListener(
   // which is a notification that can only be dismissed.
   ctx.on('session/event', (session: SessionHandle, event: SessionEventLike) => {
     if (!isNotifiable(session.header)) return
+    if (event.type === 'turn/start') {
+      // The only signal that starts a card the app did not start: the phone in a
+      // pocket learns about the work from this, not from its own poll, which is
+      // not running.
+      notifier.turnStarted(session.id)
+    }
     if (event.type === 'turn/end') {
       const reason = (event.data as { reason?: { kind?: unknown } } | undefined)?.reason
       notifier.turnEnded(session.id, typeof reason?.kind === 'string' ? reason.kind : null)

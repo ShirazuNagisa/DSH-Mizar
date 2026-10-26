@@ -74,14 +74,28 @@ export interface RunningSessionRow {
  * @returns whether the computer is still working on something the phone shows.
  */
 export function anyNotifiableSessionRunning(rows: readonly RunningSessionRow[]): boolean {
-  return rows.some(
-    (row) =>
-      row.running &&
-      isNotifiable({
-        // `null` is "this field is not there", which is what the header type
-        // uses absence for.
-        ...(row.origin === null ? {} : { origin: row.origin }),
-        ...(row.parentSessionId === null ? {} : { parentSession: row.parentSessionId }),
-      }),
+  return rows.some(isRowNotifiable)
+}
+
+/**
+ * Whether one session-list row is a session the phone draws a row for *and* is
+ * working.
+ *
+ * The same predicate the idle check uses, named so the Live Activity's rows can
+ * be selected with it: a card that named a subagent would be a card about work
+ * with no row to open.
+ *
+ * @param row - one row of the session list.
+ * @returns whether it is both running and a session the phone shows.
+ */
+export function isRowNotifiable(row: RunningSessionRow): boolean {
+  return (
+    row.running &&
+    isNotifiable({
+      // `null` is "this field is not there", which is what the header type uses
+      // absence for.
+      ...(row.origin === null ? {} : { origin: row.origin }),
+      ...(row.parentSessionId === null ? {} : { parentSession: row.parentSessionId }),
+    })
   )
 }

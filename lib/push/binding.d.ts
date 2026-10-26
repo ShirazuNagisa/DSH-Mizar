@@ -38,6 +38,15 @@ export interface PushRegistrationInput {
      * credential for ending a countdown that no longer exists.
      */
     readonly liveActivityToken: string | null;
+    /**
+     * The APNs token that can start a Live Activity, or `null` when the app has
+     * not reported one.
+     *
+     * `null` keeps whatever is stored: the token belongs to the install, so an
+     * app build without the field (or one iOS has not handed a token to yet) says
+     * nothing about the token the host already holds.
+     */
+    readonly liveActivityStartToken: string | null;
 }
 /** What the bridge calls. */
 export interface PushBinding {

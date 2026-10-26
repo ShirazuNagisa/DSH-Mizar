@@ -60,6 +60,53 @@ export interface PushRegistration {
    * JSON key it does not know.
    */
   readonly liveActivityToken?: string
+  /**
+   * The APNs token that can start a Live Activity on this device.
+   *
+   * A third token, and the only one that can bring a card into existence while
+   * the app is not running. It belongs to the install rather than to a card, so
+   * omitting it says nothing about whether one is up.
+   */
+  readonly liveActivityStartToken?: string
+}
+
+/** One row of the Live Activity, as this computer knows it. */
+export interface ActivityRow {
+  /** The session the row is about. */
+  readonly sessionId: string
+  /**
+   * What the row says: the host's title for the session.
+   *
+   * The app falls back to the operator's instruction when there is no title, a
+   * field this plugin deliberately does not have -- instructions live in the
+   * conversation log, and reading one would be a second source for words the
+   * title already covers.
+   */
+  readonly title: string
+  /** When the work this row counts began, in epoch milliseconds. */
+  readonly runningSince: number
+}
+
+/** A Live Activity to start or bring up to date. */
+export interface ActivityMessage {
+  /**
+   * `start` asks the phone to create a card; `update` asks it to change one it
+   * already has.
+   *
+   * The difference is not cosmetic: a start goes to the token that can create an
+   * activity, an update to the token that addresses an existing one, and the
+   * relay addresses whichever it holds.
+   */
+  readonly phase: 'start' | 'update'
+  /** The rows, oldest first, at most two. */
+  readonly rows: readonly ActivityRow[]
+  /**
+   * Devices whose app is on screen, and which therefore started their own card.
+   *
+   * A start sent to one is a second card on the same phone, so the plugin names
+   * them rather than the relay guessing.
+   */
+  readonly exceptDeviceIds: readonly string[]
 }
 
 /** One notification. */
@@ -132,6 +179,18 @@ export interface PushTransport {
    * @returns how many devices the relay accepted it for.
    */
   send(message: PushMessage): Promise<number>
+  /**
+   * Start a Live Activity on the phones that do not have one, or update the one
+   * they have.
+   *
+   * Separate from {@link send} because it is not a notification: it carries the
+   * rows a card draws rather than words a banner shows, and it is addressed to a
+   * different token under a different APNs topic.
+   *
+   * @param message - the rows and which phase they are in.
+   * @returns how many devices the relay accepted it for.
+   */
+  activity(message: ActivityMessage): Promise<number>
 }
 
 /** A transport that drops everything. The default when no relay is configured. */
@@ -141,6 +200,9 @@ export class NoopTransport implements PushTransport {
   }
   async unregister(): Promise<void> {}
   async send(): Promise<number> {
+    return 0
+  }
+  async activity(): Promise<number> {
     return 0
   }
 }
@@ -239,6 +301,25 @@ export class RelayTransport implements PushTransport {
 
   async unregister(deviceId: string): Promise<void> {
     await this.#post('/push/v1/unregister', { deviceId }, 'unregister')
+  }
+
+  async activity(message: ActivityMessage): Promise<number> {
+    const reply = (await this.#post('/push/v1/activity', message, 'activity')) as {
+      sent?: unknown
+      enabled?: unknown
+    } | null
+    if (reply !== null && reply.enabled === false) {
+      const key = 'activity:no-key'
+      if (!this.#complained.has(key)) {
+        this.#complained.add(key)
+        this.#options.log(
+          'push: the relay has no APNs key — the live activity cannot be started from here',
+        )
+      }
+      return 0
+    }
+    const sent = reply?.sent
+    return typeof sent === 'number' && Number.isFinite(sent) ? sent : 0
   }
 
   async send(message: PushMessage): Promise<number> {

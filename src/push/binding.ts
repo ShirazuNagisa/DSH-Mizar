@@ -39,6 +39,15 @@ export interface PushRegistrationInput {
    * credential for ending a countdown that no longer exists.
    */
   readonly liveActivityToken: string | null
+  /**
+   * The APNs token that can start a Live Activity, or `null` when the app has
+   * not reported one.
+   *
+   * `null` keeps whatever is stored: the token belongs to the install, so an
+   * app build without the field (or one iOS has not handed a token to yet) says
+   * nothing about the token the host already holds.
+   */
+  readonly liveActivityStartToken: string | null
 }
 
 /** What the bridge calls. */
@@ -99,11 +108,20 @@ export function createPushBinding(options: PushBindingOptions): PushBinding {
       environment: push.environment,
       locale: push.locale,
       ...(push.liveActivityToken === undefined ? {} : { liveActivityToken: push.liveActivityToken }),
+      ...(push.liveActivityStartToken === undefined
+        ? {}
+        : { liveActivityStartToken: push.liveActivityStartToken }),
     }
   }
 
   return {
     async register(deviceId, input) {
+      // The start token is the one field a registration without it does not
+      // clear: the record is replaced whole, so the previous value has to be
+      // carried forward here or a launch that has not yet received a token would
+      // forget the one that can start the next card.
+      const previous = options.store.state.devices.find((entry) => entry.deviceId === deviceId)?.push
+      const startToken = input.liveActivityStartToken ?? previous?.liveActivityStartToken
       const known = await options.store.setDevicePush(deviceId, {
         token: input.token,
         platform: input.platform,
@@ -113,6 +131,7 @@ export function createPushBinding(options: PushBindingOptions): PushBinding {
         // Omitted when there is none, which is how `setDevicePush` is told to
         // clear it: this object is the whole record, not a patch.
         ...(input.liveActivityToken === null ? {} : { liveActivityToken: input.liveActivityToken }),
+        ...(startToken === undefined ? {} : { liveActivityStartToken: startToken }),
       })
       if (!known) {
         // A device that is not on the roster cannot have got here: every method
@@ -128,11 +147,13 @@ export function createPushBinding(options: PushBindingOptions): PushBinding {
         environment: input.environment,
         locale: input.locale,
         ...(input.liveActivityToken === null ? {} : { liveActivityToken: input.liveActivityToken }),
+        ...(startToken === undefined ? {} : { liveActivityStartToken: startToken }),
       })
       // Whether a Live Activity token is held, never the token itself: it is a
       // notification credential, and this log is what support requests quote.
       const activity =
-        input.liveActivityToken === null ? 'live-activity token: none' : 'live-activity token: held'
+        (input.liveActivityToken === null ? 'live-activity token: none' : 'live-activity token: held') +
+        (startToken === undefined ? ', start token: none' : ', start token: held')
       // Only the first eight characters of the token, which is enough to tell
       // two registrations apart in a log and not enough to be one.
       options.log(

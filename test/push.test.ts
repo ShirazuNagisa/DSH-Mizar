@@ -28,6 +28,7 @@ import { anyNotifiableSessionRunning, isNotifiable } from '../src/push/scope.js'
 import {
   NoopTransport,
   RelayTransport,
+  type ActivityMessage,
   type PushMessage,
   type PushRegistration,
   type PushTransport,
@@ -63,6 +64,14 @@ class RecordingTransport implements PushTransport {
     this.messages.push(message)
     return this.sent
   }
+
+  readonly activities: ActivityMessage[] = []
+
+  async activity(message: ActivityMessage): Promise<number> {
+    if (this.failure !== null) throw this.failure
+    this.activities.push(message)
+    return this.sent
+  }
 }
 
 /** A notifier over a recording transport. */
@@ -73,6 +82,7 @@ function notifier(options: {
   settleMs?: number
   describeFails?: boolean
   anySessionRunning?: () => Promise<boolean>
+  runningSessions?: () => Promise<readonly { sessionId: string; title: string | null }[]>
   log?: (message: string) => void
 }): PushNotifier {
   return new PushNotifier({
@@ -87,6 +97,7 @@ function notifier(options: {
     ...(options.anySessionRunning === undefined
       ? {}
       : { anySessionRunning: options.anySessionRunning }),
+    ...(options.runningSessions === undefined ? {} : { runningSessions: options.runningSessions }),
   })
 }
 
@@ -1222,5 +1233,83 @@ describe('which sessions a notification may be about', () => {
     expect(
       anyNotifiableSessionRunning([row({ running: false }), row()]),
     ).toBe(true)
+  })
+})
+
+describe('starting the island from the computer', () => {
+  it('asks for a card when a session begins, and updates it afterwards', async () => {
+    vi.useFakeTimers()
+    const transport = new RecordingTransport()
+    let running: { sessionId: string; title: string | null }[] = []
+    const push = notifier({
+      transport,
+      title: 'Refactor the parser',
+      runningSessions: async () => running,
+    })
+
+    // Nothing is running: a turn starting for a session the host has not listed
+    // yet is not a card. The list is the authority, not the event.
+    push.turnStarted('s1')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(transport.activities).toHaveLength(0)
+
+    running = [{ sessionId: 's1', title: null }]
+    push.turnStarted('s1')
+    // Debounced: several `turn/start` records for one instruction are one push.
+    push.turnStarted('s1')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(transport.activities).toHaveLength(1)
+    expect(transport.activities[0]).toMatchObject({
+      phase: 'start',
+      rows: [{ sessionId: 's1', title: 'Refactor the parser' }],
+    })
+    // The relay accepted it, so the next publish is an update rather than a
+    // second card.
+    expect(push.cardIsUp).toBe(true)
+
+    running = [
+      { sessionId: 's1', title: null },
+      { sessionId: 's2', title: null },
+    ]
+    push.turnStarted('s2')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(transport.activities).toHaveLength(2)
+    expect(transport.activities[1]).toMatchObject({ phase: 'update' })
+    expect(transport.activities[1]?.rows.map((row) => row.sessionId)).toEqual(['s1', 's2'])
+  })
+
+  it('does not start a card on a phone whose app is on screen', async () => {
+    vi.useFakeTimers()
+    const transport = new RecordingTransport()
+    const push = notifier({
+      transport,
+      runningSessions: async () => [{ sessionId: 's1', title: null }],
+    })
+    // One device is looking at its own card; the start goes to the others only.
+    push.setForeground('d1', true)
+    push.turnStarted('s1')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(transport.activities[0]?.exceptDeviceIds).toEqual(['d1'])
+  })
+
+  it('forgets the card it believed in when the work ends', async () => {
+    vi.useFakeTimers()
+    const transport = new RecordingTransport()
+    const push = notifier({
+      transport,
+      settleMs: 100,
+      anySessionRunning: async () => false,
+      runningSessions: async () => [{ sessionId: 's1', title: null }],
+    })
+    push.turnStarted('s1')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(push.cardIsUp).toBe(true)
+
+    push.turnEnded('s1', 'completed')
+    await vi.advanceTimersByTimeAsync(200)
+    // The completion announcement carries the end, and this host no longer has
+    // a card to update.
+    expect(transport.messages.at(-1)).toMatchObject({ kind: 'turn-complete', endLiveActivity: true })
+    expect(push.cardIsUp).toBe(false)
   })
 })
