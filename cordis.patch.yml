@@ -1,0 +1,17 @@
+# dsh-mizar bundle patch.
+#
+# Inserts the Mizar row into the profile tree. The row resolves from the
+# profile's own node_modules (this package is installed as a profile
+# dependency), so no installation-anchor package is required.
+#
+# This file is what makes `dsh-mizar` a *bundle*: a package listed in
+# `dsh.profile.bundles` contributes nothing to the composition without it. 0.9.0
+# removed the panel and very nearly removed this with it, which left the plugin
+# installed and never applied — no error, no log, nothing.
+#
+# Every field of this row's `config` belongs to the profile's own patch layer
+# (@see ~/.dsh/profiles/<profile>/cordis.patch.yml), not here, so two profiles
+# can configure Mizar independently.
+- insert:
+    - id: mizar
+      name: 'dsh-mizar'
