@@ -29,10 +29,17 @@ let store: MizarStore
 /** Answers the listener reported as delivered, in order. */
 const delivered: { method: string; result: unknown; deviceId: string }[] = []
 
+/** Released by a test to let every waiting `test.slow` answer at once. */
+let releaseSlow: () => void = () => undefined
+let slowGate: Promise<void> = Promise.resolve()
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'mizar-listener-'))
   store = await MizarStore.open(dir)
   delivered.length = 0
+  slowGate = new Promise<void>((resolve) => {
+    releaseSlow = resolve
+  })
   listener = await MizarListener.start({
     plan,
     port: 0,
@@ -48,6 +55,12 @@ beforeEach(async () => {
     methods: {
       'test.small': async () => ({ ok: true }),
       'test.large': async () => ({ blob: 'x'.repeat(600 * 1024) }),
+      // Holds its answer until the test lets go, which is how a connection gets
+      // more than one call in flight without racing the event loop.
+      'test.slow': async () => {
+        await slowGate
+        return { ok: true }
+      },
     },
     onDelivered: (method, result, session) => {
       delivered.push({ method, result, deviceId: session.deviceId })
@@ -237,5 +250,103 @@ describe('delivery bookkeeping', () => {
     expect(frame['code']).toBe('RESPONSE_TOO_LARGE')
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(delivered).toHaveLength(0)
+  })
+})
+
+
+describe('what one connection may ask for', () => {
+  /**
+   * Open an authenticated socket and hand it to the test.
+   *
+   * @param token - the device token.
+   * @returns the socket and every answer that arrived on it.
+   */
+  async function authenticated(token: string): Promise<{
+    socket: WebSocket
+    answers: Record<string, unknown>[]
+    closedWith: () => number | null
+  }> {
+    const socket = new WebSocket(`ws://127.0.0.1:${listener.port}/mizar/v1/ws`)
+    const answers: Record<string, unknown>[] = []
+    let closedWith: number | null = null
+    const ready = new Promise<void>((resolve, reject) => {
+      // An oversized frame makes the transport error before it closes; that is
+      // the refusal under test, so it is not a failure to run the test.
+      socket.on('error', () => undefined)
+      socket.on('close', (code: number) => {
+        closedWith = code
+      })
+      socket.on('open', () => {
+        socket.send(JSON.stringify({ v: 1, type: 'hello', id: 'h1', token, appVersion: '0.0.1' }))
+      })
+      socket.on('message', (data: Buffer) => {
+        const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>
+        if (frame['type'] === 'welcome') {
+          resolve()
+          return
+        }
+        answers.push(frame)
+      })
+      setTimeout(() => reject(new Error('no welcome')), 2_000)
+    })
+    await ready
+    return { socket, answers, closedWith: () => closedWith }
+  }
+
+  /** Wait until `predicate` holds, or give up. */
+  async function until(predicate: () => boolean, what: string): Promise<void> {
+    const deadline = Date.now() + 2_000
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  }
+
+  it('refuses a frame the transport will not carry, and keeps serving', async () => {
+    const { token } = await pair()
+    const { socket, answers, closedWith } = await authenticated(token)
+    // Over the one mebibyte the listener accepts, in a single frame: the point is
+    // that nothing on this side ever buffers or parses it.
+    socket.send(
+      JSON.stringify({
+        v: 1,
+        type: 'test.small',
+        id: 'huge',
+        payload: { blob: 'x'.repeat(1200 * 1024) },
+      }),
+    )
+    await until(() => closedWith() !== null, 'the transport to close')
+    // 1009 is `ws` saying the message exceeded `maxPayload`.
+    expect(closedWith()).toBe(1009)
+    expect(answers).toHaveLength(0)
+
+    // The refusal is per connection: the listener is still there for the next one.
+    const after = await callMethod(token, 'test.small')
+    expect(after['type']).toBe('ok')
+  })
+
+  it('answers RATE_LIMITED past sixteen calls in flight, and recovers after', async () => {
+    const { token } = await pair()
+    const { socket, answers } = await authenticated(token)
+    for (let index = 0; index < 17; index += 1) {
+      socket.send(JSON.stringify({ v: 1, type: 'test.slow', id: `slow-${index}`, payload: {} }))
+    }
+
+    // The refusal is the only answer that can arrive while the rest are held: a
+    // method that waits cannot answer, and the seventeenth call is not started.
+    await until(() => answers.length > 0, 'the refusal')
+    expect(answers).toHaveLength(1)
+    expect(answers[0]?.['type']).toBe('error')
+    expect(answers[0]?.['code']).toBe('RATE_LIMITED')
+    expect(answers[0]?.['retryable']).toBe(true)
+
+    releaseSlow()
+    await until(() => answers.length === 17, 'the held answers')
+    expect(answers.filter((frame) => frame['type'] === 'ok')).toHaveLength(16)
+    socket.terminate()
+
+    // The budget is per call, not per connection: it is back to zero now.
+    const after = await callMethod(token, 'test.small')
+    expect(after['type']).toBe('ok')
   })
 })

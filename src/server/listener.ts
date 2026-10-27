@@ -67,6 +67,33 @@ const RATE_LIMIT_SWEEP_MS = 60_000
  */
 const MAX_FRAME_BYTES = 512 * 1024
 
+/**
+ * The largest frame this listener will accept, in bytes.
+ *
+ * Not the same number as above, and deliberately: the outbound cap is what we
+ * promise to *deliver* to a reader that refuses anything over one mebibyte, while
+ * this is what we accept *from* one. iOS caps its own sends at that same mebibyte,
+ * so a client is entitled to use all of it -- a 600 KB pasted log is a long
+ * message, not an attack -- and a smaller ceiling here would close the socket on
+ * something the phone thought was legal.
+ *
+ * What it does stop is the pathological case: `ws` would otherwise buffer and
+ * hand over a message of any size, up to a hundred megabytes by default, for this
+ * listener to parse.
+ */
+const MAX_INBOUND_BYTES = 1024 * 1024
+
+/**
+ * How many requests one connection may have in flight at once.
+ *
+ * A method that waits -- a prompt the host queues, a page it is still building --
+ * holds its handler open, and nothing upstream of this line bounds how many a
+ * client can start. Sixteen is well past what either app does (the widest burst
+ * is a page, its stats and its catalog at once) and small enough that one
+ * connection cannot occupy the event loop with its own backlog.
+ */
+const MAX_IN_FLIGHT = 16
+
 /** The minimum a served connection has to offer. */
 export interface MizarChannel {
   /** Whether the far end can still receive. */
@@ -445,10 +472,12 @@ export class MizarListener {
    * @returns the addresses with a socket listening.
    */
   async #bindAll(addresses: readonly string[], port: number): Promise<string[]> {
-    this.#wss = new WebSocketServer({ noServer: true })
+    // `maxPayload` is the only limit that costs nothing: the transport refuses the
+    // message (close 1009) before this side buffers or parses it.
+    this.#wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_BYTES })
     // Its own server because the two paths speak different languages: Mizar
     // frames on one, candidate exchange on the other.
-    this.#signalWss = new WebSocketServer({ noServer: true })
+    this.#signalWss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_BYTES })
     const bound: string[] = []
     for (const address of addresses) {
       const server = createServer((request, response) => {
@@ -773,6 +802,8 @@ export class MizarListener {
   #serve(channel: MizarChannel, remote: string, forgetSocket: () => void): void {
 
     let session: ClientSession | undefined
+    /** Calls this connection has started and not answered. */
+    let inFlight = 0
 
     const send = (frame: ServerFrame): boolean => {
       if (!channel.open) return false
@@ -937,6 +968,22 @@ export class MizarListener {
           return
         }
 
+        // Refused rather than queued: a client this far ahead is either looping or
+        // has lost track of its own answers, and the retryable flag is what lets an
+        // honest one come back once the backlog drains.
+        if (inFlight >= MAX_IN_FLIGHT) {
+          send(
+            errorFrame(
+              'RATE_LIMITED',
+              `this connection already has ${inFlight} requests in flight`,
+              frame.id,
+              true,
+            ),
+          )
+          return
+        }
+
+        inFlight += 1
         try {
           const result = await handler(frame.payload, session)
           // Recorded only after the answer is on the wire. A write that never
@@ -953,6 +1000,10 @@ export class MizarListener {
           } else {
             send(errorFrame('INTERNAL', describe(error), frame.id))
           }
+        } finally {
+          // Released on every path, including the one that answered an error: a
+          // connection that leaks its budget stops working after sixteen calls.
+          inFlight -= 1
         }
       })().catch((error: unknown) => {
         send(errorFrame('INTERNAL', describe(error), currentId))
