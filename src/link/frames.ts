@@ -217,12 +217,19 @@ export type FrameToPlugin = WelcomeFrame | InvokeFrame | ServiceFrame | CancelFr
  */
 export function toWire(value: unknown): unknown {
   try {
-    // `JSON.stringify` writes a lone surrogate as `\ud83d` with no trailing
-    // half, because JavaScript strings allow one. A strict JSON reader (ours
-    // included) refuses the whole document over it, so a single half emoji in
-    // one session title can cost a 900 KB answer. `toWellFormed` replaces those
-    // halves with U+FFFD before they reach the wire.
-    const text = JSON.stringify(wellFormed(value), (_key, item: unknown) => {
+    // `JSON.stringify` writes a lone surrogate as `\ud83d` with no trailing half,
+    // because JavaScript strings allow one, and a strict reader can then refuse
+    // the whole document: one half emoji in a session title once cost a 946 KB
+    // answer. Sanitising keeps what this module serialises clean. It is not the
+    // only defence — the desktop repairs frames of its own accord, and the
+    // `result` frames never pass through here — so it is cheap insurance for an
+    // older desktop rather than a claim to be the fix.
+    //
+    // It has to happen inside the replacer: a pre-pass that rebuilt the value
+    // cloned objects without their prototypes, and then the `instanceof` checks
+    // below never matched — an Error crossed the wire as `{}`, and so did a Date.
+    const text = JSON.stringify(value, (_key, item: unknown) => {
+      if (typeof item === 'string') return item.toWellFormed()
       if (typeof item === 'function' || typeof item === 'symbol') return undefined
       if (typeof item === 'bigint') return item.toString()
       if (item instanceof AbortSignal) return undefined
@@ -235,23 +242,6 @@ export function toWire(value: unknown): unknown {
   } catch {
     return { __unserializable: true, kind: typeof value }
   }
-}
-
-/**
- * Replace lone surrogates in every string, recursively.
- *
- * Cheap enough at these sizes and only on the outbound path, and it keeps a
- * producer's malformed string from becoming a consumer's parse failure.
- */
-function wellFormed(value: unknown): unknown {
-  if (typeof value === 'string') return value.toWellFormed()
-  if (Array.isArray(value)) return value.map(wellFormed)
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [key, item] of Object.entries(value)) out[key] = wellFormed(item)
-    return out
-  }
-  return value
 }
 
 /** Read a string field from an unknown record. */

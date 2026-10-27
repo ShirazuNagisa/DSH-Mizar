@@ -108,6 +108,29 @@ describe('toWire', () => {
     expect(wire['name']).toBe('Error')
   })
 
+  it('lets Date and Buffer use their own JSON form', () => {
+    // Both have a `toJSON`, so they only survive if the value they are on keeps
+    // its prototype. A sanitising pre-pass that rebuilt objects turned them into
+    // `{}` and `{"0":104,"1":105}`.
+    const at = new Date('2026-10-27T08:00:00.000Z')
+    const wire = toWire({ at, bytes: Buffer.from('hi') }) as Record<string, unknown>
+    expect(wire['at']).toBe('2026-10-27T08:00:00.000Z')
+    expect(wire['bytes']).toEqual({ type: 'Buffer', data: [104, 105] })
+  })
+
+  it('replaces a lone surrogate instead of writing an unparseable escape', () => {
+    // Half an emoji in a session title used to make `JSON.stringify` emit
+    // `\ud83d`, which a strict reader rejects — the whole 900 KB answer died.
+    const wire = toWire({ text: 'a\ud83db', nested: ['\udc00'] }) as Record<string, unknown>
+    expect(wire['text']).toBe('a\ufffdb')
+    expect(wire['nested']).toEqual(['\ufffd'])
+    // The claim is about the text this module hands to a socket, so assert on
+    // the text rather than on the parsed value.
+    const text = JSON.stringify(wire)
+    expect(text).not.toContain('\\ud83d')
+    expect(text).not.toContain('\\udc00')
+  })
+
   it('marks a cycle instead of throwing', () => {
     const cyclic: Record<string, unknown> = { a: 1 }
     cyclic['self'] = cyclic
