@@ -25,6 +25,7 @@
  *
  * @module dsh-mizar
  */
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from './dsh.js'
@@ -61,10 +62,25 @@ export const inject = ['typert', 'typertGateway', 'sessionProjections', 'session
  */
 const PLUGIN_VERSION = '0.9.0'
 
-/** Operator-facing diagnostics, on plain stdout. */
+/**
+ * Operator-facing diagnostics: stdout, and a file.
+ *
+ * stdout is enough for a CLI profile and useless for a packaged app — a window
+ * launched from Finder has nowhere to put it. This plugin has no panel, so a
+ * file is the only channel left when the link does not come up. It is appended
+ * to and truncated on load; a plugin that cannot start must still say why.
+ */
 function report(message: string): void {
   console.log(`[mizar] ${message}`)
+  try {
+    appendFileSync(LOG_PATH, `${new Date().toISOString()} ${message}\n`)
+  } catch {
+    // A log that cannot be written is not a reason to fail the plugin.
+  }
 }
+
+/** `~/.agi-mizar/dsh-plugin.log`. */
+const LOG_PATH = join(homedir(), '.agi-mizar', 'dsh-plugin.log')
 
 /** Render an unknown thrown value as one line. */
 function describe(error: unknown): string {
@@ -196,6 +212,14 @@ const mounts = sharedMountRegistry()
  * @param config - validated plugin configuration.
  */
 export function apply(ctx: Context, config: PluginConfig): void {
+  // Truncated on load: this file describes one run, and a stale tail from last
+  // week is worse than no tail at all.
+  try {
+    mkdirSync(join(homedir(), '.agi-mizar'), { recursive: true })
+    writeFileSync(LOG_PATH, '')
+  } catch {
+    // Best effort.
+  }
   report('apply() entered — injects resolved')
 
   if (!config.enabled) {
@@ -212,16 +236,20 @@ export function apply(ctx: Context, config: PluginConfig): void {
     const controller = new AbortController()
     let mounted: LinkMount | null = null
 
-    void mounts.start(async () => {
-      if (controller.signal.aborted) return null
-      try {
-        mounted = startLink(ctx, config, controller.signal)
-        return mounted
-      } catch (error) {
-        report(`link failed to start — ${describe(error)}`)
-        return null
-      }
-    })
+    void mounts
+      .start(async () => {
+        if (controller.signal.aborted) return null
+        try {
+          mounted = startLink(ctx, config, controller.signal)
+          return mounted
+        } catch (error) {
+          // Swallowed by the registry otherwise, and a plugin that silently
+          // does nothing is the worst failure this thing can have.
+          report(`link failed to start — ${describe(error)}`)
+          return null
+        }
+      })
+      .catch((error: unknown) => report(`mount failed — ${describe(error)}`))
 
     return () => {
       controller.abort()

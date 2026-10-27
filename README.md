@@ -34,6 +34,9 @@ dsh plugin --profile desktop add dsh-mizar@0.9.0
 
 装完**重启 DSH**——插件只在启动时加载。
 
+如果重启后没连上，先看 `~/.agi-mizar/dsh-plugin.log`：这个插件没有面板，而 GUI 启动的 DSH 会把
+stdout 丢掉，那个文件是它唯一能说"我为什么没起来"的地方。每次加载会清空重写。
+
 桌面端运行时会在 `~/.agi-mizar/endpoint.json` 写一个回环端口和一次性令牌，插件读它、
 拨过去、握手。桌面端没运行，插件就只是每隔几秒重试一次，**不改变 DSH 的任何行为**。
 
