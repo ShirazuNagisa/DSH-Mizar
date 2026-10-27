@@ -1,201 +1,120 @@
 /**
- * Tests for the Mizar wire protocol validation.
+ * DSH Link v1 frame parsing and serialisation.
  *
- * This is the contract the iOS app is written against, so the cases below pin
- * the rejections as carefully as the acceptances: a frame that cannot be
- * understood must produce a specific code rather than being half-read.
+ * Two properties matter and are tested directly: a frame this version does not
+ * understand is ignored rather than fatal, and `toWire` never drops a key just
+ * because nobody expected it — that is what keeps a new DSH field visible without
+ * a new plugin.
  *
  * @module dsh-mizar/test/frames
  */
 import { describe, expect, it } from 'vitest'
-import {
-  encodeFrame,
-  ERROR_CODES,
-  errorFrame,
-  isHelloFrame,
-  okFrame,
-  parseClientFrame,
-  PROTOCOL_VERSION,
-} from '../src/protocol/frames.js'
+import { parseDesktopFrame, toWire, LINK_VERSION } from '../src/link/frames.js'
 
-/** Parse and assert success, returning the frame. */
-function accept(raw: unknown) {
-  const result = parseClientFrame(typeof raw === 'string' ? raw : JSON.stringify(raw))
-  if (!result.ok) throw new Error(`expected acceptance, got ${result.code}: ${result.message}`)
-  return result.frame
-}
-
-/** Parse and assert failure, returning the code. */
-function reject(raw: unknown) {
-  const result = parseClientFrame(typeof raw === 'string' ? raw : JSON.stringify(raw))
-  if (result.ok) throw new Error(`expected rejection, got ${JSON.stringify(result.frame)}`)
-  return result.code
-}
-
-describe('protocol version', () => {
-  it('is 1 for this build', () => {
-    expect(PROTOCOL_VERSION).toBe(1)
-  })
-})
-
-describe('parseClientFrame — rejections', () => {
-  it('rejects text that is not JSON', () => {
-    expect(reject('{ nope')).toBe('MALFORMED_FRAME')
-  })
-
-  it('rejects a JSON scalar or array', () => {
-    expect(reject('"hello"')).toBe('MALFORMED_FRAME')
-    expect(reject('[]')).toBe('MALFORMED_FRAME')
-    expect(reject('null')).toBe('MALFORMED_FRAME')
-  })
-
-  it('rejects a missing version', () => {
-    expect(reject({ type: 'hello', token: 'x' })).toBe('PROTOCOL_VERSION_MISMATCH')
-  })
-
-  it('rejects a future version explicitly rather than reading fields', () => {
-    expect(reject({ v: 2, type: 'session.list', id: 'a' })).toBe('PROTOCOL_VERSION_MISMATCH')
-  })
-
-  it('rejects a frame with no type', () => {
-    expect(reject({ v: 1, id: 'a' })).toBe('MALFORMED_FRAME')
-    expect(reject({ v: 1, type: '', id: 'a' })).toBe('MALFORMED_FRAME')
-  })
-
-  it('rejects a non-string id', () => {
-    expect(reject({ v: 1, type: 'ping', id: 7 })).toBe('MALFORMED_FRAME')
-  })
-
-  it('rejects a request with no id', () => {
-    // Without an id the response could not be correlated, so this is a
-    // protocol error rather than a silently unanswerable request.
-    expect(reject({ v: 1, type: 'session.list' })).toBe('MALFORMED_FRAME')
-    expect(reject({ v: 1, type: 'session.list', id: '' })).toBe('MALFORMED_FRAME')
-  })
-
-  it('rejects hello without a token string', () => {
-    expect(reject({ v: 1, type: 'hello' })).toBe('MALFORMED_FRAME')
-    expect(reject({ v: 1, type: 'hello', token: 42 })).toBe('MALFORMED_FRAME')
-  })
-
-  it('reports a version mismatch with the offending value', () => {
-    const result = parseClientFrame(JSON.stringify({ v: 'one', type: 'hello', token: '' }))
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.message).toContain('one')
-  })
-})
-
-describe('parseClientFrame — acceptances', () => {
-  it('accepts a minimal hello', () => {
-    const frame = accept({ v: 1, type: 'hello', token: '' })
-    expect(frame.type).toBe('hello')
-  })
-
-  it('keeps the optional hello metadata when present', () => {
-    const frame = accept({
-      v: 1,
-      type: 'hello',
-      id: 'h1',
-      token: 'mz_abc',
-      appVersion: '0.1.0',
-      deviceModel: 'iPhone 18 Pro',
-      protocolVersion: 1,
-    })
-    expect(frame).toMatchObject({
-      type: 'hello',
-      id: 'h1',
-      token: 'mz_abc',
-      appVersion: '0.1.0',
-      deviceModel: 'iPhone 18 Pro',
-      protocolVersion: 1,
+describe('parseDesktopFrame', () => {
+  it('reads a welcome', () => {
+    const frame = parseDesktopFrame(
+      JSON.stringify({ v: 1, type: 'welcome', linkVersion: 1, desktop: 'AGI Mizar 0.1.0' }),
+    )
+    expect(frame).toEqual({
+      v: LINK_VERSION,
+      type: 'welcome',
+      linkVersion: 1,
+      desktop: 'AGI Mizar 0.1.0',
     })
   })
 
-  it('drops hello metadata of the wrong type instead of propagating it', () => {
-    const frame = accept({ v: 1, type: 'hello', token: 'x', appVersion: 5, protocolVersion: 'one' })
-    expect(frame).not.toHaveProperty('appVersion')
-    expect(frame).not.toHaveProperty('protocolVersion')
+  it('defaults a welcome with no link version to 0, which the client refuses', () => {
+    const frame = parseDesktopFrame(JSON.stringify({ type: 'welcome' }))
+    expect(frame).toMatchObject({ type: 'welcome', linkVersion: 0 })
   })
 
-  it('accepts a request and keeps its payload', () => {
-    const frame = accept({ v: 1, type: 'session.list', id: 'r1', payload: { workspaceId: 'w' } })
-    expect(frame).toMatchObject({ id: 'r1', type: 'session.list', payload: { workspaceId: 'w' } })
+  it('reads an invoke with its mode', () => {
+    const frame = parseDesktopFrame(
+      JSON.stringify({ type: 'invoke', id: 'c1', endpoint: 'session/list', args: {}, mode: 'stream' }),
+    )
+    expect(frame).toMatchObject({ type: 'invoke', id: 'c1', endpoint: 'session/list', mode: 'stream' })
   })
 
-  it('accepts a request with no payload', () => {
-    const frame = accept({ v: 1, type: 'ping', id: 'r2' })
-    expect(frame).not.toHaveProperty('payload')
-  })
-})
-
-describe('isHelloFrame', () => {
-  it('narrows hello', () => {
-    const frame = accept({ v: 1, type: 'hello', token: 'x' })
-    expect(isHelloFrame(frame)).toBe(true)
-    if (isHelloFrame(frame)) {
-      // The guard exists so this property is typed `string`, not `unknown`.
-      expect(frame.token).toBe('x')
-    }
+  it('treats an absent mode as unary', () => {
+    const frame = parseDesktopFrame(JSON.stringify({ type: 'invoke', id: 'c1', endpoint: 'a/b' }))
+    expect(frame).toMatchObject({ mode: 'unary' })
   })
 
-  it('does not match a request that happens to be named like hello', () => {
-    const frame = accept({ v: 1, type: 'session.hello', id: 'a' })
-    expect(isHelloFrame(frame)).toBe(false)
-  })
-})
-
-describe('error codes', () => {
-  it('carries every code the attachment methods answer with', () => {
-    // The app renders localized text from the code, so the upload vocabulary is
-    // part of the contract the moment a method can produce it.
-    for (const code of [
-      'UPLOAD_UNKNOWN',
-      'UPLOAD_BAD_CHUNK',
-      'UPLOAD_TOO_LARGE',
-      'UPLOAD_INCOMPLETE',
-      'ATTACHMENT_UNKNOWN',
-      'ATTACHMENT_TOO_LARGE',
-      'ATTACHMENT_UNSUPPORTED',
-      'ATTACHMENT_FAILED',
-    ]) {
-      expect(ERROR_CODES, `${code} is not a wire code`).toContain(code)
-    }
+  it('rejects an invoke without an id or an endpoint', () => {
+    expect(parseDesktopFrame(JSON.stringify({ type: 'invoke', endpoint: 'a/b' }))).toBeNull()
+    expect(parseDesktopFrame(JSON.stringify({ type: 'invoke', id: 'c1' }))).toBeNull()
   })
 
-  it('does not change the protocol version for optional additions', () => {
-    // New methods, new optional payload fields and new error codes are
-    // compatible: every existing frame means what it meant, and a peer that does
-    // not know a key or a method leaves it alone.
-    expect(PROTOCOL_VERSION).toBe(1)
-  })
-})
-
-describe('server frames', () => {
-  it('builds an ok frame carrying the correlation id', () => {
-    expect(okFrame('r1', { value: 2 })).toEqual({ v: 1, type: 'ok', id: 'r1', result: { value: 2 } })
-  })
-
-  it('omits the result when there is none', () => {
-    expect(okFrame('r1')).not.toHaveProperty('result')
-  })
-
-  it('builds an error frame with the code and correlation id', () => {
-    expect(errorFrame('NOT_IMPLEMENTED', 'no', 'r1')).toEqual({
-      v: 1,
-      type: 'error',
-      code: 'NOT_IMPLEMENTED',
-      message: 'no',
-      retryable: false,
-      id: 'r1',
+  it('reads a service call and defaults missing args to an empty list', () => {
+    const frame = parseDesktopFrame(
+      JSON.stringify({ type: 'service', id: 's1', service: 'workspaceRegistry', method: 'list' }),
+    )
+    expect(frame).toEqual({
+      v: LINK_VERSION,
+      type: 'service',
+      id: 's1',
+      service: 'workspaceRegistry',
+      method: 'list',
+      args: [],
     })
   })
 
-  it('omits the id for an unsolicited error', () => {
-    expect(errorFrame('RATE_LIMITED', 'slow down')).not.toHaveProperty('id')
+  it('reads an approval answer and a question answer', () => {
+    expect(
+      parseDesktopFrame(JSON.stringify({ type: 'answer', id: 'a1', outcome: 'allowed-once' })),
+    ).toMatchObject({ type: 'answer', id: 'a1', outcome: 'allowed-once' })
+    expect(
+      parseDesktopFrame(JSON.stringify({ type: 'answer', id: 'q1', answers: [{ id: 'x' }] })),
+    ).toMatchObject({ type: 'answer', id: 'q1', answers: [{ id: 'x' }] })
   })
 
-  it('round-trips through the encoder', () => {
-    const frame = okFrame('r9', { n: 1 })
-    expect(JSON.parse(encodeFrame(frame))).toEqual(frame)
+  it('reads a filter and drops non-string entries', () => {
+    const frame = parseDesktopFrame(
+      JSON.stringify({ type: 'filter', drop: ['assistant/attempt', 42, null] }),
+    )
+    expect(frame).toEqual({ v: LINK_VERSION, type: 'filter', drop: ['assistant/attempt'] })
+  })
+
+  it('ignores an unknown frame type instead of failing the connection', () => {
+    expect(parseDesktopFrame(JSON.stringify({ type: 'from-the-future', id: 'x' }))).toBeNull()
+  })
+
+  it('ignores text that is not JSON', () => {
+    expect(parseDesktopFrame('not json')).toBeNull()
+    expect(parseDesktopFrame('null')).toBeNull()
+    expect(parseDesktopFrame('[]')).toBeNull()
+  })
+})
+
+describe('toWire', () => {
+  it('keeps every field it was given, including ones nobody expected', () => {
+    const value = { a: 1, b: { c: [1, 2, 3], d: 'x' }, e: null, f: true }
+    expect(toWire(value)).toEqual(value)
+  })
+
+  it('drops an AbortSignal, which JSON would otherwise render as an empty object', () => {
+    const wire = toWire({ request: { toolName: 'bash' }, signal: new AbortController().signal })
+    expect(wire).toEqual({ request: { toolName: 'bash' } })
+  })
+
+  it('renders a bigint as a string rather than throwing', () => {
+    expect(toWire({ n: 10n })).toEqual({ n: '10' })
+  })
+
+  it('renders an Error as its parts', () => {
+    const wire = toWire(new Error('boom')) as Record<string, unknown>
+    expect(wire['message']).toBe('boom')
+    expect(wire['name']).toBe('Error')
+  })
+
+  it('marks a cycle instead of throwing', () => {
+    const cyclic: Record<string, unknown> = { a: 1 }
+    cyclic['self'] = cyclic
+    expect(toWire(cyclic)).toMatchObject({ __unserializable: true })
+  })
+
+  it('turns undefined into null, because a frame must carry something', () => {
+    expect(toWire(undefined)).toBeNull()
   })
 })

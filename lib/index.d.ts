@@ -1,21 +1,22 @@
 import type { Context } from './dsh.js';
 import { Config } from './config.js';
-import type { Config as MizarConfig } from './config.js';
-/** Cordis plugin name. */
+import type { Config as PluginConfig } from './config.js';
+/** Cordis plugin name. Unchanged from 0.8.x so profiles keep loading it. */
 export declare const name = "mizar";
 /**
  * Services this plugin must observe before it activates.
  *
- * `typertGateway` drives the shipped Remotes, `sessionProjections` and
- * `sessions` back the usage and transcript bridges, and `typert` is required to
- * read the strict descriptor registry the readiness gate polls — Cordis refuses
- * `ctx.typert` to a plugin that does not declare it.
+ * `typert` backs the descriptor registry the handshake reports, `typertGateway`
+ * carries endpoint calls, `sessionProjections` feeds the change subscription, and
+ * `sessions` is what a session event arrives with. Everything else — the
+ * workspace registry in particular — is read through `ctx.get` so that a
+ * composition without it still activates.
  */
 export declare const inject: string[];
 /**
- * Mount the Mizar host half.
+ * Mount the helper plugin.
  * @param ctx - the plugin context.
  * @param config - validated plugin configuration.
  */
-export declare function apply(ctx: Context, config: MizarConfig): void;
+export declare function apply(ctx: Context, config: PluginConfig): void;
 export { Config };
