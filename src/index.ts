@@ -119,6 +119,7 @@ function startLink(ctx: Context, config: PluginConfig, signal: AbortSignal): Lin
     broker,
     services: config.services,
     log: report,
+    logCalls: true,
   })
 
   const feed = new EventFeed(send, config.logEvents)

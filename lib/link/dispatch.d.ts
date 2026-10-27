@@ -32,6 +32,8 @@ export interface DispatcherOptions {
     /** In-process services the desktop may call. */
     readonly services: readonly string[];
     readonly log: (message: string) => void;
+    /** Log every endpoint call and how long it took. */
+    readonly logCalls: boolean;
 }
 export declare class Dispatcher {
     #private;

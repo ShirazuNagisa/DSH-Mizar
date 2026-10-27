@@ -36,6 +36,8 @@ export interface DispatcherOptions {
   /** In-process services the desktop may call. */
   readonly services: readonly string[]
   readonly log: (message: string) => void
+  /** Log every endpoint call and how long it took. */
+  readonly logCalls: boolean
 }
 
 /** Split `session/list` into its two halves, or `null` when it is not one. */
@@ -124,15 +126,29 @@ export class Dispatcher {
       return
     }
 
+    // Timed, and logged on both ends. A call that never settles is otherwise
+    // indistinguishable from a frame that never arrived, and that ambiguity cost
+    // an afternoon on a real host.
+    const started = Date.now()
+    if (this.#options.logCalls) {
+      this.#options.log(`invoke ${frame.endpoint} (${frame.id}) started`)
+    }
     try {
       const value = await invokeRemote(this.#options.ctx, {
         namespace: split.namespace,
         method: split.method,
         args,
       })
+      if (this.#options.logCalls) {
+        this.#options.log(`invoke ${frame.endpoint} (${frame.id}) ok in ${Date.now() - started}ms`)
+      }
       this.#options.send({ v: 1, type: 'result', id: frame.id, ok: true, value: value ?? null })
     } catch (error) {
-      this.#failure(frame.id, upstreamFailure(error))
+      const failure = upstreamFailure(error)
+      this.#options.log(
+        `invoke ${frame.endpoint} (${frame.id}) failed in ${Date.now() - started}ms — ${failure.code}: ${failure.message}`,
+      )
+      this.#failure(frame.id, failure)
     }
   }
 
