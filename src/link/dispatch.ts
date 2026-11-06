@@ -25,7 +25,7 @@ import { invokeRemote, streamRemote } from '../bridge/invoke.js'
 import { upstreamFailure } from '../bridge/errors.js'
 import { callService } from '../bridge/service.js'
 import type { InteractionBroker } from '../bridge/interactions.js'
-import type { FrameToDesktop, FrameToPlugin } from './frames.js'
+import type { DelegationNoticeFrame, FrameToDesktop, FrameToPlugin } from './frames.js'
 
 /** What the dispatcher needs from its host. */
 export interface DispatcherOptions {
@@ -38,6 +38,8 @@ export interface DispatcherOptions {
   readonly log: (message: string) => void
   /** Log every endpoint call and how long it took. */
   readonly logCalls: boolean
+  /** Deliver a remote-delegation notice, when the host has a bridge. */
+  readonly notice?: (frame: DelegationNoticeFrame) => void
 }
 
 /** Split `session/list` into its two halves, or `null` when it is not one. */
@@ -90,6 +92,9 @@ export class Dispatcher {
         return
       case 'filter':
         this.#drop = new Set(frame.drop)
+        return
+      case 'delegation_notice':
+        this.#options.notice?.(frame)
         return
     }
   }

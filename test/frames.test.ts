@@ -69,6 +69,29 @@ describe('parseDesktopFrame', () => {
     ).toMatchObject({ type: 'answer', id: 'q1', answers: [{ id: 'x' }] })
   })
 
+  it('reads a delegation notice', () => {
+    const frame = parseDesktopFrame(
+      JSON.stringify({
+        type: 'delegation_notice',
+        id: 'n1',
+        delegationId: 'd1',
+        kind: 'settled',
+        text: 'done',
+      }),
+    )
+    expect(frame).toEqual({
+      v: LINK_VERSION,
+      type: 'delegation_notice',
+      id: 'n1',
+      delegationId: 'd1',
+      kind: 'settled',
+      text: 'done',
+    })
+    expect(
+      parseDesktopFrame(JSON.stringify({ type: 'delegation_notice', id: 'n1', delegationId: 'd1' })),
+    ).toBeNull()
+  })
+
   it('reads a filter and drops non-string entries', () => {
     const frame = parseDesktopFrame(
       JSON.stringify({ type: 'filter', drop: ['assistant/attempt', 42, null] }),

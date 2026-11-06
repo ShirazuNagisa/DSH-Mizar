@@ -22,7 +22,7 @@
  */
 import type { Context } from '../dsh.js';
 import type { InteractionBroker } from '../bridge/interactions.js';
-import type { FrameToDesktop, FrameToPlugin } from './frames.js';
+import type { DelegationNoticeFrame, FrameToDesktop, FrameToPlugin } from './frames.js';
 /** What the dispatcher needs from its host. */
 export interface DispatcherOptions {
     readonly ctx: Context;
@@ -34,6 +34,8 @@ export interface DispatcherOptions {
     readonly log: (message: string) => void;
     /** Log every endpoint call and how long it took. */
     readonly logCalls: boolean;
+    /** Deliver a remote-delegation notice, when the host has a bridge. */
+    readonly notice?: (frame: DelegationNoticeFrame) => void;
 }
 export declare class Dispatcher {
     #private;

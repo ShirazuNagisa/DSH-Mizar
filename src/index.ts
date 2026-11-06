@@ -31,6 +31,7 @@ import { join } from 'node:path'
 import type { Context } from './dsh.js'
 import { Config } from './config.js'
 import type { Config as PluginConfig } from './config.js'
+import { DelegationBridge } from './bridge/delegation.js'
 import { InteractionBroker, registerAnswerers } from './bridge/interactions.js'
 import { LinkClient } from './link/client.js'
 import { Dispatcher } from './link/dispatch.js'
@@ -113,6 +114,9 @@ function startLink(ctx: Context, config: PluginConfig, signal: AbortSignal): Lin
     client === null ? false : client.send(frame)
   broker.setSender(send)
 
+  const delegation = new DelegationBridge(ctx, report)
+  const unbindDelegation = delegation.bind()
+
   const dispatcher = new Dispatcher({
     ctx,
     send,
@@ -120,6 +124,7 @@ function startLink(ctx: Context, config: PluginConfig, signal: AbortSignal): Lin
     services: config.services,
     log: report,
     logCalls: true,
+    notice: (frame) => delegation.deliver(frame),
   })
 
   const feed = new EventFeed(send, config.logEvents)
@@ -179,6 +184,7 @@ function startLink(ctx: Context, config: PluginConfig, signal: AbortSignal): Lin
       dispatcher.dispose()
       broker.dispose()
       unbind()
+      unbindDelegation()
     })()
     return shutdown
   }

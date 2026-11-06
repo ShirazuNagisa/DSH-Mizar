@@ -161,6 +161,17 @@ export interface AnswerFrame {
     /** Question only: one entry per question. */
     readonly answers?: readonly unknown[];
 }
+/** Wake the parent model after a remote delegation settles. */
+export interface DelegationNoticeFrame {
+    readonly v: typeof LINK_VERSION;
+    readonly type: 'delegation_notice';
+    readonly id: string;
+    readonly delegationId: string;
+    /** `settled`, `approval` or `resolved`. */
+    readonly kind: string;
+    readonly text: string;
+    readonly ref?: string;
+}
 /** Ask the plugin to stop forwarding event names the desktop does not need. */
 export interface FilterFrame {
     readonly v: typeof LINK_VERSION;
@@ -168,7 +179,7 @@ export interface FilterFrame {
     readonly drop: readonly string[];
 }
 /** Everything the desktop sends. */
-export type FrameToPlugin = WelcomeFrame | InvokeFrame | ServiceFrame | CancelFrame | AnswerFrame | FilterFrame;
+export type FrameToPlugin = WelcomeFrame | InvokeFrame | ServiceFrame | CancelFrame | AnswerFrame | FilterFrame | DelegationNoticeFrame;
 /**
  * Serialise a value for the wire without losing anything JSON can carry.
  *

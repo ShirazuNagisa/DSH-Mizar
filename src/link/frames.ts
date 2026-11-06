@@ -190,6 +190,18 @@ export interface AnswerFrame {
   readonly answers?: readonly unknown[]
 }
 
+/** Wake the parent model after a remote delegation settles. */
+export interface DelegationNoticeFrame {
+  readonly v: typeof LINK_VERSION
+  readonly type: 'delegation_notice'
+  readonly id: string
+  readonly delegationId: string
+  /** `settled`, `approval` or `resolved`. */
+  readonly kind: string
+  readonly text: string
+  readonly ref?: string
+}
+
 /** Ask the plugin to stop forwarding event names the desktop does not need. */
 export interface FilterFrame {
   readonly v: typeof LINK_VERSION
@@ -198,7 +210,14 @@ export interface FilterFrame {
 }
 
 /** Everything the desktop sends. */
-export type FrameToPlugin = WelcomeFrame | InvokeFrame | ServiceFrame | CancelFrame | AnswerFrame | FilterFrame
+export type FrameToPlugin =
+  | WelcomeFrame
+  | InvokeFrame
+  | ServiceFrame
+  | CancelFrame
+  | AnswerFrame
+  | FilterFrame
+  | DelegationNoticeFrame
 
 /**
  * Serialise a value for the wire without losing anything JSON can carry.
@@ -312,6 +331,29 @@ export function parseDesktopFrame(raw: string): FrameToPlugin | null {
         id,
         ...(outcome === undefined ? {} : { outcome }),
         ...(answers === undefined ? {} : { answers }),
+      }
+    }
+    case 'delegation_notice': {
+      const id = text(frame, 'id')
+      const delegationId = text(frame, 'delegationId')
+      const kind = text(frame, 'kind')
+      const noticeText = text(frame, 'text')
+      if (
+        id === undefined ||
+        delegationId === undefined ||
+        kind === undefined ||
+        noticeText === undefined
+      ) {
+        return null
+      }
+      return {
+        v: LINK_VERSION,
+        type: 'delegation_notice',
+        id,
+        delegationId,
+        kind,
+        text: noticeText,
+        ...(text(frame, 'ref') === undefined ? {} : { ref: text(frame, 'ref') as string }),
       }
     }
     case 'filter': {
