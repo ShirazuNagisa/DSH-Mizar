@@ -120,3 +120,28 @@ reports it as `continued`. So a dropped question is not lost.
 
 还有一条与测试方式有关的规则：**客户端数掉到 0 就会把挂起提问结算为空**（fail-closed）。所以验收期间
 任何一端重启都会撤掉那条提问 —— 真机测试要全程保持至少一个客户端连着。
+
+## 追加（2026-11-08）· GUI 卡片的撤销：最终改独占
+
+原实现只处理了「GUI 赢 → abandon 手机 handle」；「手机赢 → GUI 的 `next()` 仍悬着」
+没有处理。DSH 桌面端的 `PendingApproval` 只有自身 `result` 结算或 `request.signal`
+abort 才移除，所以手机批准后桌面仍显示“等待审批”。
+
+第一次尝试：在 `next()` 前把 `request.signal` 换成子 `AbortController`，手机赢时
+abort 子 signal。单测通过，但真实桌面复测卡片**只是重新渲染，仍然在**——DSH 的
+remote event 层没有把子 signal 可靠带到 renderer。
+
+最终修复：**AGI Mizar 连接时独占 approval**。
+
+```ts
+if (!broker.hasDesktop()) return await next()   // 纯 pass-through
+const handle = broker.beginApproval(request, signal)
+return await handle.outcome                    // 不调 next()，GUI 不建卡
+```
+
+- DSH GUI 不再创建一张无法撤销的 `next()` 卡；手机/AGI Mizar 是唯一审批面。
+- AGI Mizar 未连接时照旧委托 GUI/终端。
+- 手机掉线 → `unavailable` fail closed（规则 5）。
+
+代价：连接期间 DSH GUI 不显示审批卡。当前 DSH 客户端没有“撤销 pending approval”
+的公开 API，双表面必然留下输家；独占是确定性的取舍。问题卡片仍是原 race，未改。

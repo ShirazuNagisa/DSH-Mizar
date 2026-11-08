@@ -14,9 +14,14 @@
  * 3. **`unavailable` is not an answer.** The waterfall's terminal behaviour is
  *    "nobody answered", and it resolves immediately. Racing it verbatim would
  *    mean the desktop could never answer.
- * 4. **Losing the race abandons the request.** Otherwise the desktop keeps
- *    showing a card for a decision already taken, and the entry leaks for the
- *    life of the process.
+ * 4. **One approval surface while the phone is connected.** Calling `next()`
+ *    opens the DSH GUI's own approval card. The GUI answerer has no cancellation
+ *    handle: when the phone wins, its `next()` promise remains pending and the
+ *    card stays on screen. A child AbortSignal looks like the fix, but the DSH
+ *    remote event layer does not carry that signal to the renderer reliably
+ *    (measured 2026-11-08: the card stayed after the phone granted). So while
+ *    AGI Mizar is connected this plugin claims the approval and never calls
+ *    `next()`; with no desktop connected it stays a pure pass-through.
  * 5. **Dropping to zero settles everything.** An approval is one-shot and tied to
  *    an open turn; a desktop that vanished must not leave an agent waiting. A
  *    refused tool action is recoverable, a hung agent is not.
@@ -350,29 +355,11 @@ export function registerAnswerers(ctx: Context, broker: InteractionBroker): void
 
         const signal = (request as { signal?: AbortSignal } | null)?.signal
         const handle = broker.beginApproval(request, signal)
-
-        const delegated = next().then((outcome) => {
-          // The terminal behaviour is "nobody answered"; racing it verbatim
-          // would resolve instantly and the desktop could never answer.
-          if (outcome === 'unavailable') return NEVER
-          return { from: 'delegated' as const, outcome }
-        })
-
-        let winner: { from: 'desktop' | 'delegated'; outcome: ApprovalOutcome }
-        try {
-          winner = await Promise.race([
-            handle.outcome.then((outcome) => ({ from: 'desktop' as const, outcome })),
-            delegated,
-          ])
-        } catch (error) {
-          // A listener further down threw. Nothing will answer this now, so the
-          // desktop must stop showing it.
-          handle.abandon('unavailable')
-          throw error
-        }
-
-        if (winner.from === 'delegated') handle.abandon(winner.outcome)
-        return winner.outcome
+        // Exclusive while the desktop is connected. The DSH GUI's `next()`
+        // approval card cannot be withdrawn once the phone answers, and the
+        // child-signal attempt did not reach the renderer reliably; asking the
+        // GUI at all is what leaves a card that no phone answer can remove.
+        return await handle.outcome
       })()
     }) as never,
     { prepend: true },

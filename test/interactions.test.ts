@@ -69,7 +69,7 @@ describe('registerAnswerers', () => {
     expect(frames).toHaveLength(0)
   })
 
-  it('returns the desktop answer when it wins the race', async () => {
+  it('claims the approval without opening the DSH GUI card', async () => {
     const { ctx, captured } = fakeContext()
     const { broker, frames } = wiredBroker()
     broker.setConnected(true)
@@ -84,15 +84,17 @@ describe('registerAnswerers', () => {
     expect(broker.answer(approval?.type === 'approval' ? approval.id : '', { outcome: 'allowed-once' })).toBe(true)
 
     await expect(pending).resolves.toBe('allowed-once')
+    // The GUI's own card is the one that cannot be withdrawn after a phone
+    // answer, so the bridge never opens it while the phone is connected.
+    expect(next).not.toHaveBeenCalled()
   })
 
-  it('does not let the terminal "unavailable" win, so the desktop can still answer', async () => {
+  it('does not consult the terminal answerer while the desktop is connected', async () => {
     const { ctx, captured } = fakeContext()
     const { broker, frames } = wiredBroker()
     broker.setConnected(true)
     registerAnswerers(ctx, broker)
 
-    // This is what the waterfall returns when every other channel declines.
     const next = vi.fn(async () => 'unavailable')
     const pending = captured.get('approval/request')?.handler({ toolName: 'bash' }, next)
     await later(null)
@@ -100,20 +102,26 @@ describe('registerAnswerers', () => {
     const approval = frames.find((frame) => frame.type === 'approval')
     broker.answer(approval?.type === 'approval' ? approval.id : '', { outcome: 'rejected' })
     await expect(pending).resolves.toBe('rejected')
+    expect(next).not.toHaveBeenCalled()
   })
 
-  it('abandons the pending card when another channel answers first', async () => {
+  it('does not open a DSH GUI card that a phone answer would strand', async () => {
     const { ctx, captured } = fakeContext()
     const { broker } = wiredBroker()
     broker.setConnected(true)
     registerAnswerers(ctx, broker)
 
-    const next = vi.fn(async () => 'rejected')
-    const outcome = await captured.get('approval/request')?.handler({ toolName: 'bash' }, next)
+    const next = vi.fn(() => new Promise<string>(() => {}))
+    const request = { toolName: 'bash' }
+    const pending = captured.get('approval/request')?.handler(request, next)
+    await later(null)
+    expect(broker.pendingApprovals).toBe(1)
+    expect(next).not.toHaveBeenCalled()
 
-    expect(outcome).toBe('rejected')
-    // The card must not stay on the desktop for a decision already taken.
-    expect(broker.pendingApprovals).toBe(0)
+    // Disposing settles the phone handle; there is no GUI promise left behind
+    // to strand a card on screen.
+    broker.dispose()
+    await expect(pending).resolves.toBe('cancelled')
   })
 
   it('settles pending approvals unavailable when the desktop goes away', async () => {
