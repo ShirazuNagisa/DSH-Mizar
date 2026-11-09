@@ -43,6 +43,31 @@ export type ClientApprovalOutcome = (typeof CLIENT_APPROVAL_OUTCOMES)[number]
 /** The full outcome vocabulary DSH accepts. */
 export type ApprovalOutcome = ClientApprovalOutcome | 'cancelled' | 'unavailable'
 
+/**
+ * The question fields that must survive the wire.
+ *
+ * The same host-object/prototype-getter case as {@link readApprovalRequest}.
+ * Questions have no callId in the real payload, so the broker mints one; keep
+ * that behavior and narrow only the fields DSH handed us.
+ */
+export function readQuestionRequest(request: unknown): Record<string, unknown> {
+  const value =
+    typeof request === 'object' && request !== null
+      ? (request as Record<string, unknown>)
+      : {}
+  const agent = value['agent']
+  const agentId =
+    typeof agent === 'string'
+      ? agent
+      : typeof agent === 'object' && agent !== null
+        ? (agent as Record<string, unknown>)['id']
+        : undefined
+  return {
+    ...(Array.isArray(value['questions']) ? { questions: value['questions'] } : {}),
+    ...(typeof agentId === 'string' && agentId !== '' ? { agent: { id: agentId } } : {}),
+  }
+}
+
 /** A promise that never settles; parks one branch of a race. */
 const NEVER = new Promise<never>(() => {})
 
@@ -337,6 +362,41 @@ export function readQuestionIds(request: unknown): string[] | null {
 }
 
 /**
+ * Carry the approval fields this link promises as plain own properties.
+ *
+ * `toWire` is faithful to what `JSON.stringify` sees. DSH's approval event can
+ * arrive as a host object whose fields are prototype getters; stringifying it
+ * then writes `{}` even though `request.toolName` reads fine. The desktop sees
+ * an approval with no session, tool or reason -- a card that appears over every
+ * conversation and cannot be attributed. Narrowing here keeps the contract's
+ * fields on the wire without copying anything the link does not need.
+ */
+export function readApprovalRequest(request: unknown): Record<string, unknown> {
+  const value =
+    typeof request === 'object' && request !== null
+      ? (request as Record<string, unknown>)
+      : {}
+  const rawAgent = value['agent']
+  const agentId =
+    typeof rawAgent === 'string'
+      ? rawAgent
+      : typeof rawAgent === 'object' && rawAgent !== null
+        ? (rawAgent as Record<string, unknown>)['id']
+        : undefined
+  const field = (name: string): string | undefined =>
+    typeof value[name] === 'string' ? (value[name] as string) : undefined
+  return {
+    ...(typeof agentId === 'string' && agentId !== '' ? { agent: { id: agentId } } : {}),
+    ...(field('toolName') === undefined ? {} : { toolName: field('toolName') }),
+    ...(field('callId') === undefined ? {} : { callId: field('callId') }),
+    ...(field('reason') === undefined ? {} : { reason: field('reason') }),
+    ...(typeof value['displayReason'] === 'object' && value['displayReason'] !== null
+      ? { displayReason: value['displayReason'] }
+      : {}),
+  }
+}
+
+/**
  * Register both waterfall answerers.
  *
  * @param ctx - the plugin context; listeners leave with it.
@@ -354,7 +414,7 @@ export function registerAnswerers(ctx: Context, broker: InteractionBroker): void
         if (!broker.hasDesktop()) return await next()
 
         const signal = (request as { signal?: AbortSignal } | null)?.signal
-        const handle = broker.beginApproval(request, signal)
+        const handle = broker.beginApproval(readApprovalRequest(request), signal)
         // Exclusive while the desktop is connected. The DSH GUI's `next()`
         // approval card cannot be withdrawn once the phone answers, and the
         // child-signal attempt did not reach the renderer reliably; asking the
@@ -378,7 +438,7 @@ export function registerAnswerers(ctx: Context, broker: InteractionBroker): void
         if (ids === null) return await next()
 
         const signal = (request as { signal?: AbortSignal } | null)?.signal
-        const handle = broker.beginQuestions(request, ids, signal)
+        const handle = broker.beginQuestions(readQuestionRequest(request), ids, signal)
 
         const desktop = handle.answers.then((answers) =>
           answers.length === 0 ? NEVER : { from: 'desktop' as const, answer: { answers } },

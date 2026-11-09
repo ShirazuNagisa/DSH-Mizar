@@ -11,7 +11,9 @@ import type { Context } from '../src/dsh.js'
 import {
   assertAnswerBatch,
   InteractionBroker,
+  readApprovalRequest,
   readQuestionIds,
+  readQuestionRequest,
   registerAnswerers,
 } from '../src/bridge/interactions.js'
 import type { FrameToDesktop } from '../src/link/frames.js'
@@ -105,6 +107,25 @@ describe('registerAnswerers', () => {
     expect(next).not.toHaveBeenCalled()
   })
 
+  it('turns prototype-getter fields into own fields before the wire', () => {
+    // DSH can hand the waterfall a host object; JSON.stringify omits inherited
+    // accessors even though reading them works. The desktop then sees an
+    // approval with no session and draws it over every conversation.
+    const request = Object.create({
+      agent: { id: 'session-a' },
+      toolName: 'bash',
+      callId: 'call-1',
+      reason: 'why',
+    })
+    const narrowed = readApprovalRequest(request)
+    expect(JSON.parse(JSON.stringify(narrowed))).toEqual({
+      agent: { id: 'session-a' },
+      toolName: 'bash',
+      callId: 'call-1',
+      reason: 'why',
+    })
+  })
+
   it('does not open a DSH GUI card that a phone answer would strand', async () => {
     const { ctx, captured } = fakeContext()
     const { broker } = wiredBroker()
@@ -138,6 +159,17 @@ describe('registerAnswerers', () => {
     broker.setConnected(false)
     await expect(pending).resolves.toBe('unavailable')
     expect(broker.pendingApprovals).toBe(0)
+  })
+
+  it('narrows prototype-getter question fields as well', () => {
+    const request = Object.create({
+      questions: [{ id: 'q1', question: 'Which one?', options: [] }],
+      agent: { id: 'session-a' },
+    })
+    expect(readQuestionRequest(request)).toEqual({
+      questions: [{ id: 'q1', question: 'Which one?', options: [] }],
+      agent: { id: 'session-a' },
+    })
   })
 
   it('returns a desktop question batch in the shape DSH expects', async () => {

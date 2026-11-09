@@ -40,6 +40,14 @@ export declare const CLIENT_APPROVAL_OUTCOMES: readonly ["allowed-once", "reject
 export type ClientApprovalOutcome = (typeof CLIENT_APPROVAL_OUTCOMES)[number];
 /** The full outcome vocabulary DSH accepts. */
 export type ApprovalOutcome = ClientApprovalOutcome | 'cancelled' | 'unavailable';
+/**
+ * The question fields that must survive the wire.
+ *
+ * The same host-object/prototype-getter case as {@link readApprovalRequest}.
+ * Questions have no callId in the real payload, so the broker mints one; keep
+ * that behavior and narrow only the fields DSH handed us.
+ */
+export declare function readQuestionRequest(request: unknown): Record<string, unknown>;
 /** A handle on one outstanding approval. */
 export interface ApprovalHandle {
     readonly id: string;
@@ -133,6 +141,17 @@ export declare function assertAnswerBatch(ids: readonly string[], answers: reado
  * @returns the ids, or `null` when the payload has no answerable batch.
  */
 export declare function readQuestionIds(request: unknown): string[] | null;
+/**
+ * Carry the approval fields this link promises as plain own properties.
+ *
+ * `toWire` is faithful to what `JSON.stringify` sees. DSH's approval event can
+ * arrive as a host object whose fields are prototype getters; stringifying it
+ * then writes `{}` even though `request.toolName` reads fine. The desktop sees
+ * an approval with no session, tool or reason -- a card that appears over every
+ * conversation and cannot be attributed. Narrowing here keeps the contract's
+ * fields on the wire without copying anything the link does not need.
+ */
+export declare function readApprovalRequest(request: unknown): Record<string, unknown>;
 /**
  * Register both waterfall answerers.
  *
