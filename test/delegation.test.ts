@@ -55,6 +55,11 @@ describe('DelegationBridge', () => {
     bridge.deliver(notice())
     expect(followup).toHaveBeenCalledTimes(1)
     const message = followup.mock.calls[0]?.[0] as Record<string, unknown>
+    // The agents service persists this object verbatim as the `user/message`
+    // event data, so replay needs an identified user role here.
+    expect(message['role']).toBe('user')
+    expect(typeof message['id']).toBe('string')
+    expect((message['id'] as string).length).toBeGreaterThan(0)
     expect(message['source']).toMatchObject({
       kind: 'subagent-settled',
       form: 'notice',

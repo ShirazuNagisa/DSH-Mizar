@@ -17,6 +17,7 @@
 import type { Context } from '../dsh.js'
 import type { DelegationNoticeFrame } from '../link/frames.js'
 import { toWire } from '../link/frames.js'
+import { randomUUID } from 'node:crypto'
 
 /** How many delegation→session mappings to keep. */
 const MAX_LINKS = 128
@@ -33,6 +34,10 @@ interface AgentsLike {
 }
 
 interface AgentLike {
+  /**
+   * Queue one next-turn prompt. Its argument is persisted verbatim as the
+   * `user/message` event data, so it must be a complete identified user message.
+   */
   followup?: (message: unknown) => unknown
 }
 
@@ -92,7 +97,14 @@ export class DelegationBridge {
     }
     const summary = notice.text.split('\n').find((line) => line.trim() !== '') ?? notice.kind
     try {
+      // The agents service appends the object it receives as the durable
+      // `user/message` event data without stamping identity, so the notice must
+      // already be a complete identified user message. A bare `{content, source}`
+      // fails current-format replay ("lacks an identified message") and makes the
+      // whole parent Session unreadable.
       const answer = agent.followup({
+        id: randomUUID(),
+        role: 'user',
         content: [{ type: 'text', text: notice.text }],
         source: {
           kind: 'subagent-settled',
