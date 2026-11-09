@@ -13,14 +13,16 @@
                  └──▶ Codex（直连）
 ```
 
-## 四个仓库
+## 相关仓库
 
 | 仓库 | 角色 |
 |---|---|
 | [AGI Mizar](https://github.com/ShirazuNagisa/AGI-Mizar) | 桌面端，唯一的宿主与网关 |
 | **DSH-Mizar（本仓库）** | DSH 侧辅助插件 |
-| DSH-Mizar-iOS | 手机 App |
-| DSH-Mizar-Android | 手机 App |
+| DSH-Mizar-iOS | iPhone / iPad App |
+| DSH-Mizar-Android | Android App |
+| DSH-Mizar-Relay | 中继与账户服务 |
+| [Mizarllm](https://github.com/ShirazuNagisa/Mizarllm) | 本轮完成度判官模型（可选） |
 
 ---
 
@@ -84,7 +86,7 @@ stdout 丢掉，那个文件是它唯一能说"我为什么没起来"的地方�
 npm install
 npm run build          # 编译到 lib/（lib/ 是提交进仓库的产物）
 npm run typecheck
-npm test               # 69 个测试，几秒内跑完
+npm test               # 74 个测试，几秒内跑完
 ```
 
 没有桌面端也能联调：`npm run fake-desktop` 会写一个真的 endpoint 文件、起一个 WebSocket 服务端、
