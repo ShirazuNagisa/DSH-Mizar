@@ -157,7 +157,7 @@ export class Dispatcher {
           ? ((value as { items: unknown[] }).items).length
           : 0
         if (after < before) {
-          this.#options.log(`session/list: hid ${before - after} archived session(s)`)
+          this.#options.log(`session/list: ${before} rows, hid ${before - after} archived session(s)`)
         }
       }
       if (this.#options.logCalls) {
