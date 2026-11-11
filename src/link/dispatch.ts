@@ -21,6 +21,7 @@
  * @module dsh-mizar/link/dispatch
  */
 import type { Context } from '../dsh.js'
+import { withoutArchivedSessions } from '../bridge/archive.js'
 import { invokeRemote, streamRemote } from '../bridge/invoke.js'
 import { upstreamFailure } from '../bridge/errors.js'
 import { callService } from '../bridge/service.js'
@@ -139,11 +140,26 @@ export class Dispatcher {
       this.#options.log(`invoke ${frame.endpoint} (${frame.id}) started`)
     }
     try {
-      const value = await invokeRemote(this.#options.ctx, {
+      let value = await invokeRemote(this.#options.ctx, {
         namespace: split.namespace,
         method: split.method,
         args,
       })
+      // The one read that must agree with DSH's archive set. A Session
+      // archived on the computer has to stop answering `session/list`, or
+      // every phone refresh re-reads a list that still contains it.
+      if (frame.endpoint === 'session/list') {
+        const before = Array.isArray((value as { items?: unknown } | null)?.items)
+          ? ((value as { items: unknown[] }).items).length
+          : 0
+        value = withoutArchivedSessions(this.#options.ctx, value, this.#options.services)
+        const after = Array.isArray((value as { items?: unknown } | null)?.items)
+          ? ((value as { items: unknown[] }).items).length
+          : 0
+        if (after < before) {
+          this.#options.log(`session/list: hid ${before - after} archived session(s)`)
+        }
+      }
       if (this.#options.logCalls) {
         this.#options.log(`invoke ${frame.endpoint} (${frame.id}) ok in ${Date.now() - started}ms`)
       }
