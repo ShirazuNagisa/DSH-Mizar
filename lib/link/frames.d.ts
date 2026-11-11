@@ -111,6 +111,12 @@ export interface QuestionFrame {
     readonly id: string;
     readonly request: unknown;
 }
+/** A request the desktop is showing is no longer pending: answered elsewhere. */
+export interface InteractionResolvedFrame {
+    readonly v: typeof LINK_VERSION;
+    readonly type: 'interaction-resolved';
+    readonly id: string;
+}
 /** An operator-facing notice, shown by the desktop. Never fatal. */
 export interface NoticeFrame {
     readonly v: typeof LINK_VERSION;
@@ -119,7 +125,7 @@ export interface NoticeFrame {
     readonly message: string;
 }
 /** Everything the plugin sends. */
-export type FrameToDesktop = HelloFrame | EventFrame | ResultFrame | FailureFrame | StreamItemFrame | StreamEndFrame | ApprovalFrame | QuestionFrame | NoticeFrame;
+export type FrameToDesktop = HelloFrame | EventFrame | ResultFrame | FailureFrame | StreamItemFrame | StreamEndFrame | ApprovalFrame | QuestionFrame | InteractionResolvedFrame | NoticeFrame;
 /** The desktop accepted the handshake. */
 export interface WelcomeFrame {
     readonly v: typeof LINK_VERSION;

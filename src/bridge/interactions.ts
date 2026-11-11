@@ -183,6 +183,9 @@ export class InteractionBroker {
     const cancelled = new Promise<ApprovalOutcome>((resolve) => {
       onAbort = () => {
         this.#approvals.delete(id)
+        // The tool withdrew: no answer will arrive, and the desktop's card
+        // must go with the request.
+        this.#send({ v: 1, type: 'interaction-resolved', id })
         settle('cancelled')
         resolve('cancelled')
       }
@@ -199,6 +202,10 @@ export class InteractionBroker {
       outcome,
       abandon: (answer) => {
         this.#approvals.delete(id)
+        // The desktop may still be drawing a card for this request. It is
+        // withdrawn elsewhere (the GUI answered, or the tool gave up) and the
+        // link has no other way to say so.
+        this.#send({ v: 1, type: 'interaction-resolved', id })
         settle(answer)
       },
     }
@@ -225,7 +232,11 @@ export class InteractionBroker {
 
     let onAbort: (() => void) | undefined
     const withdrawn = new Promise<readonly unknown[]>((resolve) => {
-      onAbort = () => resolve([])
+      onAbort = () => {
+        // The asking tool withdrew; the desktop is still drawing the batch.
+        this.#send({ v: 1, type: 'interaction-resolved', id })
+        resolve([])
+      }
       signal?.addEventListener('abort', onAbort, { once: true })
     })
 
@@ -239,6 +250,11 @@ export class InteractionBroker {
       answers,
       abandon: () => {
         this.#questions.delete(id)
+        // Questions race the DSH GUI as well as the phone. When the GUI
+        // answers first this promise settles here, and without this frame the
+        // desktop keeps the batch pending — and the phone keeps its card —
+        // until the link drops.
+        this.#send({ v: 1, type: 'interaction-resolved', id })
         settle([])
       },
     }

@@ -192,6 +192,28 @@ describe('registerAnswerers', () => {
     await expect(pending).resolves.toEqual({ answers: [{ id: 'q1', selected: ['a'] }] })
   })
 
+  it('tells the desktop when the DSH GUI answers a question instead', async () => {
+    const { ctx, captured } = fakeContext()
+    const { broker, frames } = wiredBroker()
+    broker.setConnected(true)
+    registerAnswerers(ctx, broker)
+
+    const request = {
+      questions: [{ id: 'q1', question: 'Which one?', options: [{ label: 'a' }] }],
+      agent: { id: 'session-1' },
+    }
+    // The GUI answers through the delegated branch, so the phone's copy would
+    // stay pending on the desktop without an explicit withdrawal.
+    const next = vi.fn(async () => ({ answers: [{ id: 'q1', selected: ['a'] }] }))
+    const pending = captured.get('user-questions/request')?.handler(request, next)
+
+    await expect(pending).resolves.toEqual({ answers: [{ id: 'q1', selected: ['a'] }] })
+    const asked = frames.find((frame) => frame.type === 'question')
+    const id = asked?.type === 'question' ? asked.id : ''
+    expect(id).not.toBe('')
+    expect(frames).toContainEqual({ v: 1, type: 'interaction-resolved', id })
+  })
+
   it('delegates a question batch it cannot parse', async () => {
     const { ctx, captured } = fakeContext()
     const { broker } = wiredBroker()
@@ -206,6 +228,14 @@ describe('registerAnswerers', () => {
 })
 
 describe('InteractionBroker', () => {
+  it('withdraws an abandoned approval on the desktop', () => {
+    const { broker, frames } = wiredBroker()
+    broker.setConnected(true)
+    const handle = broker.beginApproval({ toolName: 'bash' })
+    handle.abandon('cancelled')
+    expect(frames).toContainEqual({ v: 1, type: 'interaction-resolved', id: handle.id })
+  })
+
   it('re-announces pending requests when a desktop reconnects', async () => {
     const { broker, frames } = wiredBroker()
     broker.setConnected(true)

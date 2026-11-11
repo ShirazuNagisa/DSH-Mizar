@@ -1,6 +1,6 @@
 {
   "name": "dsh-mizar",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "The DSH side of AGI Mizar \u2014 forwards raw DSH events and endpoint calls to the desktop app over a loopback link. No listener, no pairing, no relay.",
   "license": "GPL-3.0-only",
   "type": "module",

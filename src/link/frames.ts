@@ -124,6 +124,13 @@ export interface QuestionFrame {
   readonly request: unknown
 }
 
+/** A request the desktop is showing is no longer pending: answered elsewhere. */
+export interface InteractionResolvedFrame {
+  readonly v: typeof LINK_VERSION
+  readonly type: 'interaction-resolved'
+  readonly id: string
+}
+
 /** An operator-facing notice, shown by the desktop. Never fatal. */
 export interface NoticeFrame {
   readonly v: typeof LINK_VERSION
@@ -142,6 +149,7 @@ export type FrameToDesktop =
   | StreamEndFrame
   | ApprovalFrame
   | QuestionFrame
+  | InteractionResolvedFrame
   | NoticeFrame
 
 /** The desktop accepted the handshake. */
