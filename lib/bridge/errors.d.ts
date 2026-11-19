@@ -26,6 +26,14 @@ export interface UpstreamFailure {
 export declare const LINK_ERROR = "REMOTE_ERROR";
 /** The code used for a call this plugin refused before reaching DSH. */
 export declare const LINK_REFUSED = "LINK_REFUSED";
+/**
+ * The code used when a prompt rewrite produced no usable text.
+ *
+ * Owned by this plugin rather than by DSH: the model call may have succeeded as
+ * far as the provider is concerned and still left nothing to show the user, and
+ * the desktop needs one code for "the rewrite failed" either way.
+ */
+export declare const ENHANCE_FAILED = "ENHANCE_FAILED";
 /** A refusal this plugin owns, as opposed to one DSH produced. */
 export declare class LinkError extends Error {
     readonly code: string;

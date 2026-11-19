@@ -21,6 +21,7 @@ describe('Config', () => {
     const config = Config({})
     expect(config.services).toEqual([...DEFAULT_SERVICES])
     expect(config.services).toContain('workspaceRegistry')
+    expect(config.services).toContain('mizarEnhance')
   })
 
   it('accepts a deployment-specific service list', () => {

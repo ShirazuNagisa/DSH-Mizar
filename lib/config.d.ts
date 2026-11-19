@@ -23,11 +23,13 @@ export declare const DEFAULT_ENDPOINT_FILE = "~/.agi-mizar/endpoint.json";
  * In-process services the desktop may call through the `service` frame.
  *
  * These are the reads that have no Typert endpoint: the workspace registry, the
- * session registry, the projection store, and the two interaction services. A
+ * session registry, the projection store, and the two interaction services, plus
+ * `mizarEnhance` — the one service this plugin provides itself, which lets the
+ * desktop ask DSH's model service to rewrite a draft without a session. A
  * deployment that needs another one adds its name here — a configuration edit,
  * not a new plugin version.
  */
-export declare const DEFAULT_SERVICES: readonly ["workspaceRegistry", "sessions", "sessionProjections", "userApproval", "userQuestions"];
+export declare const DEFAULT_SERVICES: readonly ["workspaceRegistry", "sessions", "sessionProjections", "userApproval", "userQuestions", "mizarEnhance"];
 export interface Config {
     /** Turn the plugin off without uninstalling it. */
     enabled: boolean;

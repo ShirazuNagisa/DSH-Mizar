@@ -103,9 +103,23 @@
 
 ### 服务白名单
 
-默认：`workspaceRegistry`、`sessions`、`sessionProjections`、`userApproval`、`userQuestions`。
+默认：`workspaceRegistry`、`sessions`、`sessionProjections`、`userApproval`、`userQuestions`、`mizarEnhance`。
 不在名单里、没被组合、名字以 `_` 开头、或不是函数 → `LINK_REFUSED`。
 名单可在插件配置 `services` 里加，**不需要换版本**。
+
+`mizarEnhance` 是插件自己提供的那个服务（其余都是代理）：
+
+```jsonc
+{ "v":1, "type":"service", "id":"s2", "service":"mizarEnhance", "method":"rewrite",
+  "args":["deepseek-official", "deepseek-v4-flash", "把草稿改短", "原始草稿", 1024] }
+// → { "ok":true, "value":"{\"text\":\"改写后的草稿\"}" }
+```
+
+- 位置参数：`provider`、`model`、`system`（无则 `null`）、`user`、`maxTokens`（可省，默认 1024，钳在 64..2048）。
+- `value` 是**字符串**，内容为 `{"text":"…"}` 的 JSON。
+- 失败一律 `ENHANCE_FAILED`：模型报错/被中止（消息里带 provider 的 failure code）、
+  没有输出文本、或该 profile 没有 `ctx.llm`。
+- 不建会话、不写会话日志：一次 request-only 用户消息，走 `ctx.llm.stream`。
 
 ---
 

@@ -44,7 +44,7 @@ stdout 丢掉，那个文件是它唯一能说"我为什么没起来"的地方�
 
 ## 它做什么
 
-只有四件，每一件都必须在进程内才能做：
+四件转发，每一件都必须在进程内才能做：
 
 | 能力 | 为什么不能挪到桌面端 |
 |---|---|
@@ -52,6 +52,10 @@ stdout 丢掉，那个文件是它唯一能说"我为什么没起来"的地方�
 | 代理任意 `typertGateway` 端点调用 | 网关是进程内服务 |
 | 代理进程内服务（工作区注册表、投影存储） | 这些没有 Typert endpoint |
 | 参与 `approval/request` / `user-questions/request` waterfall | Cordis waterfall 只存在于进程内 |
+
+另外**提供**一个服务给桌面端调用：`mizarEnhance.rewrite(provider, model, system, user, maxTokens)`
+把一段草稿交给 DSH 的模型服务改写（`ctx.llm.stream`，一条 request-only 用户消息，不建会话、
+不写会话日志），返回 `{"text":"…"}` 的 JSON 字符串。失败统一是 `ENHANCE_FAILED`。
 
 **转发是全量的**：不投影、不裁剪、不改写、不认识业务字段。DSH 以后加事件、加端点，
 插件不需要更新——桌面端可以直接调用它不认识的端点。
@@ -69,7 +73,7 @@ stdout 丢掉，那个文件是它唯一能说"我为什么没起来"的地方�
     # 桌面端发布的地址文件
     endpointFile: ~/.agi-mizar/endpoint.json
     # 允许桌面端代理的进程内服务
-    services: [workspaceRegistry, sessions, sessionProjections, userApproval, userQuestions]
+    services: [workspaceRegistry, sessions, sessionProjections, userApproval, userQuestions, mizarEnhance]
     reconnect:
       baseMs: 1000
       maxMs: 30000
@@ -86,7 +90,7 @@ stdout 丢掉，那个文件是它唯一能说"我为什么没起来"的地方�
 npm install
 npm run build          # 编译到 lib/（lib/ 是提交进仓库的产物）
 npm run typecheck
-npm test               # 74 个测试，几秒内跑完
+npm test               # 102 个测试，几秒内跑完
 ```
 
 没有桌面端也能联调：`npm run fake-desktop` 会写一个真的 endpoint 文件、起一个 WebSocket 服务端、
