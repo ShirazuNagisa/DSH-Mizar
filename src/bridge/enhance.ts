@@ -66,6 +66,12 @@ export interface EnhanceStreamOptions {
     readonly content: readonly { readonly type: 'text'; readonly text: string }[]
   }[]
   readonly maxTokens: number
+  /**
+   * The session the call is made for. Provider routes that cache or route by
+   * Session (OpenCode's `x-opencode-session`, OpenAI's `prompt_cache_key`) need
+   * it; the DSH engine stamps the same value on ordinary turns.
+   */
+  readonly sessionId?: string
   readonly signal?: AbortSignal
 }
 
@@ -86,6 +92,8 @@ export interface EnhanceArgs {
   readonly user: string
   /** Output cap; defaults to {@link DEFAULT_MAX_TOKENS} and is clamped. */
   readonly maxTokens?: number
+  /** The session the rewrite belongs to, for providers that route by it. */
+  readonly sessionId?: string
   /** Cancellation, when the caller has one. The link's `service` frame does not. */
   readonly signal?: AbortSignal
 }
@@ -133,6 +141,9 @@ export async function rewriteWithLlm(llm: EnhanceLlm, args: EnhanceArgs): Promis
     messages: [{ role: 'user', content: [{ type: 'text', text: args.user }] }],
     maxTokens: clampMaxTokens(args.maxTokens),
     ...(args.system === undefined ? {} : { system: args.system }),
+    // The branded Session id is only a string on this side; the adapter reads
+    // it as transport metadata.
+    ...(args.sessionId === undefined ? {} : { sessionId: args.sessionId as never }),
     ...(args.signal === undefined ? {} : { signal: args.signal }),
   }
 
@@ -171,6 +182,7 @@ export interface EnhanceService {
     system: string | null,
     user: string,
     maxTokens?: number,
+    sessionId?: string | null,
   ): Promise<string>
 }
 
@@ -187,7 +199,7 @@ export interface EnhanceService {
  */
 export function createEnhanceService(llmFor: () => EnhanceLlm | null): EnhanceService {
   return {
-    async rewrite(provider, model, system, user, maxTokens): Promise<string> {
+    async rewrite(provider, model, system, user, maxTokens, sessionId): Promise<string> {
       const llm = llmFor()
       if (llm === null) {
         throw new LinkError(ENHANCE_FAILED, 'this DSH profile has no model service (ctx.llm)')
@@ -204,6 +216,7 @@ export function createEnhanceService(llmFor: () => EnhanceLlm | null): EnhanceSe
         user: typeof user === 'string' ? user : '',
         ...(typeof system === 'string' && system !== '' ? { system } : {}),
         ...(typeof maxTokens === 'number' ? { maxTokens } : {}),
+        ...(typeof sessionId === 'string' && sessionId !== '' ? { sessionId } : {}),
       }
       return JSON.stringify({ text: await rewriteWithLlm(llm, args) })
     },

@@ -37,6 +37,12 @@ export interface EnhanceStreamOptions {
         }[];
     }[];
     readonly maxTokens: number;
+    /**
+     * The session the call is made for. Provider routes that cache or route by
+     * Session (OpenCode's `x-opencode-session`, OpenAI's `prompt_cache_key`) need
+     * it; the DSH engine stamps the same value on ordinary turns.
+     */
+    readonly sessionId?: string;
     readonly signal?: AbortSignal;
 }
 /** The slice of `ctx.llm` this module calls. */
@@ -55,6 +61,8 @@ export interface EnhanceArgs {
     readonly user: string;
     /** Output cap; defaults to {@link DEFAULT_MAX_TOKENS} and is clamped. */
     readonly maxTokens?: number;
+    /** The session the rewrite belongs to, for providers that route by it. */
+    readonly sessionId?: string;
     /** Cancellation, when the caller has one. The link's `service` frame does not. */
     readonly signal?: AbortSignal;
 }
@@ -87,7 +95,7 @@ export interface EnhanceService {
      *   return value verbatim, and a string keeps this service's wire shape its
      *   own instead of making the desktop read a bare array or string.
      */
-    rewrite(provider: string, model: string, system: string | null, user: string, maxTokens?: number): Promise<string>;
+    rewrite(provider: string, model: string, system: string | null, user: string, maxTokens?: number, sessionId?: string | null): Promise<string>;
 }
 /**
  * Build the service around a lazy read of the model service.

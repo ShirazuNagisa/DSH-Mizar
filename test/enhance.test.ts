@@ -203,6 +203,15 @@ describe('createEnhanceService', () => {
 
   it('refuses a call without a provider or model', async () => {
     const service = createEnhanceService(() => fakeLlm(answer('ok')))
+    // The session id is transport metadata for routes that route by Session
+    // (OpenCode needs `x-opencode-session`); it must reach the model call.
+    const withSession = fakeLlm(answer('done'))
+    const sessionService = createEnhanceService(() => withSession)
+    await sessionService.rewrite('p', 'm', 'system', 'draft', 100, 'session-1')
+    expect(withSession.calls[0]?.sessionId).toBe('session-1')
+    await sessionService.rewrite('p', 'm', 'system', 'draft', 100, null)
+    expect(withSession.calls[1]?.sessionId).toBeUndefined()
+
     await expect(service.rewrite('', 'm', null, 'draft')).rejects.toMatchObject({ code: 'LINK_REFUSED' })
     await expect(service.rewrite('p', '', null, 'draft')).rejects.toMatchObject({ code: 'LINK_REFUSED' })
   })
