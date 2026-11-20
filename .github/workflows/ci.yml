@@ -1,0 +1,49 @@
+name: ci
+
+# The plugin's build output (lib/) is committed so a checkout can be linked into
+# a DSH profile without running tsc. That only holds while the committed output
+# matches the source, so the build step is also a diff check.
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'client/**'
+      - 'test/**'
+      - 'lib/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - 'cordis.patch.yml'
+      - '.github/**'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: dsh-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: typecheck + tests + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: The committed build matches the source
+        run: |
+          npm run build
+          git diff --exit-code -- lib/
